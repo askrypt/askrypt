@@ -6,7 +6,7 @@ use rand::{random};
 use std::io::{self, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("ARPWD - PBKDF2 Key Derivation Tool");
+    println!("ARPWD - Secure password storage");
     println!("==================================");
 
     // Get secret from user
@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nCalculating PBKDF2...");
 
-    let iterations = 300_000;
+    let iterations = 600_000;
 
     match calc_pbkdf2(secret, &salt, iterations) {
         Ok(derived_key) => {
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // Example encryption using the derived key
             let iv = random::<[u8; 16]>();
-            let message = b"Example message to encrypt with utf: \xE6\x97\xA5\xE6\x9C\xAC\xE5\x9B\xBD";// 日本国
+            let message = b"Main secret with Unicode characters: \xE6\x97\xA5\xE6\x9C\xAC\xE5\x9B\xBD";// 日本国
             let key: &[u8; 32] = &derived_key.try_into().unwrap();
             let ciphertext = encrypt_with_aes(message, key, &iv)?;
             println!("Ciphertext (hex): {}", encode(&ciphertext));
