@@ -1,12 +1,12 @@
-# Arpwd plain text format specification v1.0
+# Askrypt plain text format specification v1.0
 
-This document specifies the plain text format used by Arpwd for storing password entries. The format is designed to be simple, human-readable.
+This document specifies the plain text format used by Askrypt for storing password entries. The format is designed to be simple, human-readable.
 
 ## File Structure
-An Arpwd file consists of three main sections:
+An Askrypt file consists of three main sections:
 
 ```
-arpwd-v1.0 // this file can be opened by arpwd
+askrypt-v1.0 // this file can be opened by askrypt
 ---
 Question 1
 Question 2

@@ -1,4 +1,4 @@
-# ARPWD - Secure password storage
+# Askrypt - Secure password storage
 
 Secure password storage
 

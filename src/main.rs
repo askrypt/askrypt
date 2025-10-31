@@ -1,12 +1,12 @@
-use arpwd::hash::calc_pbkdf2;
-use arpwd::util::encrypt_with_aes;
-use arpwd::util::decrypt_with_aes;
+use askrypt::hash::calc_pbkdf2;
+use askrypt::util::encrypt_with_aes;
+use askrypt::util::decrypt_with_aes;
 use hex::encode;
 use rand::{random};
 use std::io::{self, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("ARPWD - Secure password storage");
+    println!("Askrypt - Secure password storage");
     println!("==================================");
 
     // Get secret from user
