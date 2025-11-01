@@ -21,7 +21,7 @@ type Aes256CbcDec = Decryptor<Aes256>;
 /// # Example
 ///
 /// ```
-/// use askrypt::util::encrypt_with_aes;
+/// use askrypt::encrypt_with_aes;
 ///
 /// let message = b"Hello, World!";
 /// let key = [0u8; 32];
@@ -63,7 +63,7 @@ pub fn encrypt_with_aes(
 /// # Example
 ///
 /// ```
-/// use askrypt::util::{encrypt_with_aes, decrypt_with_aes};
+/// use askrypt::{encrypt_with_aes, decrypt_with_aes};
 ///
 /// let message = b"Hello, World!";
 /// let key = [0u8; 32];

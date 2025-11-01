@@ -1,9 +1,7 @@
-mod core;
-
 use hex::encode;
 use rand::{random};
 use std::io::{self, Write};
-use crate::core::{calc_pbkdf2, decrypt_with_aes, encrypt_with_aes};
+use askrypt::{calc_pbkdf2, decrypt_with_aes, encrypt_with_aes};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Askrypt - Secure password storage");

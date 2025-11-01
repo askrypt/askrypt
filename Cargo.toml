@@ -3,6 +3,10 @@ name = "askrypt"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "askrypt"
+path = "src/main.rs"
+
 [dependencies]
 pbkdf2 = { version = "0.12.2", features = ["simple"] }
 sha2 = "0.10.9"
