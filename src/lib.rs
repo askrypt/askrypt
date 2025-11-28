@@ -1,118 +1,10 @@
 use aes::Aes256;
-use sha2::Sha256;
 use cbc::{Decryptor, Encryptor};
 use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use sha2::Sha256;
 
 type Aes256CbcEnc = Encryptor<Aes256>;
 type Aes256CbcDec = Decryptor<Aes256>;
-
-/// Represents the content of an Askrypt file
-///
-/// According to the Askrypt specification, a file contains:
-/// - A version header (e.g., "askrypt-v1.0")
-/// - A list of questions
-/// - Base64-encoded encrypted data
-#[derive(Debug, Clone, PartialEq)]
-pub struct AskryptContent {
-    /// The version string from the file header
-    pub version: String,
-    /// The list of questions
-    pub questions: Vec<String>,
-    /// The base64-encoded encrypted data as raw bytes
-    pub base64_data: Vec<u8>,
-}
-
-impl AskryptContent {
-    /// Read an Askrypt file from the given path
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to the Askrypt file
-    ///
-    /// # Returns
-    ///
-    /// Returns a Result containing the parsed AskryptContent or an error
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use askrypt::AskryptContent;
-    ///
-    /// let content = AskryptContent::from_file("myfile.askrypt").unwrap();
-    /// println!("Version: {}", content.version);
-    /// println!("Questions: {:?}", content.questions);
-    /// ```
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
-
-        // Read version line
-        let version = lines
-            .next()
-            .ok_or("File is empty")??
-            .trim()
-            .to_string();
-
-        // Validate version format
-        if !version.starts_with("askrypt-") {
-            return Err("Invalid file format: missing 'askrypt-' header".into());
-        }
-
-        // Read first separator
-        let separator1 = lines.next().ok_or("Missing first separator")??;
-        if separator1.trim() != "---" {
-            return Err("Invalid file format: expected '---' separator".into());
-        }
-
-        // Read questions until we hit the second separator
-        let mut questions = Vec::new();
-        for line in lines.by_ref() {
-            let line = line?;
-            if line.trim() == "---" {
-                break;
-            }
-            let question = line.trim().to_string();
-            if !question.is_empty() {
-                if question.len() > 255 {
-                    return Err(format!(
-                        "Question exceeds maximum length of 255 characters: {}",
-                        question.len()
-                    )
-                    .into());
-                }
-                questions.push(question);
-            }
-        }
-
-        if questions.is_empty() {
-            return Err("No questions found in file".into());
-        }
-
-        // Read base64 data (rest of the file)
-        let mut base64_data = Vec::new();
-        for line in lines {
-            let line = line?;
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                base64_data.extend_from_slice(trimmed.as_bytes());
-            }
-        }
-
-        if base64_data.is_empty() {
-            return Err("No encrypted data found in file".into());
-        }
-
-        Ok(AskryptContent {
-            version,
-            questions,
-            base64_data,
-        })
-    }
-}
 
 /// Encrypt a message using AES-256-CBC with a custom IV
 ///
@@ -221,84 +113,10 @@ pub fn calc_pbkdf2(
     Ok(output)
 }
 
-
 #[cfg(test)]
 mod tests {
-    use hex::encode;
     use super::*;
-
-    #[test]
-    fn test_askrypt_content_from_file() {
-        use std::io::Write;
-        use std::fs;
-
-        // Create a temporary test file
-        let test_content = "askrypt-v1.0\n---\nWhat is your name?\nWhat is your age?\n---\naGVsbG8gd29ybGQ=\n";
-        let temp_file = "test_temp_askrypt.txt";
-
-        {
-            let mut file = File::create(temp_file).unwrap();
-            file.write_all(test_content.as_bytes()).unwrap();
-        }
-
-        // Test reading the file
-        let content = AskryptContent::from_file(temp_file).unwrap();
-
-        assert_eq!(content.version, "askrypt-v1.0");
-        assert_eq!(content.questions.len(), 2);
-        assert_eq!(content.questions[0], "What is your name?");
-        assert_eq!(content.questions[1], "What is your age?");
-        assert_eq!(String::from_utf8_lossy(&content.base64_data), "aGVsbG8gd29ybGQ=");
-
-        // Cleanup
-        fs::remove_file(temp_file).ok();
-    }
-
-    #[test]
-    fn test_askrypt_content_invalid_format() {
-        use std::io::Write;
-        use std::fs;
-
-        // Create a file with invalid format (no version header)
-        let test_content = "invalid header\n---\nQuestion?\n---\ndata\n";
-        let temp_file = "test_invalid_askrypt.txt";
-
-        {
-            let mut file = File::create(temp_file).unwrap();
-            file.write_all(test_content.as_bytes()).unwrap();
-        }
-
-        // Test that it fails
-        let result = AskryptContent::from_file(temp_file);
-        assert!(result.is_err());
-
-        // Cleanup
-        fs::remove_file(temp_file).ok();
-    }
-
-    #[test]
-    fn test_askrypt_content_question_too_long() {
-        use std::io::Write;
-        use std::fs;
-
-        // Create a file with a question that's too long
-        let long_question = "a".repeat(256);
-        let test_content = format!("askrypt-v1.0\n---\n{}\n---\ndata\n", long_question);
-        let temp_file = "test_long_question.txt";
-
-        {
-            let mut file = File::create(temp_file).unwrap();
-            file.write_all(test_content.as_bytes()).unwrap();
-        }
-
-        // Test that it fails
-        let result = AskryptContent::from_file(temp_file);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceeds maximum length"));
-
-        // Cleanup
-        fs::remove_file(temp_file).ok();
-    }
+    use hex::encode;
 
     #[test]
     fn test_encrypt_decrypt_with_custom_iv() {
