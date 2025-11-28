@@ -191,9 +191,11 @@ impl AskryptApp {
                 self.askrypt_file = Some(file);
                 self.is_unlocked = true;
                 self.entries.clear();
+                self.answers = self.new_answers.clone();
                 self.show_create_dialog = false;
                 self.file_path = None;
                 self.error_message = None;
+                self.new_answers = Default::default();
             }
             Err(e) => {
                 self.error_message = Some(format!("Failed to create file: {}", e));
