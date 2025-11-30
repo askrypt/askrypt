@@ -42,6 +42,9 @@ struct AskryptApp {
     new_answers: Vec<String>,
     show_create_dialog: bool,
 
+    // default settings
+    iterations: u32,
+
     // UI state
     show_passwords: std::collections::HashSet<usize>,
 }
@@ -72,6 +75,7 @@ impl Default for AskryptApp {
             new_questions: vec![String::new()],
             new_answers: vec![String::new()],
             show_create_dialog: false,
+            iterations: 600_000,
             show_passwords: std::collections::HashSet::new(),
         }
     }
@@ -186,7 +190,7 @@ impl AskryptApp {
             .map(|a| normalize_answer(a))
             .collect();
 
-        match AskryptFile::create(questions, answers, vec![], None, None) {
+        match AskryptFile::create(questions, answers, vec![], Some(self.iterations), Some(self.iterations)) {
             Ok(file) => {
                 self.all_questions = self.new_questions.clone();
                 self.askrypt_file = Some(file);
@@ -294,7 +298,7 @@ impl AskryptApp {
                 normalized_answers,
                 self.entries.clone(),
                 Some(iterations),
-                None,
+                Some(iterations) // TODO: use separate iterations for second-level encryption
             ) {
                 Ok(new_file) => {
                     self.askrypt_file = Some(new_file);
