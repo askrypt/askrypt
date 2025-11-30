@@ -25,8 +25,8 @@ struct AskryptApp {
     is_unlocked: bool,
 
     // Authentication state
-    question0: String,
-    answers: [String; 3],
+    all_questions: Vec<String>,
+    answers: Vec<String>,
     error_message: Option<String>,
 
     // Secret entries
@@ -38,8 +38,8 @@ struct AskryptApp {
     edit_entry: SecretEntry,
 
     // Create new file state
-    new_questions: [String; 3],
-    new_answers: [String; 3],
+    new_questions: Vec<String>,
+    new_answers: Vec<String>,
     show_create_dialog: bool,
 
     // UI state
@@ -53,8 +53,8 @@ impl Default for AskryptApp {
             file_path: None,
             askrypt_file: None,
             is_unlocked: false,
-            question0: String::new(),
-            answers: Default::default(),
+            all_questions: Vec::new(),
+            answers: Vec::new(),
             error_message: None,
             entries: Vec::new(),
             selected_entry: None,
@@ -69,8 +69,8 @@ impl Default for AskryptApp {
                 created: now.clone(),
                 modified: now,
             },
-            new_questions: Default::default(),
-            new_answers: Default::default(),
+            new_questions: vec![String::new()],
+            new_answers: vec![String::new()],
             show_create_dialog: false,
             show_passwords: std::collections::HashSet::new(),
         }
@@ -99,10 +99,10 @@ impl AskryptApp {
             match AskryptFile::load_from_file(&path) {
                 Ok(file) => {
                     self.file_path = Some(path);
-                    self.question0 = file.question0.clone();
+                    self.all_questions = vec![file.question0.clone()];
                     self.askrypt_file = Some(file);
                     self.is_unlocked = false;
-                    self.answers = Default::default();
+                    self.answers = Vec::new();
                     self.entries.clear();
                     self.selected_entry = None;
                     self.show_passwords.clear();
@@ -150,16 +150,17 @@ impl AskryptApp {
 
     fn create_new_file(&mut self) {
         self.show_create_dialog = true;
-        self.new_questions = [
-            "What is your mother's maiden name?".to_string(),
-            "What was your first pet's name?".to_string(),
-            "What city were you born in?".to_string(),
-        ];
-        self.new_answers = Default::default();
+        self.new_questions = vec![String::new()];
+        self.new_answers = vec![String::new()];
     }
 
     fn finalize_create_file(&mut self) {
         // Validate questions and answers
+        if self.new_questions.is_empty() {
+            self.error_message = Some("At least one question is required".to_string());
+            return;
+        }
+
         for q in &self.new_questions {
             if q.trim().is_empty() {
                 self.error_message = Some("All questions must be filled".to_string());
@@ -178,7 +179,7 @@ impl AskryptApp {
             }
         }
 
-        let questions = self.new_questions.iter().map(|q| q.clone()).collect();
+        let questions = self.new_questions.clone();
         let answers: Vec<String> = self
             .new_answers
             .iter()
@@ -187,7 +188,7 @@ impl AskryptApp {
 
         match AskryptFile::create(questions, answers, vec![], None, None) {
             Ok(file) => {
-                self.question0 = file.question0.clone();
+                self.all_questions = self.new_questions.clone();
                 self.askrypt_file = Some(file);
                 self.is_unlocked = true;
                 self.entries.clear();
@@ -195,7 +196,8 @@ impl AskryptApp {
                 self.show_create_dialog = false;
                 self.file_path = None;
                 self.error_message = None;
-                self.new_answers = Default::default();
+                self.new_questions = vec![String::new()];
+                self.new_answers = vec![String::new()];
             }
             Err(e) => {
                 self.error_message = Some(format!("Failed to create file: {}", e));
@@ -224,7 +226,7 @@ impl AskryptApp {
     fn lock(&mut self) {
         self.is_unlocked = false;
         self.entries.clear();
-        self.answers = Default::default();
+        self.answers.clear();
         self.selected_entry = None;
         self.edit_mode = EditMode::None;
         self.show_passwords.clear();
@@ -279,21 +281,19 @@ impl AskryptApp {
     }
 
     fn update_encrypted_data(&mut self) {
-        if let Some(file) = &self.askrypt_file {
+        if self.askrypt_file.is_some() {
             let normalized_answers: Vec<String> =
                 self.answers.iter().map(|a| normalize_answer(a)).collect();
 
-            let questions = vec![
-                file.question0.clone(),
-                "Question 2".to_string(),
-                "Question 3".to_string(),
-            ];
+            let questions = self.all_questions.clone();
+
+            let iterations = self.askrypt_file.as_ref().unwrap().params.iterations;
 
             match AskryptFile::create(
                 questions,
                 normalized_answers,
                 self.entries.clone(),
-                Some(file.params.iterations),
+                Some(iterations),
                 None,
             ) {
                 Ok(new_file) => {
@@ -378,8 +378,17 @@ impl eframe::App for AskryptApp {
                         ui.label("These questions will be used to protect your passwords.");
                         ui.add_space(10.0);
 
-                        for i in 0..3 {
-                            ui.label(format!("Question {}:", i + 1));
+                        let mut question_to_delete = None;
+
+                        for i in 0..self.new_questions.len() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Question {}:", i + 1));
+                                if ui.button("🗑").on_hover_text("Delete question").clicked() {
+                                    if self.new_questions.len() > 1 {
+                                        question_to_delete = Some(i);
+                                    }
+                                }
+                            });
                             ui.text_edit_singleline(&mut self.new_questions[i]);
                             ui.label(format!("Answer {}:", i + 1));
                             ui.add(
@@ -388,6 +397,17 @@ impl eframe::App for AskryptApp {
                             ui.add_space(10.0);
                         }
 
+                        if let Some(index) = question_to_delete {
+                            self.new_questions.remove(index);
+                            self.new_answers.remove(index);
+                        }
+
+                        if ui.button("➕ Add Question").clicked() {
+                            self.new_questions.push(String::new());
+                            self.new_answers.push(String::new());
+                        }
+
+                        ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             if ui.button("Create").clicked() {
                                 self.finalize_create_file();
@@ -409,20 +429,45 @@ impl eframe::App for AskryptApp {
                 }
                 ui.add_space(10.0);
 
-                ui.label(&self.question0);
-                ui.add(egui::TextEdit::singleline(&mut self.answers[0]).password(true));
-                ui.add_space(10.0);
+                // Ensure answers vector matches the number of known questions
+                while self.answers.len() < self.all_questions.len() {
+                    self.answers.push(String::new());
+                }
 
-                ui.label("Question 2:");
-                ui.add(egui::TextEdit::singleline(&mut self.answers[1]).password(true));
-                ui.add_space(10.0);
+                // Show all questions
+                for i in 0..self.all_questions.len() {
+                    ui.label(&self.all_questions[i]);
+                    ui.add(egui::TextEdit::singleline(&mut self.answers[i]).password(true));
+                    ui.add_space(10.0);
+                }
 
-                ui.label("Question 3:");
-                ui.add(egui::TextEdit::singleline(&mut self.answers[2]).password(true));
-                ui.add_space(10.0);
+                // If we only have the first question visible, show a button to load remaining questions
+                if self.all_questions.len() == 1 && !self.answers[0].is_empty() {
+                    if ui.button("Show remaining questions").clicked() {
+                        if let Some(file) = &self.askrypt_file {
+                            let normalized_first = normalize_answer(&self.answers[0]);
+                            match file.get_all_questions(normalized_first) {
+                                Ok(questions) => {
+                                    self.all_questions = questions;
+                                    // Initialize answers for remaining questions
+                                    while self.answers.len() < self.all_questions.len() {
+                                        self.answers.push(String::new());
+                                    }
+                                    self.error_message = None;
+                                }
+                                Err(e) => {
+                                    self.error_message = Some(format!("Wrong first answer: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    ui.add_space(10.0);
+                }
 
-                if ui.button("Unlock").clicked() {
-                    self.unlock();
+                if self.all_questions.len() > 1 {
+                    if ui.button("Unlock").clicked() {
+                        self.unlock();
+                    }
                 }
             }
 

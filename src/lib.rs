@@ -126,8 +126,8 @@ impl AskryptFile {
     ///
     /// # Arguments
     ///
-    /// * `questions` - A vector of exactly 3 questions
-    /// * `answers` - A vector of exactly 3 normalized answers (must be pre-normalized)
+    /// * `questions` - A vector of at least 2 questions
+    /// * `answers` - A vector of normalized answers (must be pre-normalized, same length as questions)
     /// * `secret_data` - A vector of SecretEntry items to encrypt
     /// * `iterations0` - Optional iterations for first KDF (default: 600000)
     /// * `iterations1` - Optional iterations for second KDF (default: 600000)
@@ -174,11 +174,11 @@ impl AskryptFile {
         iterations1: Option<u32>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Validate inputs
-        if questions.len() != 3 {
-            return Err("Exactly 3 questions are required".into());
+        if questions.len() < 2 {
+            return Err("At least 2 questions is required".into());
         }
-        if answers.len() != 3 {
-            return Err("Exactly 3 answers are required".into());
+        if questions.len() != answers.len() {
+            return Err("Number of questions and answers must match".into());
         }
         for question in &questions {
             if question.len() > 500 {
@@ -200,9 +200,10 @@ impl AskryptFile {
         let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
         let salt0_iv: [u8; 16] = salt0.clone().try_into().map_err(|_| "Invalid IV length")?;
 
-        // Step 3: Encrypt questions data (questions 1 and 2) using first-key and salt0 as IV
+        // Step 3: Encrypt questions data (all questions except the first) using first-key and salt0 as IV
+        let remaining_questions: Vec<String> = questions.iter().skip(1).cloned().collect();
         let questions_data = QuestionsData {
-            questions: vec![questions[1].clone(), questions[2].clone()],
+            questions: remaining_questions,
             params: KdfParams {
                 kdf: "pbkdf2".to_string(),
                 iterations: iterations1,
@@ -211,8 +212,8 @@ impl AskryptFile {
         };
         let qs = encrypt_to_base64(&questions_data, &first_key_array, &salt0_iv)?;
 
-        // Step 4: Derive second-key from combined remaining answers (answer1 + answer2) and salt1
-        let combined_answers = format!("{}{}", answers[1], answers[2]);
+        // Step 4: Derive second-key from combined remaining answers and salt1
+        let combined_answers: String = answers.iter().skip(1).cloned().collect();
         let second_key = calc_pbkdf2(&combined_answers, &salt1, iterations1)?;
         let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
         let salt1_iv: [u8; 16] = salt1.clone().try_into().map_err(|_| "Invalid IV length")?;
@@ -250,7 +251,7 @@ impl AskryptFile {
     ///
     /// # Arguments
     ///
-    /// * `answers` - A vector of exactly 3 normalized answers (must be pre-normalized)
+    /// * `answers` - A vector of normalized answers (must be pre-normalized)
     ///
     /// # Returns
     ///
@@ -293,8 +294,8 @@ impl AskryptFile {
         answers: Vec<String>,
     ) -> Result<Vec<SecretEntry>, Box<dyn std::error::Error>> {
         // Validate inputs
-        if answers.len() != 3 {
-            return Err("Exactly 3 answers are required".into());
+        if answers.is_empty() {
+            return Err("At least 2 answer is required".into());
         }
 
         // Step 1: Decode salt0
@@ -313,8 +314,8 @@ impl AskryptFile {
         let salt1 = decode_base64(&questions_data.params.salt)?;
         let salt1_iv: [u8; 16] = salt1.try_into().map_err(|_| "Invalid salt1 length")?;
 
-        // Step 5: Derive second-key from combined remaining answers (answer1 + answer2) and salt1
-        let combined_answers = format!("{}{}", answers[1], answers[2]);
+        // Step 5: Derive second-key from combined remaining answers and salt1
+        let combined_answers: String = answers.iter().skip(1).cloned().collect();
         let second_key = calc_pbkdf2(
             &combined_answers,
             &salt1_iv,
@@ -339,6 +340,38 @@ impl AskryptFile {
             decrypt_from_base64(&self.data, &master_key_array, &iv_array)?;
 
         Ok(secret_data)
+    }
+
+    /// Get all questions from the AskryptFile
+    ///
+    /// # Arguments
+    ///
+    /// * `first_answer` - The normalized first answer to decrypt the remaining questions
+    ///
+    /// # Returns
+    ///
+    /// Returns a Result containing all questions or an error
+    pub fn get_all_questions(
+        &self,
+        first_answer: String,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        // Step 1: Decode salt0
+        let salt0 = decode_base64(&self.params.salt)?;
+        let salt0_iv: [u8; 16] = salt0.try_into().map_err(|_| "Invalid salt0 length")?;
+
+        // Step 2: Derive first-key from first answer and salt0
+        let first_key = calc_pbkdf2(&first_answer, &salt0_iv, self.params.iterations)?;
+        let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
+
+        // Step 3: Decrypt questions data
+        let questions_data: QuestionsData =
+            decrypt_from_base64(&self.qs, &first_key_array, &salt0_iv)?;
+
+        // Step 4: Build the full list of questions
+        let mut all_questions = vec![self.question0.clone()];
+        all_questions.extend(questions_data.questions);
+
+        Ok(all_questions)
     }
 
     /// Save the AskryptFile to a JSON file
@@ -873,13 +906,22 @@ mod tests {
 
     #[test]
     fn test_askrypt_file_create_invalid_questions() {
-        let questions = vec!["Question 1".to_string(), "Question 2".to_string()]; // Only 2
-        let answers = vec![normalize_answer("Answer1"), normalize_answer("Answer2")];
+        // Test with no questions
+        let questions = vec![];
+        let answers = vec![];
         let data = vec![];
 
         let result = AskryptFile::create(questions, answers, data, None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("3 questions"));
+        assert!(result.unwrap_err().to_string().contains("At least 2 questions"));
+
+        let questions = vec!["Question 1".to_string()]; // Only 1
+        let answers = vec![normalize_answer("Answer1")];
+        let data2 = vec![];
+        
+        let result = AskryptFile::create(questions, answers, data2, None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("At least 2 questions"));
     }
 
     #[test]
