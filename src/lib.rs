@@ -294,27 +294,18 @@ impl AskryptFile {
         answers: Vec<String>,
     ) -> Result<Vec<SecretEntry>, Box<dyn std::error::Error>> {
         // Validate inputs
-        if answers.is_empty() {
+        if answers.len() < 2 {
             return Err("At least 2 answer is required".into());
         }
 
-        // Step 1: Decode salt0
-        let salt0 = decode_base64(&self.params.salt)?;
-        let salt0_iv: [u8; 16] = salt0.try_into().map_err(|_| "Invalid salt0 length")?;
+        // Decrypt questions data to get salt1 and iterations1
+        let questions_data: QuestionsData = self.get_questions_data(answers[0].clone())?;
 
-        // Step 2: Derive first-key from first answer and salt0
-        let first_key = calc_pbkdf2(&answers[0], &salt0_iv, self.params.iterations)?;
-        let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
-
-        // Step 3: Decrypt questions data to get salt1 and iterations1
-        let questions_data: QuestionsData =
-            decrypt_from_base64(&self.qs, &first_key_array, &salt0_iv)?;
-
-        // Step 4: Decode salt1
+        // Decode salt1
         let salt1 = decode_base64(&questions_data.params.salt)?;
         let salt1_iv: [u8; 16] = salt1.try_into().map_err(|_| "Invalid salt1 length")?;
 
-        // Step 5: Derive second-key from combined remaining answers and salt1
+        // Derive second-key from combined remaining answers and salt1
         let combined_answers: String = answers.iter().skip(1).cloned().collect();
         let second_key = calc_pbkdf2(
             &combined_answers,
@@ -323,11 +314,11 @@ impl AskryptFile {
         )?;
         let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
 
-        // Step 6: Decrypt master key and IV using second-key and salt1
+        // Decrypt master key and IV using second-key and salt1
         let master_data: MasterData =
             decrypt_from_base64(&self.master, &second_key_array, &salt1_iv)?;
 
-        // Step 7: Decode master key and IV
+        // Decode master key and IV
         let master_key_bytes = decode_base64(&master_data.master_key)?;
         let iv_bytes = decode_base64(&master_data.iv)?;
         let master_key_array: [u8; 32] = master_key_bytes
@@ -335,14 +326,14 @@ impl AskryptFile {
             .map_err(|_| "Invalid master key length")?;
         let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
 
-        // Step 8: Decrypt secret data using master key and IV
+        // Decrypt secret data using master key and IV
         let secret_data: Vec<SecretEntry> =
             decrypt_from_base64(&self.data, &master_key_array, &iv_array)?;
 
         Ok(secret_data)
     }
 
-    /// Get all questions from the AskryptFile
+    /// Get QuestionsData by first normalized answer from the AskryptFile
     ///
     /// # Arguments
     ///
@@ -350,28 +341,24 @@ impl AskryptFile {
     ///
     /// # Returns
     ///
-    /// Returns a Result containing all questions or an error
-    pub fn get_all_questions(
+    /// Returns a Result containing QuestionsData or an error
+    pub fn get_questions_data(
         &self,
         first_answer: String,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        // Step 1: Decode salt0
+    ) -> Result<QuestionsData, Box<dyn std::error::Error>> {
+        // Decode salt0
         let salt0 = decode_base64(&self.params.salt)?;
         let salt0_iv: [u8; 16] = salt0.try_into().map_err(|_| "Invalid salt0 length")?;
 
-        // Step 2: Derive first-key from first answer and salt0
+        // Derive first-key from first answer and salt0
         let first_key = calc_pbkdf2(&first_answer, &salt0_iv, self.params.iterations)?;
         let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
 
-        // Step 3: Decrypt questions data
+        // Decrypt questions data
         let questions_data: QuestionsData =
             decrypt_from_base64(&self.qs, &first_key_array, &salt0_iv)?;
 
-        // Step 4: Build the full list of questions
-        let mut all_questions = vec![self.question0.clone()];
-        all_questions.extend(questions_data.questions);
-
-        Ok(all_questions)
+        Ok(questions_data)
     }
 
     /// Save the AskryptFile to a JSON file

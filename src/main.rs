@@ -450,9 +450,11 @@ impl eframe::App for AskryptApp {
                     if ui.button("Show remaining questions").clicked() {
                         if let Some(file) = &self.askrypt_file {
                             let normalized_first = normalize_answer(&self.answers[0]);
-                            match file.get_all_questions(normalized_first) {
-                                Ok(questions) => {
-                                    self.all_questions = questions;
+                            match file.get_questions_data(normalized_first) {
+                                Ok(questions_data) => {
+                                    let mut all_questions = vec![self.all_questions[0].clone()];
+                                    all_questions.extend(questions_data.questions);
+                                    self.all_questions = all_questions;
                                     // Initialize answers for remaining questions
                                     while self.answers.len() < self.all_questions.len() {
                                         self.answers.push(String::new());
