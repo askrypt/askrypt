@@ -221,7 +221,8 @@ impl AskryptApp {
                     self.error_message = None;
                 }
                 Err(e) => {
-                    self.error_message = Some(format!("Failed to decrypt: {}", e));
+                    eprintln!("One or more answers are incorrect: {}", e);
+                    self.error_message = Some("One or more answers are incorrect".to_string());
                 }
             }
         }
@@ -463,7 +464,8 @@ impl eframe::App for AskryptApp {
                                     self.error_message = None;
                                 }
                                 Err(e) => {
-                                    self.error_message = Some(format!("Wrong first answer: {}", e));
+                                    eprintln!("Wrong first answer: {}", e);
+                                    self.error_message = Some("Wrong first answer".to_string());
                                 }
                             }
                         }
