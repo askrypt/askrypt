@@ -97,7 +97,7 @@ impl Default for EditMode {
 impl AskryptApp {
     fn open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Askrypt Files", &["json"])
+            .add_filter("Askrypt Files", &["askrypt"])
             .pick_file()
         {
             match AskryptFile::load_from_file(&path) {
@@ -136,11 +136,11 @@ impl AskryptApp {
 
     fn save_file_as(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Askrypt Files", &["json"])
+            .add_filter("Askrypt Files", &["askrypt"])
             .save_file()
         {
             if let Some(file) = &self.askrypt_file {
-                match file.save_to_file(&path) {
+                match file.save_to_file(&path.with_extension("askrypt")) {
                     Ok(_) => {
                         self.file_path = Some(path);
                     }
