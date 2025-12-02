@@ -1,3 +1,4 @@
+use std::io::BufRead;
 use askrypt::{normalize_answer, AskryptFile, SecretEntry};
 use chrono::Utc;
 use eframe::egui;
@@ -37,6 +38,7 @@ struct AskryptApp {
     // Editing state
     edit_mode: EditMode,
     edit_entry: SecretEntry,
+    edit_tags: String,
 
     // Create new file state
     new_questions: Vec<String>,
@@ -73,6 +75,7 @@ impl Default for AskryptApp {
                 created: now.clone(),
                 modified: now,
             },
+            edit_tags: String::new(),
             new_questions: vec![String::new()],
             new_answers: vec![String::new()],
             show_create_dialog: false,
@@ -250,18 +253,25 @@ impl AskryptApp {
             created: now.clone(),
             modified: now,
         };
+        self.edit_tags = String::new();
         self.edit_mode = EditMode::Creating;
     }
 
     fn edit_entry(&mut self, index: usize) {
         if let Some(entry) = self.entries.get(index) {
             self.edit_entry = entry.clone();
+            self.edit_tags = self.edit_entry.tags.join(", ");
             self.edit_mode = EditMode::Editing(index);
         }
     }
 
     fn save_entry(&mut self) {
         let now = Utc::now().to_rfc3339();
+        self.edit_entry.tags = self.edit_tags
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         match &self.edit_mode {
             EditMode::Creating => {
                 self.edit_entry.modified = now;
@@ -530,15 +540,7 @@ impl eframe::App for AskryptApp {
                             ui.text_edit_multiline(&mut self.edit_entry.notes);
 
                             ui.label("Tags (comma-separated):");
-                            let tags_str = self.edit_entry.tags.join(", ");
-                            let mut tags_input = tags_str.clone();
-                            if ui.text_edit_singleline(&mut tags_input).changed() {
-                                self.edit_entry.tags = tags_input
-                                    .split(',')
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
-                                    .collect();
-                            }
+                            ui.text_edit_singleline(&mut self.edit_tags)
                         });
 
                         ui.add_space(10.0);
@@ -569,7 +571,6 @@ impl eframe::App for AskryptApp {
                                         if !entry.url.is_empty() {
                                             ui.label(format!("URL: {}", entry.url));
                                         }
-                                        ui.label(format!("Type: {}", entry.entry_type));
                                         if !entry.tags.is_empty() {
                                             ui.label(format!("Tags: {}", entry.tags.join(", ")));
                                         }
