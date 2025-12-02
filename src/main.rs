@@ -2,6 +2,7 @@ use askrypt::{normalize_answer, AskryptFile, SecretEntry};
 use chrono::Utc;
 use eframe::egui;
 use std::path::PathBuf;
+use eframe::epaint::Color32;
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -312,6 +313,8 @@ impl AskryptApp {
     }
 }
 
+const EDIT_BG_COLOR: Color32 = Color32::LIGHT_GRAY;
+
 impl eframe::App for AskryptApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Top menu bar
@@ -395,11 +398,16 @@ impl eframe::App for AskryptApp {
                                     }
                                 }
                             });
-                            ui.text_edit_singleline(&mut self.new_questions[i]);
-                            ui.label(format!("Answer {}:", i + 1));
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.new_answers[i]).password(true),
-                            );
+
+                            ui.scope(|ui| {
+                                ui.visuals_mut().extreme_bg_color = egui::Color32::LIGHT_GRAY;
+                                ui.text_edit_singleline(&mut self.new_questions[i]);
+                                ui.label(format!("Answer {}:", i + 1));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.new_answers[i]).password(true),
+                                );
+                            });
+
                             ui.add_space(10.0);
                         }
 
@@ -443,7 +451,15 @@ impl eframe::App for AskryptApp {
                 // Show all questions
                 for i in 0..self.all_questions.len() {
                     ui.label(&self.all_questions[i]);
-                    ui.add(egui::TextEdit::singleline(&mut self.answers[i]).password(true));
+
+                    ui.scope(|ui| {
+                        ui.visuals_mut().extreme_bg_color = EDIT_BG_COLOR;
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.answers[i])
+                                .password(true)
+                        );
+                    });
+
                     ui.add_space(10.0);
                 }
 
@@ -494,33 +510,36 @@ impl eframe::App for AskryptApp {
                     })
                     .collapsible(false)
                     .show(ctx, |ui| {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.edit_entry.name);
+                        ui.scope(|ui| {
+                            ui.visuals_mut().extreme_bg_color = egui::Color32::LIGHT_GRAY;
+                            ui.label("Name:");
+                            ui.text_edit_singleline(&mut self.edit_entry.name);
 
-                        ui.label("Password/Secret:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.edit_entry.secret).password(true),
-                        );
+                            ui.label("Password/Secret:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.edit_entry.secret).password(true),
+                            );
 
-                        ui.label("URL:");
-                        ui.text_edit_singleline(&mut self.edit_entry.url);
+                            ui.label("URL:");
+                            ui.text_edit_singleline(&mut self.edit_entry.url);
 
-                        ui.label("Type:");
-                        ui.text_edit_singleline(&mut self.edit_entry.entry_type);
+                            ui.label("Type:");
+                            ui.text_edit_singleline(&mut self.edit_entry.entry_type);
 
-                        ui.label("Notes:");
-                        ui.text_edit_multiline(&mut self.edit_entry.notes);
+                            ui.label("Notes:");
+                            ui.text_edit_multiline(&mut self.edit_entry.notes);
 
-                        ui.label("Tags (comma-separated):");
-                        let tags_str = self.edit_entry.tags.join(", ");
-                        let mut tags_input = tags_str.clone();
-                        if ui.text_edit_singleline(&mut tags_input).changed() {
-                            self.edit_entry.tags = tags_input
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
-                        }
+                            ui.label("Tags (comma-separated):");
+                            let tags_str = self.edit_entry.tags.join(", ");
+                            let mut tags_input = tags_str.clone();
+                            if ui.text_edit_singleline(&mut tags_input).changed() {
+                                self.edit_entry.tags = tags_input
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                            }
+                        });
 
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
