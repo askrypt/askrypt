@@ -1,6 +1,9 @@
-use iced::widget::{button, column, container, horizontal_space, row, scrollable, text};
+use iced::widget::{
+    button, column, container, scrollable, text,
+};
 use iced::widget::{Button, Column};
-use iced::{Element, Fill, Theme};
+use iced::{alignment, Element, Fill, Theme};
+use std::path::PathBuf;
 
 pub fn main() {
     let _ = iced::application(AskryptApp::title, AskryptApp::update, AskryptApp::view)
@@ -9,13 +12,15 @@ pub fn main() {
         .run();
 }
 
-pub struct AskryptApp {}
+pub struct AskryptApp {
+    screen: Screen,
+    path: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone)]
 pub enum Message {
     OpenVault,
-    BackPressed,
-    NextPressed,
+    CreateNewVault,
 }
 
 impl AskryptApp {
@@ -25,37 +30,41 @@ impl AskryptApp {
 
     fn update(&mut self, event: Message) {
         match event {
-            Message::OpenVault => {}
-            Message::BackPressed => {}
-            Message::NextPressed => {}
+            Message::OpenVault => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Askrypt Files", &["askrypt"])
+                    .pick_file()
+                {
+                    self.screen = Screen::OpenVault;
+                    self.path = Some(path);
+                }
+            }
+            Message::CreateNewVault => {
+                self.screen = Screen::Welcome;
+            }
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let controls = row![
-            padded_button("Back").on_press(Message::BackPressed),
-            horizontal_space(),
-            padded_button("Next").on_press(Message::NextPressed)
-        ];
+        let screen = match self.screen {
+            Screen::Welcome => self.welcome(),
+            Screen::OpenVault => column![text("Open Vault Screen")],
+        };
 
-        let screen = self.welcome();
-
-        let content: Element<_> = column![screen, controls,]
-            .max_width(540)
-            .spacing(20)
-            .padding(20)
-            .into();
-
-        let scrollable = scrollable(container(content).center_x(Fill));
+        let scrollable = scrollable(container(screen).center_x(Fill));
 
         container(scrollable).center_y(Fill).into()
     }
 
     fn welcome(&self) -> Column<'_, Message> {
-        Self::container("Welcome!").push(
-            "Askrypt Password Manager \
+        Self::container("Welcome!")
+            .push(
+                "Askrypt Password Manager \
                 without the master password.",
-        )
+            )
+            .push(padded_button("Create New Vault").on_press(Message::CreateNewVault))
+            .push(padded_button("Open Existing Vault").on_press(Message::OpenVault))
+            .align_x(alignment::Horizontal::Center)
     }
 
     fn container(title: &str) -> Column<'_, Message> {
@@ -63,12 +72,21 @@ impl AskryptApp {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Welcome,
+    OpenVault,
+}
+
 fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
-    button(text(label)).padding([12, 24])
+    button(text(label)).padding([10, 20])
 }
 
 impl Default for AskryptApp {
     fn default() -> Self {
-        Self {}
+        Self {
+            screen: Screen::Welcome,
+            path: None,
+        }
     }
 }
