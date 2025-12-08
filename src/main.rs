@@ -1,14 +1,13 @@
-use iced::widget::{
-    button, column, container, scrollable, text,
-};
+use iced::widget::{button, column, container, scrollable, text};
 use iced::widget::{Button, Column};
 use iced::{alignment, Element, Fill, Theme};
 use std::path::PathBuf;
 
 pub fn main() {
-    let _ = iced::application(AskryptApp::title, AskryptApp::update, AskryptApp::view)
+    let _ = iced::application(AskryptApp::new, AskryptApp::update, AskryptApp::view)
+        .title(AskryptApp::title)
         .centered()
-        .theme(|_| Theme::Light)
+        .theme(Theme::Light)
         .run();
 }
 
@@ -24,6 +23,13 @@ pub enum Message {
 }
 
 impl AskryptApp {
+    fn new() -> Self {
+        AskryptApp {
+            screen: Screen::Welcome,
+            path: None,
+        }
+    }
+
     fn title(&self) -> String {
         String::from("Askrypt Password Manager - 0.1.0")
     }
@@ -80,13 +86,4 @@ enum Screen {
 
 fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
     button(text(label)).padding([10, 20])
-}
-
-impl Default for AskryptApp {
-    fn default() -> Self {
-        Self {
-            screen: Screen::Welcome,
-            path: None,
-        }
-    }
 }
