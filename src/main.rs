@@ -1,7 +1,7 @@
-use askrypt::AskryptFile;
+use askrypt::{AskryptFile, QuestionsData};
 use iced::widget::{button, column, container, scrollable, text, text_input};
 use iced::widget::{Button, Column};
-use iced::{alignment, Element, Fill, Theme};
+use iced::{alignment, Element, Fill, Function, Theme};
 use std::path::PathBuf;
 
 pub fn main() {
@@ -16,8 +16,10 @@ pub struct AskryptApp {
     screen: Screen,
     path: Option<PathBuf>,
     file: Option<AskryptFile>,
+    questions_data: Option<QuestionsData>,
     error_message: Option<String>,
     answer0: String,
+    answers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +28,9 @@ pub enum Message {
     CreateNewVault,
     Answer0Edited(String),
     Answer0Finished,
+    AnswerEdited(usize, String),
+    AnswerFinished(usize),
+    Unlock,
 }
 
 impl AskryptApp {
@@ -34,8 +39,10 @@ impl AskryptApp {
             screen: Screen::Welcome,
             path: None,
             file: None,
+            questions_data: None,
             error_message: None,
             answer0: String::new(),
+            answers: Vec::new(),
         }
     }
 
@@ -45,6 +52,10 @@ impl AskryptApp {
 
     fn update(&mut self, event: Message) {
         match event {
+            Message::CreateNewVault => {
+                // TODO: Implement creating a new vault
+                self.screen = Screen::Welcome;
+            }
             Message::OpenVault => {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Askrypt Files", &["askrypt"])
@@ -54,33 +65,60 @@ impl AskryptApp {
                         Ok(file) => {
                             self.path = Some(path);
                             self.file = Some(file);
-                            self.screen = Screen::OpenVault;
+                            self.screen = Screen::FirstQuestion;
                         }
                         Err(e) => self.error_message = Some(e.to_string()),
                     }
                 }
             }
-            Message::CreateNewVault => {
-                self.screen = Screen::Welcome;
-            }
             Message::Answer0Edited(value) => {
                 self.answer0 = value;
             }
             Message::Answer0Finished => {
-                println!("First answer: {}", self.answer0);                
+                match self
+                    .file
+                    .clone()
+                    .unwrap()
+                    .get_questions_data(self.answer0.to_string())
+                {
+                    Ok(questions_data) => {
+                        let questions_count = questions_data.questions.len();
+                        self.questions_data = Some(questions_data);
+                        self.screen = Screen::OtherQuestions;
+                        while self.answers.len() < questions_count {
+                            self.answers.push(String::new());
+                        }
+                    }
+                    Err(e) => self.error_message = Some(e.to_string()),
+                }
+            }
+            Message::AnswerEdited(index, value) => {
+                if let Some(answers) = self.answers.get_mut(index) {
+                    *answers = value;
+                }
+            }
+            Message::AnswerFinished(index) => {
+                let str = self.answers.get(index).cloned().unwrap_or_default();
+                println!("Finished answer: {str}");
+            }
+            Message::Unlock => {
+                println!("Unlocking vault...");
             }
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let screen = match self.screen {
+        let mut screen = match self.screen {
             Screen::Welcome => self.welcome(),
-            Screen::OpenVault => self.open_vault(),
+            Screen::FirstQuestion => self.first_question(),
+            Screen::OtherQuestions => self.other_questions(),
         };
 
-        let content = container(screen).center_x(Fill);
+        if let Some(error) = &self.error_message {
+            screen = screen.push(text(format!("Error: {}", error)).color([1.0, 0.0, 0.0]));
+        }
 
-        // TODO: Display error messages properly
+        let content = container(screen).center_x(Fill);
 
         let scrollable = scrollable(content);
 
@@ -89,17 +127,15 @@ impl AskryptApp {
 
     fn welcome(&self) -> Column<'_, Message> {
         Self::container("Welcome!")
-            .push(
-                "Askrypt Password Manager \
-                without the master password.",
-            )
+            .push("Askrypt Password Manager without the master password")
             .push(padded_button("Create New Vault").on_press(Message::CreateNewVault))
             .push(padded_button("Open Existing Vault").on_press(Message::OpenVault))
             .align_x(alignment::Horizontal::Center)
     }
 
-    fn open_vault(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Try unlock file")
+    fn first_question(&self) -> Column<'_, Message> {
+        let mut column = Self::container("Try to unlock the file")
+            .push("Answer the first security question to reveal the other questions")
             .align_x(alignment::Horizontal::Center);
 
         if let Some(path) = &self.path {
@@ -107,17 +143,51 @@ impl AskryptApp {
         }
 
         if let Some(file) = &self.file {
-            let text_input = text_input("Answer to the first question...", &self.answer0)
+            let text_input = text_input("Type the first answer...", &self.answer0)
                 .on_input(Message::Answer0Edited)
                 .on_submit(Message::Answer0Finished)
                 .padding(10)
                 .width(300)
+                .secure(true)
                 .size(15);
             column = column
-                .push(text(format!("Question: {}", file.question0)))
+                .push(text(&file.question0).size(12))
                 .push(text_input);
-        } else {
-            column = column.push(text("Failed to open vault."));
+        }
+
+        column
+    }
+
+    fn other_questions(&self) -> Column<'_, Message> {
+        let mut column = Self::container("Try to unlock the file")
+            .push("Answer the questions")
+            .align_x(alignment::Horizontal::Center);
+
+        if let Some(data) = &self.questions_data {
+            if let Some(file) = &self.file {
+                let text_input = text_input("Type the first answer...", &self.answer0)
+                    .padding(10)
+                    .width(300)
+                    .secure(true)
+                    .size(15);
+                column = column
+                    .push(text(&file.question0).size(12))
+                    .push(text_input);
+            }
+
+            for (i, question) in data.questions.iter().enumerate() {
+                column = column.push(text(question).size(12));
+                let text_input = text_input("Type the answer...", &self.answers[i])
+                    .on_input(Message::AnswerEdited.with(i))
+                    .on_submit(Message::AnswerFinished(i))
+                    .padding(10)
+                    .width(300)
+                    .secure(true)
+                    .size(15);
+                column = column.push(text_input);
+            }
+
+            column = column.push(padded_button("Unlock").on_press(Message::Unlock));
         }
 
         column
@@ -131,7 +201,8 @@ impl AskryptApp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Welcome,
-    OpenVault,
+    FirstQuestion,
+    OtherQuestions,
 }
 
 fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
