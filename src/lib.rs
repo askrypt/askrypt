@@ -751,8 +751,8 @@ mod tests {
 
     #[test]
     fn test_normalize_answer() {
-        assert_eq!(normalize_answer("Hello World"), "helloworld");
-        assert_eq!(normalize_answer("Test-Answer"), "testanswer");
+        assert_eq!(normalize_answer("Hello World?"), "helloworld?");
+        assert_eq!(normalize_answer("Test-Answer !?"), "testanswer!?");
         assert_eq!(normalize_answer("Test–Answer"), "testanswer");
         assert_eq!(normalize_answer("Test—Answer"), "testanswer");
         assert_eq!(normalize_answer("Test--—––Ans–wer "), "testanswer");
