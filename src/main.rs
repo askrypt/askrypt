@@ -1,4 +1,4 @@
-use askrypt::{AskryptFile, QuestionsData};
+use askrypt::{AskryptFile, QuestionsData, SecretEntry};
 use iced::widget::{button, column, container, scrollable, text, text_input};
 use iced::widget::{Button, Column};
 use iced::{alignment, Element, Fill, Function, Theme};
@@ -20,6 +20,7 @@ pub struct AskryptApp {
     error_message: Option<String>,
     answer0: String,
     answers: Vec<String>,
+    entries: Vec<SecretEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ impl AskryptApp {
             error_message: None,
             answer0: String::new(),
             answers: Vec::new(),
+            entries: Vec::new(),
         }
     }
 
@@ -85,6 +87,7 @@ impl AskryptApp {
                         let questions_count = questions_data.questions.len();
                         self.questions_data = Some(questions_data);
                         self.screen = Screen::OtherQuestions;
+                        self.error_message = None;
                         while self.answers.len() < questions_count {
                             self.answers.push(String::new());
                         }
@@ -96,13 +99,27 @@ impl AskryptApp {
                 if let Some(answers) = self.answers.get_mut(index) {
                     *answers = value;
                 }
+                self.error_message = None;
             }
-            Message::AnswerFinished(index) => {
-                let str = self.answers.get(index).cloned().unwrap_or_default();
-                println!("Finished answer: {str}");
+            Message::AnswerFinished(_) => {
+                self.error_message = None;
+                // TODO: focus next input field
             }
             Message::Unlock => {
-                println!("Unlocking vault...");
+                self.error_message = None;
+                let questions_data = self.questions_data.clone().unwrap();
+                match self
+                    .file
+                    .clone()
+                    .unwrap()
+                    .decrypt(questions_data, self.answers.clone())
+                {
+                    Ok(entries) => {
+                        self.entries = entries;
+                        self.screen = Screen::ShowEntries;
+                    }
+                    Err(e) => self.error_message = Some(e.to_string()),
+                }
             }
         }
     }
@@ -112,10 +129,15 @@ impl AskryptApp {
             Screen::Welcome => self.welcome(),
             Screen::FirstQuestion => self.first_question(),
             Screen::OtherQuestions => self.other_questions(),
+            Screen::ShowEntries => self.show_entries(),
         };
 
         if let Some(error) = &self.error_message {
-            screen = screen.push(text(format!("Error: {}", error)).color([1.0, 0.0, 0.0]));
+            screen = screen.push(
+                text(format!("Error: {}", error))
+                    .color([1.0, 0.0, 0.0])
+                    .size(15),
+            );
         }
 
         let content = container(screen).center_x(Fill);
@@ -149,10 +171,8 @@ impl AskryptApp {
                 .padding(10)
                 .width(300)
                 .secure(true)
-                .size(15);
-            column = column
-                .push(text(&file.question0).size(12))
-                .push(text_input);
+                .size(12);
+            column = column.push(text(&file.question0).size(15)).push(text_input);
         }
 
         column
@@ -163,31 +183,46 @@ impl AskryptApp {
             .push("Answer the questions")
             .align_x(alignment::Horizontal::Center);
 
+        if let Some(path) = &self.path {
+            column = column.push(text(format!("Vault Path: {}", path.display())));
+        }
+
         if let Some(data) = &self.questions_data {
             if let Some(file) = &self.file {
                 let text_input = text_input("Type the first answer...", &self.answer0)
                     .padding(10)
                     .width(300)
                     .secure(true)
-                    .size(15);
-                column = column
-                    .push(text(&file.question0).size(12))
-                    .push(text_input);
+                    .size(12);
+                column = column.push(text(&file.question0).size(15)).push(text_input);
             }
 
             for (i, question) in data.questions.iter().enumerate() {
-                column = column.push(text(question).size(12));
+                column = column.push(text(question).size(15));
                 let text_input = text_input("Type the answer...", &self.answers[i])
                     .on_input(Message::AnswerEdited.with(i))
                     .on_submit(Message::AnswerFinished(i))
                     .padding(10)
                     .width(300)
                     .secure(true)
-                    .size(15);
+                    .size(12);
                 column = column.push(text_input);
             }
 
             column = column.push(padded_button("Unlock").on_press(Message::Unlock));
+        }
+
+        column
+    }
+
+    fn show_entries(&self) -> Column<'_, Message> {
+        let mut column = Self::container("Password Entries")
+            .align_x(alignment::Horizontal::Center);
+        
+        for entry in &self.entries {
+            column = column.push(
+                text(format!("{}", entry.name)).size(15)
+            );
         }
 
         column
@@ -203,6 +238,7 @@ enum Screen {
     Welcome,
     FirstQuestion,
     OtherQuestions,
+    ShowEntries,
 }
 
 fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {

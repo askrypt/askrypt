@@ -13,7 +13,7 @@
 //! ## Quick Start Example
 //!
 //! ```
-//! use askrypt::{AskryptFile, SecretEntry, normalize_answer};
+//! use askrypt::{AskryptFile, SecretEntry};
 //!
 //! // Define your security questions
 //! let questions = vec![
@@ -24,9 +24,9 @@
 //!
 //! // Provide answers (they will be normalized)
 //! let answers = vec![
-//!     normalize_answer("Smith"),
-//!     normalize_answer("Fluffy"),
-//!     normalize_answer("New York"),
+//!     "Smith".to_string(),
+//!     "Fluffy".to_string(),
+//!     "New York".to_string(),
 //! ];
 //!
 //! // Create secret entries to store
@@ -48,8 +48,8 @@
 //!     questions,
 //!     answers.clone(),
 //!     secrets.clone(),
-//!     None,  // Use default iterations (600000)
-//!     None,  // Use default iterations (600000)
+//!     Some(5000),
+//!     Some(5000),
 //! ).unwrap();
 //!
 //! // Save to disk
@@ -57,7 +57,8 @@
 //!
 //! // Later, load and decrypt
 //! let loaded = AskryptFile::load_from_file("my_vault.json").unwrap();
-//! let decrypted_secrets = loaded.decrypt(answers).unwrap();
+//! let question_data = loaded.get_questions_data("Smith".into()).unwrap();
+//! let decrypted_secrets = loaded.decrypt(question_data, answers[1..].into()).unwrap();
 //!
 //! assert_eq!(decrypted_secrets, secrets);
 //! # std::fs::remove_file("my_vault.json").ok();
@@ -139,7 +140,7 @@ impl AskryptFile {
     /// # Example
     ///
     /// ```
-    /// use askrypt::{AskryptFile, SecretEntry, normalize_answer};
+    /// use askrypt::{AskryptFile, SecretEntry};
     ///
     /// let questions = vec![
     ///     "What is your mother's maiden name?".to_string(),
@@ -147,9 +148,9 @@ impl AskryptFile {
     ///     "What city were you born in?".to_string(),
     /// ];
     /// let answers = vec![
-    ///     normalize_answer("Smith"),
-    ///     normalize_answer("Fluffy"),
-    ///     normalize_answer("New York"),
+    ///     "Smith".to_string(),
+    ///     "Fluffy".to_string(),
+    ///     "New York".to_string(),
     /// ];
     /// let data = vec![
     ///     SecretEntry {
@@ -164,7 +165,7 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers, data, None, None).unwrap();
+    /// let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000), Some(6000)).unwrap();
     /// ```
     pub fn create(
         questions: Vec<String>,
@@ -185,6 +186,8 @@ impl AskryptFile {
                 return Err("Question length must not exceed 500 characters".into());
             }
         }
+
+        let answers: Vec<String> = answers.into_iter().map(|a| normalize_answer(&a)).collect();
 
         let iterations0 = iterations0.unwrap_or(600000);
         let iterations1 = iterations1.unwrap_or(600000);
@@ -260,7 +263,7 @@ impl AskryptFile {
     /// # Example
     ///
     /// ```
-    /// use askrypt::{AskryptFile, SecretEntry, normalize_answer};
+    /// use askrypt::{AskryptFile, SecretEntry };
     ///
     /// let questions = vec![
     ///     "What is your mother's maiden name?".to_string(),
@@ -268,9 +271,9 @@ impl AskryptFile {
     ///     "What city were you born in?".to_string(),
     /// ];
     /// let answers = vec![
-    ///     normalize_answer("Smith"),
-    ///     normalize_answer("Fluffy"),
-    ///     normalize_answer("New York"),
+    ///     "Smith".to_string(),
+    ///     "Fluffy".to_string(),
+    ///     "New York".to_string(),
     /// ];
     /// let data = vec![
     ///     SecretEntry {
@@ -285,28 +288,32 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), None, None).unwrap();
-    /// let decrypted_data = askrypt_file.decrypt(answers).unwrap();
+    /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), Some(6000)).unwrap();
+    /// let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
+    /// let decrypted_data = askrypt_file.decrypt(questions_data, answers[1..].into()).unwrap();
     /// assert_eq!(decrypted_data, data);
     /// ```
     pub fn decrypt(
         &self,
+        questions_data: QuestionsData,
         answers: Vec<String>,
     ) -> Result<Vec<SecretEntry>, Box<dyn std::error::Error>> {
         // Validate inputs
-        if answers.len() < 2 {
-            return Err("At least 2 answer is required".into());
+        if answers.len() < 1 {
+            return Err("At least 1 answer is required".into());
         }
 
-        // Decrypt questions data to get salt1 and iterations1
-        let questions_data: QuestionsData = self.get_questions_data(answers[0].clone())?;
+        if questions_data.questions.len() != answers.len() {
+            return Err("Number of questions and answers must match".into());
+        }
 
         // Decode salt1
         let salt1 = decode_base64(&questions_data.params.salt)?;
         let salt1_iv: [u8; 16] = salt1.try_into().map_err(|_| "Invalid salt1 length")?;
 
+        let answers: Vec<String> = answers.into_iter().map(|a| normalize_answer(&a)).collect();
         // Derive second-key from combined remaining answers and salt1
-        let combined_answers: String = answers.iter().skip(1).cloned().collect();
+        let combined_answers: String = answers.iter().cloned().collect();
         let second_key = calc_pbkdf2(
             &combined_answers,
             &salt1_iv,
@@ -351,6 +358,7 @@ impl AskryptFile {
         let salt0_iv: [u8; 16] = salt0.try_into().map_err(|_| "Invalid salt0 length")?;
 
         // Derive first-key from first answer and salt0
+        let first_answer = normalize_answer(&first_answer);
         let first_key = calc_pbkdf2(&first_answer, &salt0_iv, self.params.iterations)?;
         let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
 
@@ -861,9 +869,9 @@ mod tests {
             "What city were you born in?".to_string(),
         ];
         let answers = vec![
-            normalize_answer("Smith"),
-            normalize_answer("Fluffy"),
-            normalize_answer("New York"),
+            "Smith".to_string(),
+            "Fluffy".to_string(),
+            "New York".to_string(),
         ];
         let data = vec![SecretEntry {
             name: "example".to_string(),
@@ -876,15 +884,20 @@ mod tests {
             modified: "2024-01-01T00:00:00Z".to_string(),
         }];
 
-        let askrypt_file =
-            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), None, None)
-                .unwrap();
+        let askrypt_file = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            Some(6000),
+        )
+        .unwrap();
 
         // Verify basic structure
         assert_eq!(askrypt_file.version, "1.0");
         assert_eq!(askrypt_file.question0, questions[0]);
         assert_eq!(askrypt_file.params.kdf, "pbkdf2");
-        assert_eq!(askrypt_file.params.iterations, 600000);
+        assert_eq!(askrypt_file.params.iterations, 6000);
         assert!(!askrypt_file.params.salt.is_empty());
         assert!(!askrypt_file.qs.is_empty());
         assert!(!askrypt_file.master.is_empty());
@@ -900,15 +913,32 @@ mod tests {
 
         let result = AskryptFile::create(questions, answers, data, None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("At least 2 questions"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("At least 2 questions"));
 
         let questions = vec!["Question 1".to_string()]; // Only 1
-        let answers = vec![normalize_answer("Answer1")];
+        let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
-        
+
         let result = AskryptFile::create(questions, answers, data2, None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("At least 2 questions"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("At least 2 questions"));
+
+        let questions = vec!["Question 1".to_string(), "Question 2".to_string()];
+        let answers = vec!["Answer1".to_string()];
+        let data2 = vec![];
+
+        let result = AskryptFile::create(questions, answers, data2, None, None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Number of questions and answers must match"));
     }
 
     #[test]
@@ -920,15 +950,15 @@ mod tests {
             "Question 3".to_string(),
         ];
         let answers = vec![
-            normalize_answer("Answer1"),
-            normalize_answer("Answer2"),
-            normalize_answer("Answer3"),
+            "Answer1".to_string(),
+            "Answer2".to_string(),
+            "Answer3".to_string(),
         ];
         let data = vec![];
 
         let result = AskryptFile::create(questions, answers, data, None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("500 characters"));
+        assert!(result.unwrap_err().to_string().contains("Question length must not exceed 500 characters"));
     }
 
     #[test]
@@ -939,9 +969,9 @@ mod tests {
             "What city were you born in?".to_string(),
         ];
         let answers = vec![
-            normalize_answer("Smith"),
-            normalize_answer("Fluffy"),
-            normalize_answer("New York"),
+            "Smith".to_string(),
+            "Fluffy".to_string(),
+            "New York".to_string(),
         ];
         let original_data = vec![
             SecretEntry {
@@ -971,13 +1001,16 @@ mod tests {
             questions.clone(),
             answers.clone(),
             original_data.clone(),
-            None,
-            None,
+            Some(6000),
+            Some(6000),
         )
         .unwrap();
 
         // Decrypt and verify
-        let decrypted_data = askrypt_file.decrypt(answers.clone()).unwrap();
+        let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
+        let decrypted_data = askrypt_file
+            .decrypt(questions_data, answers[1..].into())
+            .unwrap();
         assert_eq!(decrypted_data, original_data);
     }
 
@@ -989,9 +1022,9 @@ mod tests {
             "What city were you born in?".to_string(),
         ];
         let answers = vec![
-            normalize_answer("Smith"),
-            normalize_answer("Fluffy"),
-            normalize_answer("New York"),
+            "Smith".to_string(),
+            "Fluffy".to_string(),
+            "New York".to_string(),
         ];
         let data = vec![SecretEntry {
             name: "example".to_string(),
@@ -1004,20 +1037,26 @@ mod tests {
             modified: "2024-01-01T00:00:00Z".to_string(),
         }];
 
-        let askrypt_file =
-            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), None, None)
-                .unwrap();
+        let askrypt_file = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            Some(6000),
+        )
+        .unwrap();
 
         // Try to decrypt with wrong answer
-        let wrong_answers = vec![
-            normalize_answer("WrongAnswer"),
-            normalize_answer("Fluffy"),
-            normalize_answer("New York"),
-        ];
+        let wrong_answers = vec!["Fluffy".to_string(), "New York2".to_string()];
 
-        let result = askrypt_file.decrypt(wrong_answers);
+        let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
+        let result = askrypt_file.decrypt(questions_data, wrong_answers);
         // Should fail due to wrong answer (decryption error or invalid JSON)
         assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Decryption padding error"));
     }
 
     #[test]
@@ -1030,9 +1069,9 @@ mod tests {
             "What city were you born in?".to_string(),
         ];
         let answers = vec![
-            normalize_answer("Smith"),
-            normalize_answer("Fluffy"),
-            normalize_answer("New York"),
+            "Smith".to_string(),
+            "Fluffy".to_string(),
+            "New York".to_string(),
         ];
         let data = vec![SecretEntry {
             name: "example".to_string(),
@@ -1045,9 +1084,14 @@ mod tests {
             modified: "2024-01-01T00:00:00Z".to_string(),
         }];
 
-        let askrypt_file =
-            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), None, None)
-                .unwrap();
+        let askrypt_file = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            Some(6000),
+        )
+        .unwrap();
 
         let temp_file = "test_askrypt_file.json";
 
@@ -1061,7 +1105,10 @@ mod tests {
         assert_eq!(askrypt_file, loaded_file);
 
         // Verify we can still decrypt with the loaded file
-        let decrypted_data = loaded_file.decrypt(answers).unwrap();
+        let questions_data = loaded_file.get_questions_data(answers[0].clone()).unwrap();
+        let decrypted_data = loaded_file
+            .decrypt(questions_data, answers[1..].into())
+            .unwrap();
         assert_eq!(decrypted_data, data);
 
         // Cleanup
