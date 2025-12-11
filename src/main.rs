@@ -1,7 +1,7 @@
 use askrypt::{AskryptFile, QuestionsData, SecretEntry};
-use iced::widget::{button, column, container, scrollable, text, text_input};
+use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::widget::{Button, Column};
-use iced::{alignment, Element, Fill, Function, Theme};
+use iced::{alignment, Element, Fill, Function, Length, Theme};
 use std::path::PathBuf;
 
 pub fn main() {
@@ -216,13 +216,15 @@ impl AskryptApp {
     }
 
     fn show_entries(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Password Entries")
-            .align_x(alignment::Horizontal::Center);
-        
-        for entry in &self.entries {
-            column = column.push(
-                text(format!("{}", entry.name)).size(15)
-            );
+        let mut column = Self::container("Secret entries")
+            .spacing(15).padding(20);
+
+        if self.entries.is_empty() {
+            column = column.push(text("No secret entries available"));
+        } else {
+            for entry in &self.entries {
+                column = column.push(secret_entry_widget(entry));
+            }
         }
 
         column
@@ -231,6 +233,88 @@ impl AskryptApp {
     fn container(title: &str) -> Column<'_, Message> {
         column![text(title).size(50)].spacing(20)
     }
+}
+
+/// Custom widget for displaying a SecretEntry
+pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'a, Message> {
+    let name_row = row![
+        text("Name:").width(Length::Fixed(80.0)),
+        text(&entry.name).width(Length::Fill),
+    ]
+        .spacing(10);
+
+    let secret_row = row![
+        text("Secret:").width(Length::Fixed(80.0)),
+        text("••••••••").width(Length::Fill), // Hidden for security
+    ]
+        .spacing(10);
+
+    let url_row = row![
+        text("URL:").width(Length::Fixed(80.0)),
+        text(&entry.url).width(Length::Fill),
+    ]
+        .spacing(10);
+
+    let notes_row = row![
+        text("Notes:").width(Length::Fixed(80.0)),
+        text(&entry.notes).width(Length::Fill),
+    ]
+        .spacing(10);
+
+    let type_row = row![
+        text("Type:").width(Length::Fixed(80.0)),
+        text(&entry.entry_type).width(Length::Fill),
+    ]
+        .spacing(10);
+
+    let tags_text = if entry.tags.is_empty() {
+        "None".to_string()
+    } else {
+        entry.tags.join(", ")
+    };
+    let tags_row = row![
+        text("Tags:").width(Length::Fixed(80.0)),
+        text(tags_text).width(Length::Fill),
+    ]
+        .spacing(10);
+
+    let created_row = row![
+        text("Created:").width(Length::Fixed(80.0)),
+        text(&entry.created).width(Length::Fill),
+    ]
+        .spacing(10);
+
+    let modified_row = row![
+        text("Modified:").width(Length::Fixed(80.0)),
+        text(&entry.modified).width(Length::Fill),
+    ]
+        .spacing(10);
+
+    let content = column![
+        name_row,
+        secret_row,
+        url_row,
+        notes_row,
+        type_row,
+        tags_row,
+        created_row,
+        modified_row,
+    ]
+        .spacing(8)
+        .padding(15);
+
+    container(content)
+        .style(|theme: &Theme| container::Style {
+            border: iced::Border {
+                color: theme.palette().text,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            background: Some(theme.palette().background.into()),
+            ..Default::default()
+        })
+        .width(Length::Fill)
+        .into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
