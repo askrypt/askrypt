@@ -73,7 +73,7 @@ impl AskryptApp {
                         Err(e) => {
                             eprintln!("ERROR: Failed to open vault: {}", e);
                             self.error_message = Some("Failed to open vault".into());
-                        } 
+                        }
                     }
                 }
                 operation::focus_next()
@@ -103,7 +103,7 @@ impl AskryptApp {
                         eprintln!("ERROR: The answer is incorrect: {}", e);
                         self.error_message = Some("The answer is incorrect".into());
                         Task::none()
-                    },
+                    }
                 }
             }
             Message::AnswerEdited(index, value) => {
@@ -154,15 +154,10 @@ impl AskryptApp {
         };
 
         if let Some(error) = &self.error_message {
-            screen = screen.push(
-                text(error)
-                    .color([1.0, 0.0, 0.0])
-                    .size(16)
-                    .font( Font{
-                        weight: iced::font::Weight::Bold,
-                        ..Default::default()
-                    }),
-            );
+            screen = screen.push(text(error).color([1.0, 0.0, 0.0]).size(16).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            }));
         }
 
         let content = container(screen).center_x(Fill);
@@ -241,8 +236,7 @@ impl AskryptApp {
     }
 
     fn show_entries(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Secret entries")
-            .spacing(15).padding(20);
+        let mut column = Self::container("Secret entries").spacing(15).padding(20);
 
         if self.entries.is_empty() {
             column = column.push(text("No secret entries available"));
@@ -264,37 +258,36 @@ impl AskryptApp {
 pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'a, Message> {
     let name_row = row![
         text("Name:").width(Length::Fixed(80.0)),
-        text(&entry.name).width(Length::Fill)
-        .font( Font{
+        text(&entry.name).width(Length::Fill).font(Font {
             weight: iced::font::Weight::Bold,
             ..Default::default()
         }),
     ]
-        .spacing(10);
+    .spacing(10);
 
     let secret_row = row![
         text("Secret:").width(Length::Fixed(80.0)),
         text("••••••••").width(Length::Fill), // Hidden for security
     ]
-        .spacing(10);
+    .spacing(10);
 
     let url_row = row![
         text("URL:").width(Length::Fixed(80.0)),
         text(&entry.url).width(Length::Fill),
     ]
-        .spacing(10);
+    .spacing(10);
 
     let notes_row = row![
         text("Notes:").width(Length::Fixed(80.0)),
         text(&entry.notes).width(Length::Fill),
     ]
-        .spacing(10);
+    .spacing(10);
 
     let type_row = row![
         text("Type:").width(Length::Fixed(80.0)),
         text(&entry.entry_type).width(Length::Fill),
     ]
-        .spacing(10);
+    .spacing(10);
 
     let tags_text = if entry.tags.is_empty() {
         "None".to_string()
@@ -305,19 +298,19 @@ pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'
         text("Tags:").width(Length::Fixed(80.0)),
         text(tags_text).width(Length::Fill),
     ]
-        .spacing(10);
+    .spacing(10);
 
     let created_row = row![
         text("Created:").width(Length::Fixed(80.0)),
         text(&entry.created).width(Length::Fill),
     ]
-        .spacing(10);
+    .spacing(10);
 
     let modified_row = row![
         text("Modified:").width(Length::Fixed(80.0)),
         text(&entry.modified).width(Length::Fill),
     ]
-        .spacing(10);
+    .spacing(10);
 
     let content = column![
         name_row,
@@ -329,8 +322,8 @@ pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'
         created_row,
         modified_row,
     ]
-        .spacing(8)
-        .padding(15);
+    .spacing(8)
+    .padding(15);
 
     container(content)
         .style(|theme: &Theme| container::Style {

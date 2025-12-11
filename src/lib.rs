@@ -958,7 +958,10 @@ mod tests {
 
         let result = AskryptFile::create(questions, answers, data, None, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Question length must not exceed 500 characters"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Question length must not exceed 500 characters"));
     }
 
     #[test]
