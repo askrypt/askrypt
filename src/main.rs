@@ -1,7 +1,7 @@
 use askrypt::{AskryptFile, QuestionsData, SecretEntry};
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::widget::{Button, Column};
-use iced::{alignment, Element, Fill, Function, Length, Theme};
+use iced::{alignment, Element, Fill, Font, Function, Length, Theme};
 use std::path::PathBuf;
 
 pub fn main() {
@@ -239,7 +239,11 @@ impl AskryptApp {
 pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'a, Message> {
     let name_row = row![
         text("Name:").width(Length::Fixed(80.0)),
-        text(&entry.name).width(Length::Fill),
+        text(&entry.name).width(Length::Fill)
+        .font( Font{
+            weight: iced::font::Weight::Bold,
+            ..Default::default()
+        }),
     ]
         .spacing(10);
 
