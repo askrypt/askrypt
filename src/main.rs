@@ -1,7 +1,7 @@
 use askrypt::{AskryptFile, QuestionsData, SecretEntry};
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, operation, row, scrollable, text, text_input};
 use iced::widget::{Button, Column};
-use iced::{alignment, Element, Fill, Font, Function, Length, Theme};
+use iced::{alignment, Element, Fill, Font, Function, Length, Task, Theme};
 use std::path::PathBuf;
 
 pub fn main() {
@@ -52,11 +52,12 @@ impl AskryptApp {
         String::from("Askrypt Password Manager - 0.1.0")
     }
 
-    fn update(&mut self, event: Message) {
+    fn update(&mut self, event: Message) -> Task<Message> {
         match event {
             Message::CreateNewVault => {
                 // TODO: Implement creating a new vault
                 self.screen = Screen::Welcome;
+                Task::none()
             }
             Message::OpenVault => {
                 if let Some(path) = rfd::FileDialog::new()
@@ -72,9 +73,11 @@ impl AskryptApp {
                         Err(e) => self.error_message = Some(e.to_string()),
                     }
                 }
+                operation::focus_next()
             }
             Message::Answer0Edited(value) => {
                 self.answer0 = value;
+                Task::none()
             }
             Message::Answer0Finished => {
                 match self
@@ -94,16 +97,23 @@ impl AskryptApp {
                     }
                     Err(e) => self.error_message = Some(e.to_string()),
                 }
+                operation::focus_next()
             }
             Message::AnswerEdited(index, value) => {
                 if let Some(answers) = self.answers.get_mut(index) {
                     *answers = value;
                 }
                 self.error_message = None;
+                Task::none()
             }
-            Message::AnswerFinished(_) => {
+            Message::AnswerFinished(index) => {
                 self.error_message = None;
-                // TODO: focus next input field
+                // TODO: focus next input field if not the last one otherwise click Unlock
+                if index == self.answers.len() - 1 {
+                    self.update(Message::Unlock)
+                } else {
+                    operation::focus_next()
+                }
             }
             Message::Unlock => {
                 self.error_message = None;
@@ -120,6 +130,7 @@ impl AskryptApp {
                     }
                     Err(e) => self.error_message = Some(e.to_string()),
                 }
+                Task::none()
             }
         }
     }
