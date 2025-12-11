@@ -70,7 +70,10 @@ impl AskryptApp {
                             self.file = Some(file);
                             self.screen = Screen::FirstQuestion;
                         }
-                        Err(e) => self.error_message = Some(e.to_string()),
+                        Err(e) => {
+                            eprintln!("ERROR: Failed to open vault: {}", e);
+                            self.error_message = Some("Failed to open vault".into());
+                        } 
                     }
                 }
                 operation::focus_next()
@@ -94,10 +97,14 @@ impl AskryptApp {
                         while self.answers.len() < questions_count {
                             self.answers.push(String::new());
                         }
+                        operation::focus_next()
                     }
-                    Err(e) => self.error_message = Some(e.to_string()),
+                    Err(e) => {
+                        eprintln!("ERROR: The answer is incorrect: {}", e);
+                        self.error_message = Some("The answer is incorrect".into());
+                        Task::none()
+                    },
                 }
-                operation::focus_next()
             }
             Message::AnswerEdited(index, value) => {
                 if let Some(answers) = self.answers.get_mut(index) {
@@ -128,7 +135,10 @@ impl AskryptApp {
                         self.entries = entries;
                         self.screen = Screen::ShowEntries;
                     }
-                    Err(e) => self.error_message = Some(e.to_string()),
+                    Err(e) => {
+                        eprintln!("ERROR: One or more answers are incorrect: {}", e);
+                        self.error_message = Some("One or more answers are incorrect".into());
+                    }
                 }
                 Task::none()
             }
@@ -145,9 +155,13 @@ impl AskryptApp {
 
         if let Some(error) = &self.error_message {
             screen = screen.push(
-                text(format!("Error: {}", error))
+                text(error)
                     .color([1.0, 0.0, 0.0])
-                    .size(15),
+                    .size(16)
+                    .font( Font{
+                        weight: iced::font::Weight::Bold,
+                        ..Default::default()
+                    }),
             );
         }
 
