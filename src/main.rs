@@ -18,6 +18,7 @@ pub struct AskryptApp {
     file: Option<AskryptFile>,
     questions_data: Option<QuestionsData>,
     error_message: Option<String>,
+    question0: String,
     answer0: String,
     answers: Vec<String>,
     entries: Vec<SecretEntry>,
@@ -46,6 +47,8 @@ pub enum Message {
     EntryTagsEdited(String),
     SaveEntry,
     DeleteEntry(usize),
+    Save,
+    SaveAs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +68,7 @@ impl AskryptApp {
             file: None,
             questions_data: None,
             error_message: None,
+            question0: String::new(),
             answer0: String::new(),
             answers: Vec::new(),
             entries: Vec::new(),
@@ -91,6 +95,7 @@ impl AskryptApp {
                 {
                     match AskryptFile::load_from_file(path.as_path()) {
                         Ok(file) => {
+                            self.question0 = file.question0.clone();
                             self.path = Some(path);
                             self.file = Some(file);
                             self.screen = Screen::FirstQuestion;
@@ -271,6 +276,93 @@ impl AskryptApp {
                 self.error_message = None;
                 Task::none()
             }
+            Message::Save => {
+                if let Some(path) = &self.path {
+                    // Reconstruct questions list
+                    let mut questions = vec![self.question0.clone()];
+                    if let Some(qs_data) = &self.questions_data {
+                        questions.extend(qs_data.questions.clone());
+                    }
+
+                    // Reconstruct answers list (need to normalize them)
+                    let mut all_answers = vec![self.answer0.clone()];
+                    all_answers.extend(self.answers.clone());
+
+                    // Create new AskryptFile with current entries
+                    match AskryptFile::create(
+                        questions,
+                        all_answers,
+                        self.entries.clone(),
+                        None,
+                        None,
+                    ) {
+                        Ok(new_file) => {
+                            match new_file.save_to_file(path) {
+                                Ok(_) => {
+                                    self.file = Some(new_file);
+                                    self.error_message = Some("Vault saved successfully".into());
+                                }
+                                Err(e) => {
+                                    eprintln!("ERROR: Failed to save vault: {}", e);
+                                    self.error_message = Some("Failed to save vault".into());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("ERROR: Failed to create vault: {}", e);
+                            self.error_message = Some("Failed to save vault".into());
+                        }
+                    }
+                } else {
+                    self.error_message = Some("No vault loaded".into());
+                }
+                Task::none()
+            }
+            Message::SaveAs => {
+                if let Some(new_path) = rfd::FileDialog::new()
+                    .add_filter("Askrypt Files", &["askrypt"])
+                    .set_file_name("vault.askrypt")
+                    .save_file()
+                {
+                    // Reconstruct questions list
+                    let mut questions = vec![self.question0.clone()];
+                    if let Some(qs_data) = &self.questions_data {
+                        questions.extend(qs_data.questions.clone());
+                    }
+
+                    // Reconstruct answers list
+                    let mut all_answers = vec![self.answer0.clone()];
+                    all_answers.extend(self.answers.clone());
+
+                    // Create new AskryptFile with current entries
+                    match AskryptFile::create(
+                        questions,
+                        all_answers,
+                        self.entries.clone(),
+                        None,
+                        None,
+                    ) {
+                        Ok(new_file) => {
+                            match new_file.save_to_file(&new_path) {
+                                Ok(_) => {
+                                    self.path = Some(new_path);
+                                    self.file = Some(new_file);
+                                    self.error_message = Some("Vault saved successfully".into());
+                                }
+                                Err(e) => {
+                                    eprintln!("ERROR: Failed to save vault: {}", e);
+                                    self.error_message = Some("Failed to save vault".into());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("ERROR: Failed to create vault: {}", e);
+                            self.error_message = Some("Failed to save vault".into());
+                        }
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -384,6 +476,13 @@ impl AskryptApp {
                 column = column.push(container(entry_col).width(Length::Fill));
             }
         }
+
+        let save_row = row![
+            padded_button("Save").on_press(Message::Save),
+            padded_button("Save As").on_press(Message::SaveAs),
+        ]
+        .spacing(10);
+        column = column.push(save_row);
 
         column
     }
