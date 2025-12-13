@@ -48,6 +48,15 @@ pub enum Message {
     DeleteEntry(usize),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Welcome,
+    FirstQuestion,
+    OtherQuestions,
+    ShowEntries,
+    EditEntry,
+}
+
 impl AskryptApp {
     fn new() -> Self {
         AskryptApp {
@@ -541,15 +550,6 @@ pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'
         })
         .width(Length::Fill)
         .into()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Screen {
-    Welcome,
-    FirstQuestion,
-    OtherQuestions,
-    ShowEntries,
-    EditEntry,
 }
 
 fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
