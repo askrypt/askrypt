@@ -21,6 +21,9 @@ pub struct AskryptApp {
     answer0: String,
     answers: Vec<String>,
     entries: Vec<SecretEntry>,
+    // Entry being edited (None for new entry, Some for existing/editing)
+    edited_entry_index: Option<usize>,
+    editing_entry: Option<SecretEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +35,17 @@ pub enum Message {
     AnswerEdited(usize, String),
     AnswerFinished(usize),
     Unlock,
+    AddNewEntry,
+    EditEntry(usize),
+    BackToEntries,
+    EntryNameEdited(String),
+    EntrySecretEdited(String),
+    EntryUrlEdited(String),
+    EntryNotesEdited(String),
+    EntryTypeEdited(String),
+    EntryTagsEdited(String),
+    SaveEntry,
+    DeleteEntry(usize),
 }
 
 impl AskryptApp {
@@ -45,6 +59,8 @@ impl AskryptApp {
             answer0: String::new(),
             answers: Vec::new(),
             entries: Vec::new(),
+            edited_entry_index: None,
+            editing_entry: None,
         }
     }
 
@@ -142,6 +158,110 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::AddNewEntry => {
+                self.edited_entry_index = None;
+                self.editing_entry = Some(SecretEntry {
+                    name: String::new(),
+                    secret: String::new(),
+                    url: String::new(),
+                    notes: String::new(),
+                    entry_type: "password".to_string(),
+                    tags: Vec::new(),
+                    created: chrono::Local::now().to_rfc3339(),
+                    modified: chrono::Local::now().to_rfc3339(),
+                });
+                self.screen = Screen::EditEntry;
+                self.error_message = None;
+                Task::none()
+            }
+            Message::EditEntry(index) => {
+                if let Some(entry) = self.entries.get(index) {
+                    self.edited_entry_index = Some(index);
+                    self.editing_entry = Some(entry.clone());
+                    self.screen = Screen::EditEntry;
+                    self.error_message = None;
+                }
+                Task::none()
+            }
+            Message::BackToEntries => {
+                self.screen = Screen::ShowEntries;
+                self.error_message = None;
+                Task::none()
+            }
+            Message::EntryNameEdited(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    entry.name = value;
+                }
+                Task::none()
+            }
+            Message::EntrySecretEdited(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    entry.secret = value;
+                }
+                Task::none()
+            }
+            Message::EntryUrlEdited(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    entry.url = value;
+                }
+                Task::none()
+            }
+            Message::EntryNotesEdited(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    entry.notes = value;
+                }
+                Task::none()
+            }
+            Message::EntryTypeEdited(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    entry.entry_type = value;
+                }
+                Task::none()
+            }
+            Message::EntryTagsEdited(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    // TODO: fix tag parsing
+                    entry.tags = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                Task::none()
+            }
+            Message::SaveEntry => {
+                if let Some(entry) = &self.editing_entry {
+                    if entry.name.trim().is_empty() {
+                        self.error_message = Some("Entry name cannot be empty".into());
+                        return Task::none();
+                    }
+
+                    let now = chrono::Local::now().to_rfc3339();
+                    let mut new_entry = entry.clone();
+                    new_entry.modified = now;
+
+                    if let Some(idx) = self.edited_entry_index {
+                        if idx < self.entries.len() {
+                            self.entries[idx] = new_entry;
+                        }
+                    } else {
+                        self.entries.push(new_entry);
+                    }
+
+                    self.screen = Screen::ShowEntries;
+                    self.error_message = None;
+                    self.editing_entry = None;
+                    self.edited_entry_index = None;
+                }
+                Task::none()
+            }
+            Message::DeleteEntry(index) => {
+                if index < self.entries.len() {
+                    self.entries.remove(index);
+                }
+                self.error_message = None;
+                Task::none()
+            }
         }
     }
 
@@ -151,6 +271,7 @@ impl AskryptApp {
             Screen::FirstQuestion => self.first_question(),
             Screen::OtherQuestions => self.other_questions(),
             Screen::ShowEntries => self.show_entries(),
+            Screen::EditEntry => self.edit_entry(),
         };
 
         if let Some(error) = &self.error_message {
@@ -238,13 +359,96 @@ impl AskryptApp {
     fn show_entries(&self) -> Column<'_, Message> {
         let mut column = Self::container("Secret entries").spacing(15).padding(20);
 
+        column = column.push(padded_button("Add New Entry").on_press(Message::AddNewEntry));
+
         if self.entries.is_empty() {
             column = column.push(text("No secret entries available"));
         } else {
-            for entry in &self.entries {
-                column = column.push(secret_entry_widget(entry));
+            for (index, entry) in self.entries.iter().enumerate() {
+                let mut entry_col = column![secret_entry_widget(entry)].spacing(5);
+                let button_row = row![
+                    control_button("Edit").on_press(Message::EditEntry(index)),
+                    control_button("Delete").style(button::danger).on_press(Message::DeleteEntry(index)),
+                ]
+                .spacing(10);
+                entry_col = entry_col.push(button_row);
+                column = column.push(container(entry_col).width(Length::Fill));
             }
         }
+
+        column
+    }
+
+    fn edit_entry(&self) -> Column<'_, Message> {
+        let title = if self.edited_entry_index.is_some() {
+            "Edit Entry"
+        } else {
+            "Create New Entry"
+        };
+
+        let mut column = Self::container(title);
+
+        if let Some(entry) = &self.editing_entry {
+            column = column
+                .push(text("Name:").size(14))
+                .push(
+                    text_input("Entry name (e.g., Gmail, Amazon)", &entry.name)
+                        .on_input(Message::EntryNameEdited)
+                        .padding(10)
+                        .width(400)
+                        .size(12),
+                )
+                .push(text("Secret:").size(14))
+                .push(
+                    text_input("Password or secret value", &entry.secret)
+                        .on_input(Message::EntrySecretEdited)
+                        .padding(10)
+                        .width(400)
+                        .secure(true)
+                        .size(12),
+                )
+                .push(text("URL:").size(14))
+                .push(
+                    text_input("Website URL (optional)", &entry.url)
+                        .on_input(Message::EntryUrlEdited)
+                        .padding(10)
+                        .width(400)
+                        .size(12),
+                )
+                .push(text("Notes:").size(14))
+                .push(
+                    text_input("Additional notes (optional)", &entry.notes)
+                        .on_input(Message::EntryNotesEdited)
+                        .padding(10)
+                        .width(400)
+                        .size(12),
+                )
+                .push(text("Type:").size(14))
+                .push(
+                    text_input("Entry type (e.g., password, username)", &entry.entry_type)
+                        .on_input(Message::EntryTypeEdited)
+                        .padding(10)
+                        .width(400)
+                        .size(12),
+                )
+                .push(text("Tags:").size(14))
+                .push(
+                    text_input("Tags (comma separated)", &entry.tags.join(", "))
+                        .on_input(Message::EntryTagsEdited)
+                        .padding(10)
+                        .width(400)
+                        .size(12),
+                )
+                .align_x(alignment::Horizontal::Center);
+        }
+
+        let button_row = row![
+            padded_button("Save").on_press(Message::SaveEntry),
+            padded_button("Cancel").on_press(Message::BackToEntries),
+        ]
+        .spacing(10);
+
+        column = column.push(button_row);
 
         column
     }
@@ -345,8 +549,13 @@ enum Screen {
     FirstQuestion,
     OtherQuestions,
     ShowEntries,
+    EditEntry,
 }
 
 fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
     button(text(label)).padding([10, 20])
+}
+
+fn control_button<Message: Clone>(label: &str) -> Button<'_, Message> {
+    button(text(label)).padding([5, 10])
 }
