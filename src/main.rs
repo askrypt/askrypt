@@ -50,6 +50,7 @@ pub enum Message {
     SaveEntry,
     DeleteEntry(usize),
     LockVault,
+    BackToWelcome,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,20 @@ impl AskryptApp {
                     }
                 }
                 operation::focus_next()
+            }
+            Message::BackToWelcome => {
+                self.screen = Screen::Welcome;
+                self.path = None;
+                self.file = None;
+                self.questions_data = None;
+                self.error_message = None;
+                self.question0.clear();
+                self.answer0.clear();
+                self.answers.clear();
+                self.entries.clear();
+                self.edited_entry_index = None;
+                self.editing_entry = None;
+                Task::none()
             }
             Message::Answer0Edited(value) => {
                 self.answer0 = value;
@@ -432,6 +447,13 @@ impl AskryptApp {
             column = column.push(text(&file.question0).size(15)).push(text_input);
         }
 
+        let controls = row![
+            padded_button("Unlock").on_press(Message::Answer0Finished),
+            padded_button("Back").on_press(Message::BackToWelcome),
+        ]
+        .spacing(10);
+        column = column.push(controls);
+
         column
     }
 
@@ -466,7 +488,12 @@ impl AskryptApp {
                 column = column.push(text_input);
             }
 
-            column = column.push(padded_button("Unlock").on_press(Message::UnlockVault));
+            let controls = row![
+                padded_button("Unlock").on_press(Message::UnlockVault),
+                padded_button("Back").on_press(Message::BackToWelcome),
+            ]
+            .spacing(10);
+            column = column.push(controls);
         }
 
         column
@@ -480,7 +507,8 @@ impl AskryptApp {
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
-        ].spacing(10);
+        ]
+        .spacing(10);
         column = column.push(save_row);
 
         if self.entries.is_empty() {
