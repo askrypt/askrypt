@@ -18,6 +18,7 @@ pub struct AskryptApp {
     file: Option<AskryptFile>,
     questions_data: Option<QuestionsData>,
     error_message: Option<String>,
+    success_message: Option<String>,
     question0: String,
     answer0: String,
     answers: Vec<String>,
@@ -25,12 +26,16 @@ pub struct AskryptApp {
     // Entry being edited (None for new entry, Some for existing/editing)
     edited_entry_index: Option<usize>,
     editing_entry: Option<SecretEntry>,
+    // Questions editing
+    editing_questions: Vec<String>,
+    editing_answers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     OpenVault,
     CreateNewVault,
+    EditQuestions,
     SaveVault,
     SaveVaultAs,
     Answer0Edited(String),
@@ -51,11 +56,20 @@ pub enum Message {
     DeleteEntry(usize),
     LockVault,
     BackToWelcome,
+    // Questions editing messages
+    Question0EditedInEditor(String),
+    QuestionEditedInEditor(usize, String),
+    AnswerEditedInEditor(usize, String),
+    AddQuestion,
+    DeleteQuestion(usize),
+    SaveQuestions,
+    BackFromQuestionEditor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Welcome,
+    EditQuestions,
     FirstQuestion,
     OtherQuestions,
     ShowEntries,
@@ -64,6 +78,7 @@ enum Screen {
 
 // Default number of iterations for key derivation (OWASP recommendation for 2025)
 pub const DEFAULT_ITERATIONS: u32 = 600_000;
+pub const DEFAULT_KDF: &str = "pbkdf2";
 
 impl AskryptApp {
     fn new() -> Self {
@@ -73,12 +88,15 @@ impl AskryptApp {
             file: None,
             questions_data: None,
             error_message: None,
+            success_message: None,
             question0: String::new(),
             answer0: String::new(),
             answers: Vec::new(),
             entries: Vec::new(),
             edited_entry_index: None,
             editing_entry: None,
+            editing_questions: Vec::new(),
+            editing_answers: Vec::new(),
         }
     }
 
@@ -87,10 +105,17 @@ impl AskryptApp {
     }
 
     fn update(&mut self, event: Message) -> Task<Message> {
+        self.success_message = None;
+        self.error_message = None;
+
         match event {
             Message::CreateNewVault => {
-                // TODO: Implement creating a new vault
-                self.screen = Screen::Welcome;
+                // Initialize editing state for new vault
+                self.editing_questions = vec![String::new()];
+                self.editing_answers = vec![String::new()];
+                self.path = None;
+                self.file = None;
+                self.screen = Screen::EditQuestions;
                 Task::none()
             }
             Message::OpenVault => {
@@ -119,7 +144,6 @@ impl AskryptApp {
                 self.path = None;
                 self.file = None;
                 self.questions_data = None;
-                self.error_message = None;
                 self.question0.clear();
                 self.answer0.clear();
                 self.answers.clear();
@@ -143,7 +167,6 @@ impl AskryptApp {
                         let questions_count = questions_data.questions.len();
                         self.questions_data = Some(questions_data);
                         self.screen = Screen::OtherQuestions;
-                        self.error_message = None;
                         while self.answers.len() < questions_count {
                             self.answers.push(String::new());
                         }
@@ -160,11 +183,9 @@ impl AskryptApp {
                 if let Some(answers) = self.answers.get_mut(index) {
                     *answers = value;
                 }
-                self.error_message = None;
                 Task::none()
             }
             Message::AnswerFinished(index) => {
-                self.error_message = None;
                 // TODO: focus next input field if not the last one otherwise click Unlock
                 if index == self.answers.len() - 1 {
                     self.update(Message::UnlockVault)
@@ -173,7 +194,6 @@ impl AskryptApp {
                 }
             }
             Message::UnlockVault => {
-                self.error_message = None;
                 let questions_data = self.questions_data.clone().unwrap();
                 match self
                     .file
@@ -205,7 +225,6 @@ impl AskryptApp {
                     modified: chrono::Local::now().to_rfc3339(),
                 });
                 self.screen = Screen::EditEntry;
-                self.error_message = None;
                 Task::none()
             }
             Message::EditEntry(index) => {
@@ -213,13 +232,11 @@ impl AskryptApp {
                     self.edited_entry_index = Some(index);
                     self.editing_entry = Some(entry.clone());
                     self.screen = Screen::EditEntry;
-                    self.error_message = None;
                 }
                 Task::none()
             }
             Message::BackToEntries => {
                 self.screen = Screen::ShowEntries;
-                self.error_message = None;
                 Task::none()
             }
             Message::EntryNameEdited(value) => {
@@ -283,7 +300,6 @@ impl AskryptApp {
                     }
 
                     self.screen = Screen::ShowEntries;
-                    self.error_message = None;
                     self.editing_entry = None;
                     self.edited_entry_index = None;
                 }
@@ -319,7 +335,7 @@ impl AskryptApp {
                         Ok(new_file) => match new_file.save_to_file(path) {
                             Ok(_) => {
                                 self.file = Some(new_file);
-                                self.error_message = Some("Vault saved successfully".into());
+                                self.success_message = Some("Vault saved successfully".into());
                             }
                             Err(e) => {
                                 eprintln!("ERROR: Failed to save vault: {}", e);
@@ -331,9 +347,9 @@ impl AskryptApp {
                             self.error_message = Some("Failed to save vault".into());
                         }
                     }
-                    Task::none()                    
+                    Task::none()
                 } else if self.questions_data.is_some() {
-                    self.update(Message::SaveVault)
+                    self.update(Message::SaveVaultAs)
                 } else {
                     self.error_message = Some("No vault loaded".into());
                     Task::none()
@@ -368,7 +384,7 @@ impl AskryptApp {
                             Ok(_) => {
                                 self.path = Some(new_path);
                                 self.file = Some(new_file);
-                                self.error_message = Some("Vault saved successfully".into());
+                                self.success_message = Some("Vault saved successfully".into());
                             }
                             Err(e) => {
                                 eprintln!("ERROR: Failed to save vault: {}", e);
@@ -383,13 +399,114 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::EditQuestions => {
+                if self.file.is_some() {
+                    // Editing existing vault's questions
+                    if let Some(file) = &self.file {
+                        self.editing_questions = vec![file.question0.clone()];
+                        if let Some(qs_data) = &self.questions_data {
+                            self.editing_questions.extend(qs_data.questions.clone());
+                        }
+                    }
+                    // TODO: Load existing answers for editing
+                    self.editing_answers = vec![self.answer0.clone()];
+                    self.editing_answers.extend(self.answers.clone());
+                } else {
+                    // Creating new vault
+                    if self.editing_questions.is_empty() {
+                        self.editing_questions = vec![String::new()];
+                    }
+                    if self.editing_answers.is_empty() {
+                        self.editing_answers = vec![String::new()];
+                    }
+                }
+                self.screen = Screen::EditQuestions;
+                Task::none()
+            }
+            Message::Question0EditedInEditor(value) => {
+                if !self.editing_questions.is_empty() {
+                    self.editing_questions[0] = value;
+                }
+                Task::none()
+            }
+            Message::QuestionEditedInEditor(index, value) => {
+                self.editing_questions[index] = value;
+                Task::none()
+            }
+            Message::AnswerEditedInEditor(index, value) => {
+                while self.editing_answers.len() <= index {
+                    self.editing_answers.push(String::new());
+                }
+                self.editing_answers[index] = value;
+                Task::none()
+            }
+            Message::AddQuestion => {
+                self.editing_questions.push(String::new());
+                self.editing_answers.push(String::new());
+                Task::none()
+            }
+            Message::DeleteQuestion(index) => {
+                if index < self.editing_questions.len() {
+                    self.editing_questions.remove(index);
+                    if index < self.editing_answers.len() {
+                        self.editing_answers.remove(index);
+                    }
+                }
+                Task::none()
+            }
+            Message::SaveQuestions => {
+                // Ensure that all questions and answers are filled
+                for (i, question) in self.editing_questions.iter().enumerate() {
+                    if question.trim().is_empty() {
+                        self.error_message = Some(format!("Question {} cannot be empty", i + 1));
+                        return Task::none();
+                    }
+                }
+                for (i, answer) in self.editing_answers.iter().enumerate() {
+                    if answer.trim().is_empty() {
+                        self.error_message = Some(format!("Answer {} cannot be empty", i + 1));
+                        return Task::none();
+                    }
+                }
+
+                // Set the first question and answer
+                self.question0 = self.editing_questions[0].clone();
+                self.answer0 = self.editing_answers[0].clone();
+                let params = if let Some(file) = &self.file {
+                    file.params.clone()
+                } else {
+                    askrypt::KdfParams {
+                        kdf: DEFAULT_KDF.to_string(),
+                        iterations: DEFAULT_ITERATIONS,
+                        salt: String::new(), // Salt will be generated during encryption
+                    }
+                };
+                // Set the other questions and answers
+                self.questions_data = Some(QuestionsData {
+                    questions: self.editing_questions[1..].to_vec(),
+                    params,
+                });
+                self.answers = self.editing_answers[1..].to_vec();
+
+                self.screen = Screen::ShowEntries;
+                Task::none()
+            }
+            Message::BackFromQuestionEditor => {
+                self.editing_questions.clear();
+                self.editing_answers.clear();
+                if self.questions_data.is_some() {
+                    self.screen = Screen::ShowEntries;
+                } else {
+                    self.screen = Screen::Welcome;
+                }
+                Task::none()
+            }
             Message::LockVault => {
                 self.answer0.clear();
                 self.answers.clear();
                 self.entries.clear();
                 self.questions_data = None;
                 self.screen = Screen::FirstQuestion;
-                self.error_message = None;
                 self.edited_entry_index = None;
                 self.editing_entry = None;
                 operation::focus_next()
@@ -400,6 +517,7 @@ impl AskryptApp {
     fn view(&self) -> Element<'_, Message> {
         let mut screen = match self.screen {
             Screen::Welcome => self.welcome(),
+            Screen::EditQuestions => self.edit_questions(),
             Screen::FirstQuestion => self.first_question(),
             Screen::OtherQuestions => self.other_questions(),
             Screen::ShowEntries => self.show_entries(),
@@ -407,7 +525,13 @@ impl AskryptApp {
         };
 
         if let Some(error) = &self.error_message {
-            screen = screen.push(text(error).color([1.0, 0.0, 0.0]).size(16).font(Font {
+            screen = screen.push(text(error).style(text::danger).size(16).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            }));
+        }
+        if let Some(success) = &self.success_message {
+            screen = screen.push(text(success).style(text::success).size(16).font(Font {
                 weight: iced::font::Weight::Bold,
                 ..Default::default()
             }));
@@ -426,6 +550,62 @@ impl AskryptApp {
             .push(padded_button("Create New Vault").on_press(Message::CreateNewVault))
             .push(padded_button("Open Existing Vault").on_press(Message::OpenVault))
             .align_x(alignment::Horizontal::Center)
+    }
+
+    fn edit_questions(&self) -> Column<'_, Message> {
+        let mut column = Self::container("Edit Security Questions")
+            .push("Define security questions and answers for your vault")
+            .align_x(alignment::Horizontal::Center)
+            .spacing(15);
+
+        // Additional questions
+        if self.editing_questions.len() > 0 {
+            column = column.push(text("Questions:").size(14).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            }));
+
+            for i in 0..self.editing_questions.len() {
+                let question = &self.editing_questions[i];
+                let answer = self.editing_answers.get(i).cloned().unwrap_or_default();
+
+                let delete_button = control_button("Delete")
+                    .style(button::danger)
+                    .on_press(Message::DeleteQuestion(i));
+
+                column = column
+                    .push(text(format!("Question {}:", i + 1)).size(12))
+                    .push(
+                        text_input("Enter a security question", question)
+                            .on_input(Message::QuestionEditedInEditor.with(i))
+                            .padding(10)
+                            .width(400)
+                            .size(12),
+                    )
+                    .push(text("Answer:").size(12))
+                    .push(
+                        text_input("Enter the answer", &answer)
+                            .on_input(Message::AnswerEditedInEditor.with(i))
+                            .padding(10)
+                            .width(400)
+                            .secure(true)
+                            .size(12),
+                    )
+                    .push(delete_button);
+            }
+        }
+
+        // Control buttons
+        let button_row = row![
+            padded_button("Add Question").on_press(Message::AddQuestion),
+            padded_button("Save").on_press(Message::SaveQuestions),
+            padded_button("Cancel").on_press(Message::BackFromQuestionEditor),
+        ]
+        .spacing(10);
+
+        column = column.push(button_row);
+
+        column
     }
 
     fn first_question(&self) -> Column<'_, Message> {
@@ -505,6 +685,7 @@ impl AskryptApp {
 
         let save_row = row![
             padded_button("Add New Entry").on_press(Message::AddNewEntry),
+            padded_button("Edit Questions").on_press(Message::EditQuestions),
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
