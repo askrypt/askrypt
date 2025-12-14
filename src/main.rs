@@ -302,11 +302,9 @@ impl AskryptApp {
                 {
                     // Reconstruct questions list
                     let mut questions = vec![self.question0.clone()];
-                    if let Some(qs_data) = &self.questions_data {
-                        questions.extend(qs_data.questions.clone());
-                    }
+                    questions.extend(questions_data.questions.clone());
 
-                    // Reconstruct answers list (need to normalize them)
+                    // Reconstruct answers list
                     let mut all_answers = vec![self.answer0.clone()];
                     all_answers.extend(self.answers.clone());
 
