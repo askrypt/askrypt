@@ -281,7 +281,9 @@ impl AskryptApp {
                 Task::none()
             }
             Message::SaveVault => {
-                if let (Some(path), Some(file), Some(questions_data)) = (&self.path, &self.file, &self.questions_data) {
+                if let (Some(path), Some(file), Some(questions_data)) =
+                    (&self.path, &self.file, &self.questions_data)
+                {
                     // Reconstruct questions list
                     let mut questions = vec![self.question0.clone()];
                     if let Some(qs_data) = &self.questions_data {
@@ -300,18 +302,16 @@ impl AskryptApp {
                         Some(file.params.iterations),
                         Some(questions_data.params.iterations),
                     ) {
-                        Ok(new_file) => {
-                            match new_file.save_to_file(path) {
-                                Ok(_) => {
-                                    self.file = Some(new_file);
-                                    self.error_message = Some("Vault saved successfully".into());
-                                }
-                                Err(e) => {
-                                    eprintln!("ERROR: Failed to save vault: {}", e);
-                                    self.error_message = Some("Failed to save vault".into());
-                                }
+                        Ok(new_file) => match new_file.save_to_file(path) {
+                            Ok(_) => {
+                                self.file = Some(new_file);
+                                self.error_message = Some("Vault saved successfully".into());
                             }
-                        }
+                            Err(e) => {
+                                eprintln!("ERROR: Failed to save vault: {}", e);
+                                self.error_message = Some("Failed to save vault".into());
+                            }
+                        },
                         Err(e) => {
                             eprintln!("ERROR: Failed to create vault: {}", e);
                             self.error_message = Some("Failed to save vault".into());
@@ -347,19 +347,17 @@ impl AskryptApp {
                         Some(DEFAULT_ITERATIONS),
                         Some(DEFAULT_ITERATIONS), // TODO: allow user to set this iterations
                     ) {
-                        Ok(new_file) => {
-                            match new_file.save_to_file(&new_path) {
-                                Ok(_) => {
-                                    self.path = Some(new_path);
-                                    self.file = Some(new_file);
-                                    self.error_message = Some("Vault saved successfully".into());
-                                }
-                                Err(e) => {
-                                    eprintln!("ERROR: Failed to save vault: {}", e);
-                                    self.error_message = Some("Failed to save vault".into());
-                                }
+                        Ok(new_file) => match new_file.save_to_file(&new_path) {
+                            Ok(_) => {
+                                self.path = Some(new_path);
+                                self.file = Some(new_file);
+                                self.error_message = Some("Vault saved successfully".into());
                             }
-                        }
+                            Err(e) => {
+                                eprintln!("ERROR: Failed to save vault: {}", e);
+                                self.error_message = Some("Failed to save vault".into());
+                            }
+                        },
                         Err(e) => {
                             eprintln!("ERROR: Failed to create vault: {}", e);
                             self.error_message = Some("Failed to save vault".into());
@@ -474,7 +472,9 @@ impl AskryptApp {
                 let mut entry_col = column![secret_entry_widget(entry)].spacing(5);
                 let button_row = row![
                     control_button("Edit").on_press(Message::EditEntry(index)),
-                    control_button("Delete").style(button::danger).on_press(Message::DeleteEntry(index)),
+                    control_button("Delete")
+                        .style(button::danger)
+                        .on_press(Message::DeleteEntry(index)),
                 ]
                 .spacing(10);
                 entry_col = entry_col.push(button_row);
