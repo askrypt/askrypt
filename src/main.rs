@@ -60,6 +60,9 @@ enum Screen {
     EditEntry,
 }
 
+// Default number of iterations for key derivation (OWASP recommendation for 2025)
+pub const DEFAULT_ITERATIONS: u32 = 600_000;
+
 impl AskryptApp {
     fn new() -> Self {
         AskryptApp {
@@ -277,7 +280,7 @@ impl AskryptApp {
                 Task::none()
             }
             Message::Save => {
-                if let Some(path) = &self.path {
+                if let (Some(path), Some(file), Some(questions_data)) = (&self.path, &self.file, &self.questions_data) {
                     // Reconstruct questions list
                     let mut questions = vec![self.question0.clone()];
                     if let Some(qs_data) = &self.questions_data {
@@ -293,8 +296,8 @@ impl AskryptApp {
                         questions,
                         all_answers,
                         self.entries.clone(),
-                        None,
-                        None,
+                        Some(file.params.iterations),
+                        Some(questions_data.params.iterations),
                     ) {
                         Ok(new_file) => {
                             match new_file.save_to_file(path) {
@@ -339,8 +342,8 @@ impl AskryptApp {
                         questions,
                         all_answers,
                         self.entries.clone(),
-                        None,
-                        None,
+                        Some(DEFAULT_ITERATIONS),
+                        Some(DEFAULT_ITERATIONS), // TODO: allow user to set this iterations
                     ) {
                         Ok(new_file) => {
                             match new_file.save_to_file(&new_path) {
