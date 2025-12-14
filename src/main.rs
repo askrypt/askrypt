@@ -49,6 +49,7 @@ pub enum Message {
     EntryTagsEdited(String),
     SaveEntry,
     DeleteEntry(usize),
+    LockVault,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +367,17 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::LockVault => {
+                self.answer0.clear();
+                self.answers.clear();
+                self.entries.clear();
+                self.questions_data = None;
+                self.screen = Screen::FirstQuestion;
+                self.error_message = None;
+                self.edited_entry_index = None;
+                self.editing_entry = None;
+                operation::focus_next()
+            }
         }
     }
 
@@ -463,7 +475,13 @@ impl AskryptApp {
     fn show_entries(&self) -> Column<'_, Message> {
         let mut column = Self::container("Secret entries").spacing(15).padding(20);
 
-        column = column.push(padded_button("Add New Entry").on_press(Message::AddNewEntry));
+        let save_row = row![
+            padded_button("Add New Entry").on_press(Message::AddNewEntry),
+            padded_button("Save").on_press(Message::SaveVault),
+            padded_button("Save As").on_press(Message::SaveVaultAs),
+            padded_button("Lock Vault").on_press(Message::LockVault),
+        ].spacing(10);
+        column = column.push(save_row);
 
         if self.entries.is_empty() {
             column = column.push(text("No secret entries available"));
@@ -481,13 +499,6 @@ impl AskryptApp {
                 column = column.push(container(entry_col).width(Length::Fill));
             }
         }
-
-        let save_row = row![
-            padded_button("Save").on_press(Message::SaveVault),
-            padded_button("Save As").on_press(Message::SaveVaultAs),
-        ]
-        .spacing(10);
-        column = column.push(save_row);
 
         column
     }
