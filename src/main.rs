@@ -331,10 +331,13 @@ impl AskryptApp {
                             self.error_message = Some("Failed to save vault".into());
                         }
                     }
+                    Task::none()                    
+                } else if self.questions_data.is_some() {
+                    self.update(Message::SaveVault)
                 } else {
                     self.error_message = Some("No vault loaded".into());
+                    Task::none()
                 }
-                Task::none()
             }
             Message::SaveVaultAs => {
                 if let Some(new_path) = rfd::FileDialog::new()
