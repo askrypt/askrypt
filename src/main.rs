@@ -94,6 +94,7 @@ impl AskryptApp {
             Message::OpenVault => {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Askrypt Files", &["askrypt"])
+                    .add_filter("All files", &["*"])
                     .pick_file()
                 {
                     match AskryptFile::load_from_file(path.as_path()) {
@@ -324,6 +325,7 @@ impl AskryptApp {
             Message::SaveAs => {
                 if let Some(new_path) = rfd::FileDialog::new()
                     .add_filter("Askrypt Files", &["askrypt"])
+                    .add_filter("All files", &["*"])
                     .set_file_name("vault.askrypt")
                     .save_file()
                 {
