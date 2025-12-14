@@ -31,11 +31,13 @@ pub struct AskryptApp {
 pub enum Message {
     OpenVault,
     CreateNewVault,
+    SaveVault,
+    SaveVaultAs,
     Answer0Edited(String),
     Answer0Finished,
     AnswerEdited(usize, String),
     AnswerFinished(usize),
-    Unlock,
+    UnlockVault,
     AddNewEntry,
     EditEntry(usize),
     BackToEntries,
@@ -47,8 +49,6 @@ pub enum Message {
     EntryTagsEdited(String),
     SaveEntry,
     DeleteEntry(usize),
-    Save,
-    SaveAs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,12 +151,12 @@ impl AskryptApp {
                 self.error_message = None;
                 // TODO: focus next input field if not the last one otherwise click Unlock
                 if index == self.answers.len() - 1 {
-                    self.update(Message::Unlock)
+                    self.update(Message::UnlockVault)
                 } else {
                     operation::focus_next()
                 }
             }
-            Message::Unlock => {
+            Message::UnlockVault => {
                 self.error_message = None;
                 let questions_data = self.questions_data.clone().unwrap();
                 match self
@@ -280,7 +280,7 @@ impl AskryptApp {
                 self.error_message = None;
                 Task::none()
             }
-            Message::Save => {
+            Message::SaveVault => {
                 if let (Some(path), Some(file), Some(questions_data)) = (&self.path, &self.file, &self.questions_data) {
                     // Reconstruct questions list
                     let mut questions = vec![self.question0.clone()];
@@ -322,7 +322,7 @@ impl AskryptApp {
                 }
                 Task::none()
             }
-            Message::SaveAs => {
+            Message::SaveVaultAs => {
                 if let Some(new_path) = rfd::FileDialog::new()
                     .add_filter("Askrypt Files", &["askrypt"])
                     .add_filter("All files", &["*"])
@@ -456,7 +456,7 @@ impl AskryptApp {
                 column = column.push(text_input);
             }
 
-            column = column.push(padded_button("Unlock").on_press(Message::Unlock));
+            column = column.push(padded_button("Unlock").on_press(Message::UnlockVault));
         }
 
         column
@@ -483,8 +483,8 @@ impl AskryptApp {
         }
 
         let save_row = row![
-            padded_button("Save").on_press(Message::Save),
-            padded_button("Save As").on_press(Message::SaveAs),
+            padded_button("Save").on_press(Message::SaveVault),
+            padded_button("Save As").on_press(Message::SaveVaultAs),
         ]
         .spacing(10);
         column = column.push(save_row);
