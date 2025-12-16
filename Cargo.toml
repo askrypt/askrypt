@@ -11,10 +11,7 @@ homepage = "https://github.com/askrypt/askrypt"
 repository = "https://github.com/askrypt/askrypt"
 keywords = ["password-manager", "password", "encryption", "aes", "pbkdf2"]
 categories = [
-    "accessibility",
-    "encryption",
-    "gui",
-    "password-management",
+    "cryptography",
     "security",
 ]
 
