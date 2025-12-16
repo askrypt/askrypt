@@ -237,7 +237,7 @@ impl AskryptFile {
 
         // Step 7: Create and return AskryptFile
         Ok(AskryptFile {
-            version: "1.0".to_string(),
+            version: "0.9".to_string(),
             question0: questions[0].clone(),
             params: KdfParams {
                 kdf: "pbkdf2".to_string(),
@@ -401,6 +401,10 @@ impl AskryptFile {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let json = std::fs::read_to_string(path)?;
         let askrypt_file: AskryptFile = serde_json::from_str(&json)?;
+        // TODO: Support multiple versions in future
+        if askrypt_file.version != "0.9" {
+            return Err(format!("Unsupported Askrypt file version: {}", askrypt_file.version).into());
+        }
         Ok(askrypt_file)
     }
 }
@@ -844,7 +848,7 @@ mod tests {
     #[test]
     fn test_askrypt_file_serialization() {
         let file = AskryptFile {
-            version: "1.0".to_string(),
+            version: "0.9".to_string(),
             question0: "What is your mother's maiden name?".to_string(),
             params: KdfParams {
                 kdf: "pbkdf2".to_string(),
@@ -894,7 +898,7 @@ mod tests {
         .unwrap();
 
         // Verify basic structure
-        assert_eq!(askrypt_file.version, "1.0");
+        assert_eq!(askrypt_file.version, "0.9");
         assert_eq!(askrypt_file.question0, questions[0]);
         assert_eq!(askrypt_file.params.kdf, "pbkdf2");
         assert_eq!(askrypt_file.params.iterations, 6000);
