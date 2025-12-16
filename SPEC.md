@@ -1,6 +1,6 @@
 # Askrypt format specification v1.0
 
-This document specifies the plain text format used by Askrypt for storing password entries. 
+This document specifies the JSON text format used by Askrypt for storing password entries. 
 The format is designed to be straightforward, human-readable.
 
 ## File Structure
@@ -49,8 +49,8 @@ The answer is a secret known only to the user. Questions can include spaces and 
 
 Example question:
 ```
-What is your mother's maiden name?
-What was the name of your first pet?
+What is your mother's maiden name? (bad question)
+What was the name of your first pet? (should be non-common name)
 What is the name of the street you grew up on?
 What book were you reading when you broke your leg? (Original title)
 Who taught you to play chess? (First name Last name)
@@ -60,7 +60,7 @@ You first kiss (City)
 
 ## Algorithm
 The answers are not stored in the file. But before encrypting the answers, all answers are normalized by removing all 
-whitespace characters (spaces, tabs, dashes, ...) and converting all letters to lowercase (or to special format?).
+whitespace characters (spaces, tabs), all types of dashes and converting all letters to lowercase.
 Then salt, masterKey and iv are generated at the beginning. 
 
 The salt and first answer used as input to calc_pbkdf2 (with specified iterations) 
@@ -74,4 +74,5 @@ The masterKey and iv are then encrypted by function encrypt_with_aes (AES-256) v
 
 The main secret data (list of user items) is then encrypted by function encrypt_with_aes (AES-256) via masterKey and iv.
 
-The masterKey is used because it allows changing the answers without re-encrypting all data.
+The masterKey is used because it allows changing the answers without re-encrypting all data
+(in the future for large encrypted files).
