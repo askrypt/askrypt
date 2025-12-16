@@ -2,6 +2,9 @@
 
 # Askrypt
 Password manager without master password
+
+## Status
+⚠️Askrypt is under active development and has not undergone extensive security testing. Use at your own risk.⚠️
 </div>
 
 ## Overview
