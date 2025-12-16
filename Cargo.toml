@@ -1,7 +1,22 @@
 [package]
 name = "askrypt"
+description = "Password manager without master password"
+authors = [
+    "Ruslan Absaliamov <ruslan.absalyamov@gmail.com>",
+]
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+homepage = "https://github.com/askrypt/askrypt"
+repository = "https://github.com/askrypt/askrypt"
+keywords = ["password-manager", "password", "encryption", "aes", "pbkdf2"]
+categories = [
+    "accessibility",
+    "encryption",
+    "gui",
+    "password-management",
+    "security",
+]
 
 [[bin]]
 name = "askrypt"
