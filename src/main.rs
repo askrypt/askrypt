@@ -455,6 +455,10 @@ impl AskryptApp {
                 Task::none()
             }
             Message::SaveQuestions => {
+                if self.editing_questions.len() < 2 {
+                    self.error_message = Some("At least two questions are required".to_string());
+                    return Task::none();
+                }
                 // Ensure that all questions and answers are filled
                 for (i, question) in self.editing_questions.iter().enumerate() {
                     if question.trim().is_empty() {
@@ -481,6 +485,7 @@ impl AskryptApp {
                         salt: String::new(), // Salt will be generated during encryption
                     }
                 };
+                let iterations = params.iterations;
                 // Set the other questions and answers
                 self.questions_data = Some(QuestionsData {
                     questions: self.editing_questions[1..].to_vec(),
@@ -488,7 +493,24 @@ impl AskryptApp {
                 });
                 self.answers = self.editing_answers[1..].to_vec();
 
+                match AskryptFile::create(
+                    self.editing_questions.clone(),
+                    self.editing_answers.clone(),
+                    self.entries.clone(),
+                    Some(iterations),
+                    Some(iterations),
+                ) {
+                    Ok(file) => {
+                        self.file = Some(file);
+                    }
+                    Err(_) => {
+                        self.error_message = Some("Error creating file".into());
+                    }
+                };
+                self.editing_questions.clear();
+                self.editing_answers.clear();
                 self.screen = Screen::ShowEntries;
+
                 Task::none()
             }
             Message::BackFromQuestionEditor => {
@@ -609,7 +631,7 @@ impl AskryptApp {
     }
 
     fn first_question(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Try to unlock the file")
+        let mut column = Self::container("Try to unlock the vault")
             .push("Answer the first security question to reveal the other questions")
             .align_x(alignment::Horizontal::Center);
 
@@ -617,16 +639,14 @@ impl AskryptApp {
             column = column.push(text(format!("Vault Path: {}", path.display())));
         }
 
-        if let Some(file) = &self.file {
-            let text_input = text_input("Type the first answer...", &self.answer0)
-                .on_input(Message::Answer0Edited)
-                .on_submit(Message::Answer0Finished)
-                .padding(10)
-                .width(300)
-                .secure(true)
-                .size(12);
-            column = column.push(text(&file.question0).size(15)).push(text_input);
-        }
+        let text_input = text_input("Type the first answer...", &self.answer0)
+            .on_input(Message::Answer0Edited)
+            .on_submit(Message::Answer0Finished)
+            .padding(10)
+            .width(300)
+            .secure(true)
+            .size(12);
+        column = column.push(text(&self.question0).size(15)).push(text_input);
 
         let controls = row![
             padded_button("Unlock").on_press(Message::Answer0Finished),
@@ -694,7 +714,15 @@ impl AskryptApp {
         column = column.push(save_row);
 
         if self.entries.is_empty() {
-            column = column.push(text("No secret entries available"));
+            column = column.push(
+                text("No secret entries available. Add a new entry...")
+                    .width(Length::Fill)
+                    .size(15)
+                    .font(Font {
+                        weight: iced::font::Weight::Bold,
+                        ..Default::default()
+                    }),
+            );
         } else {
             for (index, entry) in self.entries.iter().enumerate() {
                 let mut entry_col = column![secret_entry_widget(entry)].spacing(5);
