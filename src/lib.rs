@@ -403,7 +403,9 @@ impl AskryptFile {
         let askrypt_file: AskryptFile = serde_json::from_str(&json)?;
         // TODO: Support multiple versions in future
         if askrypt_file.version != "0.9" {
-            return Err(format!("Unsupported Askrypt file version: {}", askrypt_file.version).into());
+            return Err(
+                format!("Unsupported Askrypt file version: {}", askrypt_file.version).into(),
+            );
         }
         Ok(askrypt_file)
     }

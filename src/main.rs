@@ -3,7 +3,10 @@ use iced::event::{self, Event};
 use iced::keyboard::key;
 use iced::widget::{button, column, container, operation, row, scrollable, text, text_input};
 use iced::widget::{Button, Column};
-use iced::{alignment, clipboard, keyboard, Element, Fill, Font, Function, Length, Subscription, Task, Theme};
+use iced::{
+    alignment, clipboard, keyboard, Element, Fill, Font, Function, Length, Subscription, Task,
+    Theme,
+};
 use std::path::PathBuf;
 
 pub fn main() {
@@ -261,9 +264,7 @@ impl AskryptApp {
                 self.screen = Screen::ShowEntries;
                 Task::none()
             }
-            Message::FocusNext => {
-                operation::focus_next()
-            }
+            Message::FocusNext => operation::focus_next(),
             Message::EntryNameEdited(value) => {
                 if let Some(entry) = &mut self.editing_entry {
                     entry.name = value;
@@ -299,7 +300,8 @@ impl AskryptApp {
                         return Task::none();
                     }
 
-                    entry.tags = self.editing_tags
+                    entry.tags = self
+                        .editing_tags
                         .split(',')
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
@@ -571,21 +573,22 @@ impl AskryptApp {
                 Task::none()
             }
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
-                                               key: keyboard::Key::Named(key::Named::Tab),
-                                               modifiers,
-                                               ..
-                                           })) if modifiers.shift() => operation::focus_previous(),
+                key: keyboard::Key::Named(key::Named::Tab),
+                modifiers,
+                ..
+            })) if modifiers.shift() => operation::focus_previous(),
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
-                                               key: keyboard::Key::Named(key::Named::Tab),
-                                               ..
-                                           })) => operation::focus_next(),
+                key: keyboard::Key::Named(key::Named::Tab),
+                ..
+            })) => operation::focus_next(),
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
-                                               key,
-                                               modifiers,
-                                               ..
-                                           })) => {
+                key, modifiers, ..
+            })) => {
                 // TODO: handle hot key through Subscription
-                if modifiers.control() && key.as_ref() == keyboard::Key::Character("s") && self.screen == Screen::ShowEntries {
+                if modifiers.control()
+                    && key.as_ref() == keyboard::Key::Character("s")
+                    && self.screen == Screen::ShowEntries
+                {
                     self.update(Message::SaveVault)
                 } else {
                     Task::none()
@@ -865,7 +868,7 @@ impl AskryptApp {
                         .width(400)
                         .size(12),
                 )
-              // TODO: show entry type as a dropdown selection
+                // TODO: show entry type as a dropdown selection
                 .push(text("Tags:").size(14))
                 .push(
                     text_input("Tags (comma separated)", &self.editing_tags)
