@@ -1,3 +1,4 @@
+use std::cmp::PartialEq;
 use askrypt::{AskryptFile, QuestionsData, SecretEntry};
 use iced::event::{self, Event};
 use iced::keyboard::key;
@@ -125,8 +126,13 @@ impl AskryptApp {
     }
 
     fn update(&mut self, event: Message) -> Task<Message> {
-        self.success_message = None;
-        self.error_message = None;
+        if let Message::Event(_) = event {
+            // Do nothing
+        } else {
+            // Clear previous messages if message is not Message::Event
+            self.error_message = None;
+            self.success_message = None;
+        }
 
         match event {
             Message::CreateNewVault => {
@@ -332,6 +338,7 @@ impl AskryptApp {
                     self.entries.remove(index);
                 }
                 self.error_message = None;
+                self.shown_password_index = None;
                 Task::none()
             }
             Message::SaveVault => {
