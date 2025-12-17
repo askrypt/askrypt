@@ -1,9 +1,11 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Askrypt Vault Decryptor</title>
+    <!--TODO: embed jszip into the file-->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -12,7 +14,9 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    "Helvetica Neue", Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             display: flex;
@@ -105,7 +109,9 @@
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition:
+                    transform 0.2s,
+                    box-shadow 0.2s;
             margin-bottom: 10px;
         }
 
@@ -179,7 +185,7 @@
         .secret-field-value {
             color: #333;
             word-break: break-all;
-            font-family: 'Courier New', monospace;
+            font-family: "Courier New", monospace;
             background: #f9f9f9;
             padding: 6px;
             border-radius: 4px;
@@ -235,8 +241,12 @@
         }
 
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         .info-box {
@@ -284,377 +294,515 @@
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🔐 Askrypt Vault Decryptor</h1>
-        <p class="subtitle">Securely decrypt your Askrypt password vault</p>
+<div class="container">
+    <h1>🔐 Askrypt Vault Decryptor</h1>
+    <p class="subtitle">Securely decrypt your Askrypt password vault</p>
 
-        <div class="info-box">
-            💡 All decryption happens in your browser. Your passwords never leave your computer.
-        </div>
-
-        <div class="error" id="error"></div>
-        <div class="success" id="success"></div>
-        <div class="loading" id="loading"><div class="spinner"></div><p>Decrypting...</p></div>
-
-        <form id="decryptForm">
-            <div class="form-group">
-                <label for="fileInput">1. Select Askrypt JSON File</label>
-                <input type="file" id="fileInput" accept=".*" required>
-            </div>
-
-            <div class="form-group">
-                <label for="firstAnswer">2. Answer the First Security Question</label>
-                <input type="text" id="firstAnswer" placeholder="Your answer..." required>
-                <small style="color: #999; display: block; margin-top: 5px;" id="question0Display"></small>
-            </div>
-
-            <div class="questions-container" id="questionsContainer">
-                <div id="questionsInputs"></div>
-            </div>
-
-            <button type="submit" id="decryptBtn">Decrypt Vault</button>
-            <button type="button" class="secondary-btn" id="resetBtn">Reset</button>
-        </form>
-
-        <div class="results" id="results">
-            <div class="tabs">
-                <button type="button" class="tab-button active" data-tab="entries">Secrets</button>
-                <button type="button" class="tab-button" data-tab="json">JSON</button>
-            </div>
-
-            <div id="entries" class="tab-content active"></div>
-            <div id="json" class="tab-content">
-                <textarea id="jsonOutput" readonly style="min-height: 400px; font-family: 'Courier New', monospace; font-size: 12px;"></textarea>
-            </div>
-        </div>
+    <div class="info-box">
+        💡 All decryption happens in your browser. Your passwords never
+        leave your computer.
     </div>
 
-    <script>
-        class AskryptDecryptor {
-            constructor() {
-                this.vaultData = null;
-                this.questionsData = null;
-                this.secretEntries = null;
+    <div class="error" id="error"></div>
+    <div class="success" id="success"></div>
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p>Decrypting...</p>
+    </div>
+
+    <form id="decryptForm">
+        <div class="form-group">
+            <label for="fileInput"
+            >1. Select Askrypt JSON or ZIP File</label
+            >
+            <input
+                    type="file"
+                    id="fileInput"
+                    accept=".json,.zip"
+                    required
+            />
+        </div>
+
+        <div class="form-group">
+            <label for="firstAnswer"
+            >2. Answer the First Security Question</label
+            >
+            <input
+                    type="text"
+                    id="firstAnswer"
+                    placeholder="Your answer..."
+                    required
+            />
+            <small
+                    style="color: #999; display: block; margin-top: 5px"
+                    id="question0Display"
+            ></small>
+        </div>
+
+        <div class="questions-container" id="questionsContainer">
+            <div id="questionsInputs"></div>
+        </div>
+
+        <button type="submit" id="decryptBtn">Decrypt Vault</button>
+        <button type="button" class="secondary-btn" id="resetBtn">
+            Reset
+        </button>
+    </form>
+
+    <div class="results" id="results">
+        <div class="tabs">
+            <button
+                    type="button"
+                    class="tab-button active"
+                    data-tab="entries"
+            >
+                Secrets
+            </button>
+            <button type="button" class="tab-button" data-tab="json">
+                JSON
+            </button>
+        </div>
+
+        <div id="entries" class="tab-content active"></div>
+        <div id="json" class="tab-content">
+                    <textarea
+                            id="jsonOutput"
+                            readonly
+                            style="
+                            min-height: 400px;
+                            font-family: &quot;Courier New&quot;, monospace;
+                            font-size: 12px;
+                        "
+                    ></textarea>
+        </div>
+    </div>
+</div>
+
+<script>
+    class AskryptDecryptor {
+        constructor() {
+            this.vaultData = null;
+            this.questionsData = null;
+            this.secretEntries = null;
+        }
+
+        /**
+         * Normalize an answer by removing whitespace and converting to lowercase
+         */
+        normalizeAnswer(answer) {
+            return answer
+                .split("")
+                .filter((c) => !/\s|-|–|—/.test(c))
+                .join("")
+                .toLowerCase();
+        }
+
+        /**
+         * Decode base64 string to bytes
+         */
+        base64ToBytes(base64) {
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
             }
+            return bytes;
+        }
 
-            /**
-             * Normalize an answer by removing whitespace and converting to lowercase
-             */
-            normalizeAnswer(answer) {
-                return answer
-                    .split('')
-                    .filter(c => !/\s|-|–|—/.test(c))
-                    .join('')
-                    .toLowerCase();
+        /**
+         * Encode bytes to base64 string
+         */
+        bytesToBase64(bytes) {
+            let binary = "";
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
             }
+            return btoa(binary);
+        }
 
-            /**
-             * Decode base64 string to bytes
-             */
-            base64ToBytes(base64) {
-                const binaryString = atob(base64);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
-                }
-                return bytes;
+        /**
+         * Derive key using PBKDF2
+         */
+        async derivePBKDF2(secret, salt, iterations) {
+            const encoder = new TextEncoder();
+            const secretKey = await crypto.subtle.importKey(
+                "raw",
+                encoder.encode(secret),
+                "PBKDF2",
+                false,
+                ["deriveBits"],
+            );
+
+            const derivedBits = await crypto.subtle.deriveBits(
+                {
+                    name: "PBKDF2",
+                    hash: "SHA-256",
+                    salt: salt,
+                    iterations: iterations,
+                },
+                secretKey,
+                256,
+            );
+
+            return new Uint8Array(derivedBits);
+        }
+
+        /**
+         * Decrypt AES-256-CBC encrypted data
+         */
+        async decryptAES256CBC(ciphertext, key, iv) {
+            const cryptoKey = await crypto.subtle.importKey(
+                "raw",
+                key,
+                { name: "AES-CBC" },
+                false,
+                ["decrypt"],
+            );
+
+            const decrypted = await crypto.subtle.decrypt(
+                { name: "AES-CBC", iv: iv },
+                cryptoKey,
+                ciphertext,
+            );
+
+            return new Uint8Array(decrypted);
+        }
+
+        /**
+         * Remove PKCS7 padding
+         */
+        removePKCS7Padding(data) {
+            const paddingLength = data[data.length - 1];
+            if (paddingLength > 0 && paddingLength <= 16) {
+                return data.slice(0, data.length - paddingLength);
             }
+            return data;
+        }
 
-            /**
-             * Encode bytes to base64 string
-             */
-            bytesToBase64(bytes) {
-                let binary = '';
-                for (let i = 0; i < bytes.byteLength; i++) {
-                    binary += String.fromCharCode(bytes[i]);
-                }
-                return btoa(binary);
-            }
+        /**
+         * Decrypt and deserialize base64-encoded encrypted data
+         */
+        async decryptFromBase64(base64Data, key, iv) {
+            const encrypted = this.base64ToBytes(base64Data);
+            const decrypted = await this.decryptAES256CBC(
+                encrypted,
+                key,
+                iv,
+            );
+            const unpadded = this.removePKCS7Padding(decrypted);
+            const decoder = new TextDecoder();
+            const json = decoder.decode(unpadded);
+            return JSON.parse(json);
+        }
 
-            /**
-             * Derive key using PBKDF2
-             */
-            async derivePBKDF2(secret, salt, iterations) {
-                const encoder = new TextEncoder();
-                const secretKey = await crypto.subtle.importKey(
-                    'raw',
-                    encoder.encode(secret),
-                    'PBKDF2',
-                    false,
-                    ['deriveBits']
-                );
+        /**
+         * Load and parse the Askrypt JSON file or ZIP file
+         */
+        async loadVault(file) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    // Check if file is a zip
+                    const fileName = file.name.toLowerCase();
 
-                const derivedBits = await crypto.subtle.deriveBits(
-                    {
-                        name: 'PBKDF2',
-                        hash: 'SHA-256',
-                        salt: salt,
-                        iterations: iterations
-                    },
-                    secretKey,
-                    256
-                );
+                    if (fileName.endsWith(".zip")) {
+                        // Handle zip file
+                        const zip = new JSZip();
+                        const arrayBuffer = await file.arrayBuffer();
+                        const loadedZip =
+                            await zip.loadAsync(arrayBuffer);
 
-                return new Uint8Array(derivedBits);
-            }
+                        // Find the first JSON file in the zip
+                        let jsonContent = null;
+                        let foundFile = null;
 
-            /**
-             * Decrypt AES-256-CBC encrypted data
-             */
-            async decryptAES256CBC(ciphertext, key, iv) {
-                const cryptoKey = await crypto.subtle.importKey(
-                    'raw',
-                    key,
-                    { name: 'AES-CBC' },
-                    false,
-                    ['decrypt']
-                );
+                        for (const [
+                            filename,
+                            fileObj,
+                        ] of Object.entries(loadedZip.files)) {
+                            if (
+                                filename
+                                    .toLowerCase()
+                                    .endsWith(".askrypt") &&
+                                !fileObj.dir
+                            ) {
+                                jsonContent =
+                                    await fileObj.async("string");
+                                foundFile = filename;
+                                break;
+                            }
+                        }
 
-                const decrypted = await crypto.subtle.decrypt(
-                    { name: 'AES-CBC', iv: iv },
-                    cryptoKey,
-                    ciphertext
-                );
+                        if (!jsonContent) {
+                            reject(
+                                new Error(
+                                    "No Askrypt file found in the ZIP archive",
+                                ),
+                            );
+                            return;
+                        }
 
-                return new Uint8Array(decrypted);
-            }
-
-            /**
-             * Remove PKCS7 padding
-             */
-            removePKCS7Padding(data) {
-                const paddingLength = data[data.length - 1];
-                if (paddingLength > 0 && paddingLength <= 16) {
-                    return data.slice(0, data.length - paddingLength);
-                }
-                return data;
-            }
-
-            /**
-             * Decrypt and deserialize base64-encoded encrypted data
-             */
-            async decryptFromBase64(base64Data, key, iv) {
-                const encrypted = this.base64ToBytes(base64Data);
-                const decrypted = await this.decryptAES256CBC(encrypted, key, iv);
-                const unpadded = this.removePKCS7Padding(decrypted);
-                const decoder = new TextDecoder();
-                const json = decoder.decode(unpadded);
-                return JSON.parse(json);
-            }
-
-            /**
-             * Load and parse the Askrypt JSON file
-             */
-            async loadVault(file) {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
                         try {
-                            this.vaultData = JSON.parse(e.target.result);
+                            this.vaultData = JSON.parse(jsonContent);
                             resolve();
                         } catch (err) {
-                            reject(new Error('Invalid JSON file format'));
+                            reject(
+                                new Error(
+                                    `Invalid JSON file format in "${foundFile}": ${err.message}`,
+                                ),
+                            );
                         }
-                    };
-                    reader.onerror = () => reject(new Error('Failed to read file'));
-                    reader.readAsText(file);
-                });
-            }
-
-            /**
-             * Get the questions from the vault using the first answer
-             * Implements: AskryptFile::get_questions_data
-             */
-            async getQuestionsData(firstAnswer) {
-                if (!this.vaultData) {
-                    throw new Error('Vault not loaded');
-                }
-
-                try {
-                    // Decode salt0
-                    const salt0 = this.base64ToBytes(this.vaultData.params.salt);
-                    const salt0Iv = salt0;
-
-                    // Normalize and derive first key
-                    const normalizedAnswer = this.normalizeAnswer(firstAnswer);
-                    const firstKey = await this.derivePBKDF2(
-                        normalizedAnswer,
-                        salt0Iv,
-                        this.vaultData.params.iterations
-                    );
-
-                    // Decrypt questions data
-                    this.questionsData = await this.decryptFromBase64(
-                        this.vaultData.qs,
-                        firstKey,
-                        salt0Iv
-                    );
-
-                    return this.questionsData;
-                } catch (err) {
-                    throw new Error(`Failed to get questions: ${err.message}`);
-                }
-            }
-
-            /**
-             * Decrypt the vault using the provided answers
-             * Implements: AskryptFile::decrypt
-             */
-            async decrypt(answers) {
-                if (!this.questionsData) {
-                    throw new Error('Questions data not loaded');
-                }
-
-                try {
-                    if (answers.length < 1) {
-                        throw new Error('At least 1 answer is required');
+                    } else {
+                        // Handle plain JSON file
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            try {
+                                this.vaultData = JSON.parse(
+                                    e.target.result,
+                                );
+                                resolve();
+                            } catch (err) {
+                                reject(
+                                    new Error(
+                                        "Invalid JSON file format",
+                                    ),
+                                );
+                            }
+                        };
+                        reader.onerror = () =>
+                            reject(new Error("Failed to read file"));
+                        reader.readAsText(file);
                     }
-
-                    if (this.questionsData.questions.length !== answers.length) {
-                        throw new Error('Number of questions and answers must match');
-                    }
-
-                    // Decode salt1
-                    const salt1 = this.base64ToBytes(this.questionsData.params.salt);
-                    const salt1Iv = salt1;
-
-                    // Normalize answers
-                    const normalizedAnswers = answers.map(a => this.normalizeAnswer(a));
-
-                    // Combine answers and derive second key
-                    const combinedAnswers = normalizedAnswers.join('');
-                    const secondKey = await this.derivePBKDF2(
-                        combinedAnswers,
-                        salt1Iv,
-                        this.questionsData.params.iterations
-                    );
-
-                    // Decrypt master key and IV
-                    const masterData = await this.decryptFromBase64(
-                        this.vaultData.master,
-                        secondKey,
-                        salt1Iv
-                    );
-
-                    // Decode master key and IV
-                    const masterKey = this.base64ToBytes(masterData.masterKey);
-                    const masterIv = this.base64ToBytes(masterData.iv);
-
-                    // Decrypt secret data using master key and IV
-                    this.secretEntries = await this.decryptFromBase64(
-                        this.vaultData.data,
-                        masterKey,
-                        masterIv
-                    );
-
-                    return this.secretEntries;
                 } catch (err) {
-                    throw new Error(`Decryption failed: ${err.message}`);
+                    reject(
+                        new Error(
+                            `Failed to load vault: ${err.message}`,
+                        ),
+                    );
                 }
+            });
+        }
+
+        /**
+         * Get the questions from the vault using the first answer
+         * Implements: AskryptFile::get_questions_data
+         */
+        async getQuestionsData(firstAnswer) {
+            if (!this.vaultData) {
+                throw new Error("Vault not loaded");
             }
-        }
 
-        // UI Controller
-        const decryptor = new AskryptDecryptor();
-        const fileInput = document.getElementById('fileInput');
-        const firstAnswerInput = document.getElementById('firstAnswer');
-        const questionsContainer = document.getElementById('questionsContainer');
-        const questionsInputs = document.getElementById('questionsInputs');
-        const decryptBtn = document.getElementById('decryptBtn');
-        const resetBtn = document.getElementById('resetBtn');
-        const errorDiv = document.getElementById('error');
-        const successDiv = document.getElementById('success');
-        const loadingDiv = document.getElementById('loading');
-        const resultsDiv = document.getElementById('results');
-        const question0Display = document.getElementById('question0Display');
-
-        function showError(message) {
-            errorDiv.textContent = message;
-            errorDiv.classList.add('show');
-            successDiv.classList.remove('show');
-        }
-
-        function showSuccess(message) {
-            successDiv.textContent = message;
-            successDiv.classList.add('show');
-            errorDiv.classList.remove('show');
-        }
-
-        function showLoading(show) {
-            if (show) {
-                loadingDiv.classList.add('show');
-            } else {
-                loadingDiv.classList.remove('show');
-            }
-        }
-
-        fileInput.addEventListener('change', async (e) => {
-            errorDiv.classList.remove('show');
-            questionsContainer.style.display = 'none';
-            questionsInputs.innerHTML = '';
-
-            if (!fileInput.files[0]) return;
-
-            showLoading(true);
             try {
-                await decryptor.loadVault(fileInput.files[0]);
-                question0Display.textContent = `Question: ${decryptor.vaultData.question0}`;
-                showSuccess('Vault loaded successfully');
+                // Decode salt0
+                const salt0 = this.base64ToBytes(
+                    this.vaultData.params.salt,
+                );
+                const salt0Iv = salt0;
+
+                // Normalize and derive first key
+                const normalizedAnswer =
+                    this.normalizeAnswer(firstAnswer);
+                const firstKey = await this.derivePBKDF2(
+                    normalizedAnswer,
+                    salt0Iv,
+                    this.vaultData.params.iterations,
+                );
+
+                // Decrypt questions data
+                this.questionsData = await this.decryptFromBase64(
+                    this.vaultData.qs,
+                    firstKey,
+                    salt0Iv,
+                );
+
+                return this.questionsData;
             } catch (err) {
-                showError(`Error loading vault: ${err.message}`);
-            } finally {
-                showLoading(false);
+                throw new Error(
+                    `Failed to get questions: ${err.message}`,
+                );
             }
-        });
+        }
 
-        firstAnswerInput.addEventListener('blur', async () => {
-            if (!firstAnswerInput.value || !decryptor.vaultData) return;
+        /**
+         * Decrypt the vault using the provided answers
+         * Implements: AskryptFile::decrypt
+         */
+        async decrypt(answers) {
+            if (!this.questionsData) {
+                throw new Error("Questions data not loaded");
+            }
 
-            showLoading(true);
             try {
-                await decryptor.getQuestionsData(firstAnswerInput.value);
+                if (answers.length < 1) {
+                    throw new Error("At least 1 answer is required");
+                }
 
-                // Display additional questions
-                questionsInputs.innerHTML = '';
-                decryptor.questionsData.questions.forEach((question, index) => {
-                    const div = document.createElement('div');
-                    div.className = 'question-input';
+                if (
+                    this.questionsData.questions.length !==
+                    answers.length
+                ) {
+                    throw new Error(
+                        "Number of questions and answers must match",
+                    );
+                }
+
+                // Decode salt1
+                const salt1 = this.base64ToBytes(
+                    this.questionsData.params.salt,
+                );
+                const salt1Iv = salt1;
+
+                // Normalize answers
+                const normalizedAnswers = answers.map((a) =>
+                    this.normalizeAnswer(a),
+                );
+
+                // Combine answers and derive second key
+                const combinedAnswers = normalizedAnswers.join("");
+                const secondKey = await this.derivePBKDF2(
+                    combinedAnswers,
+                    salt1Iv,
+                    this.questionsData.params.iterations,
+                );
+
+                // Decrypt master key and IV
+                const masterData = await this.decryptFromBase64(
+                    this.vaultData.master,
+                    secondKey,
+                    salt1Iv,
+                );
+
+                // Decode master key and IV
+                const masterKey = this.base64ToBytes(
+                    masterData.masterKey,
+                );
+                const masterIv = this.base64ToBytes(masterData.iv);
+
+                // Decrypt secret data using master key and IV
+                this.secretEntries = await this.decryptFromBase64(
+                    this.vaultData.data,
+                    masterKey,
+                    masterIv,
+                );
+
+                return this.secretEntries;
+            } catch (err) {
+                throw new Error(`Decryption failed: ${err.message}`);
+            }
+        }
+    }
+
+    // UI Controller
+    const decryptor = new AskryptDecryptor();
+    const fileInput = document.getElementById("fileInput");
+    const firstAnswerInput = document.getElementById("firstAnswer");
+    const questionsContainer =
+        document.getElementById("questionsContainer");
+    const questionsInputs = document.getElementById("questionsInputs");
+    const decryptBtn = document.getElementById("decryptBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const errorDiv = document.getElementById("error");
+    const successDiv = document.getElementById("success");
+    const loadingDiv = document.getElementById("loading");
+    const resultsDiv = document.getElementById("results");
+    const question0Display =
+        document.getElementById("question0Display");
+
+    function showError(message) {
+        errorDiv.textContent = message;
+        errorDiv.classList.add("show");
+        successDiv.classList.remove("show");
+    }
+
+    function showSuccess(message) {
+        successDiv.textContent = message;
+        successDiv.classList.add("show");
+        errorDiv.classList.remove("show");
+    }
+
+    function showLoading(show) {
+        if (show) {
+            loadingDiv.classList.add("show");
+        } else {
+            loadingDiv.classList.remove("show");
+        }
+    }
+
+    fileInput.addEventListener("change", async (e) => {
+        errorDiv.classList.remove("show");
+        questionsContainer.style.display = "none";
+        questionsInputs.innerHTML = "";
+
+        if (!fileInput.files[0]) return;
+
+        showLoading(true);
+        try {
+            await decryptor.loadVault(fileInput.files[0]);
+            question0Display.textContent = `Question: ${decryptor.vaultData.question0}`;
+            showSuccess("Vault loaded successfully");
+        } catch (err) {
+            showError(`Error loading vault: ${err.message}`);
+        } finally {
+            showLoading(false);
+        }
+    });
+
+    firstAnswerInput.addEventListener("blur", async () => {
+        if (!firstAnswerInput.value || !decryptor.vaultData) return;
+
+        showLoading(true);
+        try {
+            await decryptor.getQuestionsData(firstAnswerInput.value);
+
+            // Display additional questions
+            questionsInputs.innerHTML = "";
+            decryptor.questionsData.questions.forEach(
+                (question, index) => {
+                    const div = document.createElement("div");
+                    div.className = "question-input";
                     div.innerHTML = `
                         <label for="answer${index}">Question ${index + 2}: ${question}</label>
                         <input type="text" id="answer${index}" placeholder="Your answer..." required>
                     `;
                     questionsInputs.appendChild(div);
-                });
+                },
+            );
 
-                questionsContainer.style.display = 'block';
-                showSuccess('Questions loaded successfully');
-            } catch (err) {
-                showError(`Error loading questions: ${err.message}`);
-                questionsContainer.style.display = 'none';
-            } finally {
-                showLoading(false);
-            }
-        });
+            questionsContainer.style.display = "block";
+            showSuccess("Questions loaded successfully");
+        } catch (err) {
+            showError(`Error loading questions: ${err.message}`);
+            questionsContainer.style.display = "none";
+        } finally {
+            showLoading(false);
+        }
+    });
 
-        document.getElementById('decryptForm').addEventListener('submit', async (e) => {
+    document
+        .getElementById("decryptForm")
+        .addEventListener("submit", async (e) => {
             e.preventDefault();
-            errorDiv.classList.remove('show');
+            errorDiv.classList.remove("show");
 
             if (!firstAnswerInput.value) {
-                showError('Please answer the first question');
+                showError("Please answer the first question");
                 return;
             }
 
             const additionalAnswers = [];
-            document.querySelectorAll('#questionsInputs input').forEach(input => {
-                if (!input.value) {
-                    showError('Please answer all questions');
-                    return;
-                }
-                additionalAnswers.push(input.value);
-            });
+            document
+                .querySelectorAll("#questionsInputs input")
+                .forEach((input) => {
+                    if (!input.value) {
+                        showError("Please answer all questions");
+                        return;
+                    }
+                    additionalAnswers.push(input.value);
+                });
 
-            if (additionalAnswers.length !== decryptor.questionsData?.questions.length) {
+            if (
+                additionalAnswers.length !==
+                decryptor.questionsData?.questions.length
+            ) {
                 return;
             }
 
@@ -665,7 +813,9 @@
 
                 // Display results
                 displayResults(secrets);
-                showSuccess(`Successfully decrypted ${secrets.length} secret(s)`);
+                showSuccess(
+                    `Successfully decrypted ${secrets.length} secret(s)`,
+                );
             } catch (err) {
                 showError(`Decryption failed: ${err.message}`);
             } finally {
@@ -673,81 +823,105 @@
             }
         });
 
-        function displayResults(secrets) {
-            const entriesDiv = document.getElementById('entries');
-            entriesDiv.innerHTML = '';
+    function displayResults(secrets) {
+        const entriesDiv = document.getElementById("entries");
+        entriesDiv.innerHTML = "";
 
-            secrets.forEach((entry, index) => {
-                const div = document.createElement('div');
-                div.className = 'secret-entry';
-                div.innerHTML = `
+        secrets.forEach((entry, index) => {
+            const div = document.createElement("div");
+            div.className = "secret-entry";
+            div.innerHTML = `
                     <h4>${index + 1}. ${entry.name}</h4>
                     <div class="secret-field">
                         <span class="secret-field-label">Type:</span>
                         <div class="secret-field-value">${entry.type}</div>
                     </div>
-                    ${entry.secret ? `
+                    ${
+                entry.secret
+                    ? `
                     <div class="secret-field">
                         <span class="secret-field-label">Secret:</span>
                         <div class="secret-field-value">${escapeHtml(entry.secret)}</div>
                     </div>
-                    ` : ''}
-                    ${entry.url ? `
+                    `
+                    : ""
+            }
+                    ${
+                entry.url
+                    ? `
                     <div class="secret-field">
                         <span class="secret-field-label">URL:</span>
                         <div class="secret-field-value"><a href="${entry.url}" target="_blank">${escapeHtml(entry.url)}</a></div>
                     </div>
-                    ` : ''}
-                    ${entry.notes ? `
+                    `
+                    : ""
+            }
+                    ${
+                entry.notes
+                    ? `
                     <div class="secret-field">
                         <span class="secret-field-label">Notes:</span>
                         <div class="secret-field-value">${escapeHtml(entry.notes)}</div>
                     </div>
-                    ` : ''}
-                    ${entry.tags && entry.tags.length ? `
+                    `
+                    : ""
+            }
+                    ${
+                entry.tags && entry.tags.length
+                    ? `
                     <div class="secret-field">
                         <span class="secret-field-label">Tags:</span>
-                        <div class="secret-field-value">${entry.tags.join(', ')}</div>
+                        <div class="secret-field-value">${entry.tags.join(", ")}</div>
                     </div>
-                    ` : ''}
+                    `
+                    : ""
+            }
                 `;
-                entriesDiv.appendChild(div);
-            });
-
-            document.getElementById('jsonOutput').value = JSON.stringify(secrets, null, 2);
-            resultsDiv.classList.add('show');
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        // Tab switching
-        document.querySelectorAll('.tab-button').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const tabName = e.target.dataset.tab;
-                document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
-                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                e.target.classList.add('active');
-                document.getElementById(tabName).classList.add('active');
-            });
+            entriesDiv.appendChild(div);
         });
 
-        resetBtn.addEventListener('click', () => {
-            fileInput.value = '';
-            firstAnswerInput.value = '';
-            questionsInputs.innerHTML = '';
-            questionsContainer.style.display = 'none';
-            resultsDiv.classList.remove('show');
-            errorDiv.classList.remove('show');
-            successDiv.classList.remove('show');
-            question0Display.textContent = '';
-            decryptor.vaultData = null;
-            decryptor.questionsData = null;
-            decryptor.secretEntries = null;
+        document.getElementById("jsonOutput").value = JSON.stringify(
+            secrets,
+            null,
+            2,
+        );
+        resultsDiv.classList.add("show");
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Tab switching
+    document.querySelectorAll(".tab-button").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+            const tabName = e.target.dataset.tab;
+            document
+                .querySelectorAll(".tab-button")
+                .forEach((b) => b.classList.remove("active"));
+            document
+                .querySelectorAll(".tab-content")
+                .forEach((c) => c.classList.remove("active"));
+            e.target.classList.add("active");
+            document.getElementById(tabName).classList.add("active");
         });
-    </script>
+    });
+
+    resetBtn.addEventListener("click", () => {
+        fileInput.value = "";
+        firstAnswerInput.value = "";
+        questionsInputs.innerHTML = "";
+        questionsContainer.style.display = "none";
+        resultsDiv.classList.remove("show");
+        errorDiv.classList.remove("show");
+        successDiv.classList.remove("show");
+        question0Display.textContent = "";
+        decryptor.vaultData = null;
+        decryptor.questionsData = null;
+        decryptor.secretEntries = null;
+    });
+</script>
 </body>
 </html>
