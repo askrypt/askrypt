@@ -1,12 +1,15 @@
 use askrypt::{AskryptFile, QuestionsData, SecretEntry};
+use iced::event::{self, Event};
+use iced::keyboard::key;
 use iced::widget::{button, column, container, operation, row, scrollable, text, text_input};
 use iced::widget::{Button, Column};
-use iced::{alignment, clipboard, Element, Fill, Font, Function, Length, Task, Theme};
+use iced::{alignment, clipboard, keyboard, Element, Fill, Font, Function, Length, Subscription, Task, Theme};
 use std::path::PathBuf;
 
 pub fn main() {
     let _ = iced::application(AskryptApp::new, AskryptApp::update, AskryptApp::view)
         .title(AskryptApp::title)
+        .subscription(AskryptApp::subscription)
         .centered()
         .theme(Theme::Light)
         .run();
@@ -71,6 +74,7 @@ pub enum Message {
     ShowPassword(usize),
     HidePassword,
     CopyPassword(usize),
+    Event(Event),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +115,10 @@ impl AskryptApp {
 
     fn title(&self) -> String {
         String::from("Askrypt Password Manager - 0.2.0")
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        event::listen().map(Message::Event)
     }
 
     fn update(&mut self, event: Message) -> Task<Message> {
@@ -562,6 +570,28 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
+                                               key: keyboard::Key::Named(key::Named::Tab),
+                                               modifiers,
+                                               ..
+                                           })) if modifiers.shift() => operation::focus_previous(),
+            Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
+                                               key: keyboard::Key::Named(key::Named::Tab),
+                                               ..
+                                           })) => operation::focus_next(),
+            Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
+                                               key,
+                                               modifiers,
+                                               ..
+                                           })) => {
+                // TODO: handle hot key through Subscription
+                if modifiers.control() && key.as_ref() == keyboard::Key::Character("s") && self.screen == Screen::ShowEntries {
+                    self.update(Message::SaveVault)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::Event(_) => Task::none(),
         }
     }
 
