@@ -1,7 +1,7 @@
 use askrypt::{AskryptFile, QuestionsData, SecretEntry};
 use iced::widget::{button, column, container, operation, row, scrollable, text, text_input};
 use iced::widget::{Button, Column};
-use iced::{alignment, Element, Fill, Font, Function, Length, Task, Theme};
+use iced::{alignment, clipboard, Element, Fill, Font, Function, Length, Task, Theme};
 use std::path::PathBuf;
 
 pub fn main() {
@@ -29,6 +29,8 @@ pub struct AskryptApp {
     // Questions editing
     editing_questions: Vec<String>,
     editing_answers: Vec<String>,
+    // Track which entry's password is being shown
+    shown_password_index: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +66,10 @@ pub enum Message {
     DeleteQuestion(usize),
     SaveQuestions,
     BackFromQuestionEditor,
+    // Password management messages
+    ShowPassword(usize),
+    HidePassword,
+    CopyPassword(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +88,7 @@ pub const DEFAULT_KDF: &str = "pbkdf2";
 
 impl AskryptApp {
     fn new() -> Self {
-        AskryptApp {
+        Self {
             screen: Screen::Welcome,
             path: None,
             file: None,
@@ -97,6 +103,7 @@ impl AskryptApp {
             editing_entry: None,
             editing_questions: Vec::new(),
             editing_answers: Vec::new(),
+            shown_password_index: None,
         }
     }
 
@@ -203,6 +210,7 @@ impl AskryptApp {
                 {
                     Ok(entries) => {
                         self.entries = entries;
+                        self.shown_password_index = None;
                         self.screen = Screen::ShowEntries;
                     }
                     Err(e) => {
@@ -236,6 +244,7 @@ impl AskryptApp {
                 Task::none()
             }
             Message::BackToEntries => {
+                self.shown_password_index = None;
                 self.screen = Screen::ShowEntries;
                 Task::none()
             }
@@ -302,6 +311,7 @@ impl AskryptApp {
                     self.screen = Screen::ShowEntries;
                     self.editing_entry = None;
                     self.edited_entry_index = None;
+                    self.shown_password_index = None;
                 }
                 Task::none()
             }
@@ -509,6 +519,7 @@ impl AskryptApp {
                 };
                 self.editing_questions.clear();
                 self.editing_answers.clear();
+                self.shown_password_index = None;
                 self.screen = Screen::ShowEntries;
 
                 Task::none()
@@ -517,6 +528,7 @@ impl AskryptApp {
                 self.editing_questions.clear();
                 self.editing_answers.clear();
                 if self.questions_data.is_some() {
+                    self.shown_password_index = None;
                     self.screen = Screen::ShowEntries;
                 } else {
                     self.screen = Screen::Welcome;
@@ -533,6 +545,21 @@ impl AskryptApp {
                 self.editing_entry = None;
                 operation::focus_next()
             }
+            Message::ShowPassword(index) => {
+                self.shown_password_index = Some(index);
+                Task::none()
+            }
+            Message::HidePassword => {
+                self.shown_password_index = None;
+                Task::none()
+            }
+            Message::CopyPassword(index) => {
+                if let Some(entry) = self.entries.get(index) {
+                    self.success_message = Some(format!("Copied password for '{}'", entry.name));
+                    return clipboard::write(entry.secret.clone());
+                }
+                Task::none()
+            }
         }
     }
 
@@ -546,6 +573,7 @@ impl AskryptApp {
             Screen::EditEntry => self.edit_entry(),
         };
 
+        // TODO: show errors and success messages as toasts
         if let Some(error) = &self.error_message {
             screen = screen.push(text(error).style(text::danger).size(16).font(Font {
                 weight: iced::font::Weight::Bold,
@@ -725,12 +753,28 @@ impl AskryptApp {
             );
         } else {
             for (index, entry) in self.entries.iter().enumerate() {
-                let mut entry_col = column![secret_entry_widget(entry)].spacing(5);
+                let mut entry_col = column![secret_entry_widget(
+                    entry,
+                    self.shown_password_index == Some(index)
+                )]
+                .spacing(5);
+                let show_button_label = if self.shown_password_index == Some(index) {
+                    "👁️Hide Password"
+                } else {
+                    "👁️Show Password"
+                };
+                let show_button_message = if self.shown_password_index == Some(index) {
+                    Message::HidePassword
+                } else {
+                    Message::ShowPassword(index)
+                };
                 let button_row = row![
-                    control_button("Edit").on_press(Message::EditEntry(index)),
-                    control_button("Delete")
+                    control_button("📝Edit").on_press(Message::EditEntry(index)),
+                    control_button("✖Delete")
                         .style(button::danger)
                         .on_press(Message::DeleteEntry(index)),
+                    control_button("📋Copy Password").on_press(Message::CopyPassword(index)),
+                    control_button(show_button_label).on_press(show_button_message),
                 ]
                 .spacing(10);
                 entry_col = entry_col.push(button_row);
@@ -821,7 +865,10 @@ impl AskryptApp {
 }
 
 /// Custom widget for displaying a SecretEntry
-pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'a, Message> {
+pub fn secret_entry_widget<'a, Message: 'a>(
+    entry: &'a SecretEntry,
+    show_password: bool,
+) -> Element<'a, Message> {
     let name_row = row![
         text("Name:").width(Length::Fixed(80.0)),
         text(&entry.name).width(Length::Fill).font(Font {
@@ -831,9 +878,14 @@ pub fn secret_entry_widget<'a, Message: 'a>(entry: &'a SecretEntry) -> Element<'
     ]
     .spacing(10);
 
+    let secret_text = if show_password {
+        entry.secret.clone()
+    } else {
+        "••••••••".to_string()
+    };
     let secret_row = row![
         text("Secret:").width(Length::Fixed(80.0)),
-        text("••••••••").width(Length::Fill), // Hidden for security
+        text(secret_text).width(Length::Fill),
     ]
     .spacing(10);
 
