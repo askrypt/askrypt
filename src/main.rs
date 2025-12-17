@@ -101,7 +101,7 @@ impl AskryptApp {
     }
 
     fn title(&self) -> String {
-        String::from("Askrypt Password Manager - 0.1.0")
+        String::from("Askrypt Password Manager - 0.2.0")
     }
 
     fn update(&mut self, event: Message) -> Task<Message> {
