@@ -26,6 +26,7 @@ pub struct AskryptApp {
     // Entry being edited (None for new entry, Some for existing/editing)
     edited_entry_index: Option<usize>,
     editing_entry: Option<SecretEntry>,
+    editing_tags: String,
     // Questions editing
     editing_questions: Vec<String>,
     editing_answers: Vec<String>,
@@ -48,11 +49,11 @@ pub enum Message {
     AddNewEntry,
     EditEntry(usize),
     BackToEntries,
+    FocusNext,
     EntryNameEdited(String),
     EntrySecretEdited(String),
     EntryUrlEdited(String),
     EntryNotesEdited(String),
-    EntryTypeEdited(String),
     EntryTagsEdited(String),
     SaveEntry,
     DeleteEntry(usize),
@@ -101,6 +102,7 @@ impl AskryptApp {
             entries: Vec::new(),
             edited_entry_index: None,
             editing_entry: None,
+            editing_tags: String::new(),
             editing_questions: Vec::new(),
             editing_answers: Vec::new(),
             shown_password_index: None,
@@ -193,7 +195,6 @@ impl AskryptApp {
                 Task::none()
             }
             Message::AnswerFinished(index) => {
-                // TODO: focus next input field if not the last one otherwise click Unlock
                 if index == self.answers.len() - 1 {
                     self.update(Message::UnlockVault)
                 } else {
@@ -232,21 +233,28 @@ impl AskryptApp {
                     created: chrono::Local::now().to_rfc3339(),
                     modified: chrono::Local::now().to_rfc3339(),
                 });
+                self.editing_tags = String::new();
                 self.screen = Screen::EditEntry;
-                Task::none()
+                operation::focus_next()
             }
             Message::EditEntry(index) => {
                 if let Some(entry) = self.entries.get(index) {
                     self.edited_entry_index = Some(index);
                     self.editing_entry = Some(entry.clone());
+                    self.editing_tags = entry.tags.join(", ");
                     self.screen = Screen::EditEntry;
+                    operation::focus_next()
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::BackToEntries => {
                 self.shown_password_index = None;
                 self.screen = Screen::ShowEntries;
                 Task::none()
+            }
+            Message::FocusNext => {
+                operation::focus_next()
             }
             Message::EntryNameEdited(value) => {
                 if let Some(entry) = &mut self.editing_entry {
@@ -272,29 +280,22 @@ impl AskryptApp {
                 }
                 Task::none()
             }
-            Message::EntryTypeEdited(value) => {
-                if let Some(entry) = &mut self.editing_entry {
-                    entry.entry_type = value;
-                }
-                Task::none()
-            }
             Message::EntryTagsEdited(value) => {
-                if let Some(entry) = &mut self.editing_entry {
-                    // TODO: fix tag parsing
-                    entry.tags = value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
+                self.editing_tags = value;
                 Task::none()
             }
             Message::SaveEntry => {
-                if let Some(entry) = &self.editing_entry {
+                if let Some(entry) = &mut self.editing_entry {
                     if entry.name.trim().is_empty() {
                         self.error_message = Some("Entry name cannot be empty".into());
                         return Task::none();
                     }
+
+                    entry.tags = self.editing_tags
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
 
                     let now = chrono::Local::now().to_rfc3339();
                     let mut new_entry = entry.clone();
@@ -311,6 +312,7 @@ impl AskryptApp {
                     self.screen = Screen::ShowEntries;
                     self.editing_entry = None;
                     self.edited_entry_index = None;
+                    self.editing_tags = String::new();
                     self.shown_password_index = None;
                 }
                 Task::none()
@@ -800,6 +802,7 @@ impl AskryptApp {
                 .push(
                     text_input("Entry name (e.g., Gmail, Amazon)", &entry.name)
                         .on_input(Message::EntryNameEdited)
+                        .on_submit(Message::FocusNext)
                         .padding(10)
                         .width(400)
                         .size(12),
@@ -808,6 +811,7 @@ impl AskryptApp {
                 .push(
                     text_input("Password or secret value", &entry.secret)
                         .on_input(Message::EntrySecretEdited)
+                        .on_submit(Message::FocusNext)
                         .padding(10)
                         .width(400)
                         .secure(true)
@@ -817,6 +821,7 @@ impl AskryptApp {
                 .push(
                     text_input("Website URL (optional)", &entry.url)
                         .on_input(Message::EntryUrlEdited)
+                        .on_submit(Message::FocusNext)
                         .padding(10)
                         .width(400)
                         .size(12),
@@ -825,22 +830,17 @@ impl AskryptApp {
                 .push(
                     text_input("Additional notes (optional)", &entry.notes)
                         .on_input(Message::EntryNotesEdited)
+                        .on_submit(Message::FocusNext)
                         .padding(10)
                         .width(400)
                         .size(12),
                 )
-                .push(text("Type:").size(14))
-                .push(
-                    text_input("Entry type (e.g., password, username)", &entry.entry_type)
-                        .on_input(Message::EntryTypeEdited)
-                        .padding(10)
-                        .width(400)
-                        .size(12),
-                )
+              // TODO: show entry type as a dropdown selection
                 .push(text("Tags:").size(14))
                 .push(
-                    text_input("Tags (comma separated)", &entry.tags.join(", "))
+                    text_input("Tags (comma separated)", &self.editing_tags)
                         .on_input(Message::EntryTagsEdited)
+                        .on_submit(Message::SaveEntry)
                         .padding(10)
                         .width(400)
                         .size(12),
@@ -901,11 +901,7 @@ pub fn secret_entry_widget<'a, Message: 'a>(
     ]
     .spacing(10);
 
-    let type_row = row![
-        text("Type:").width(Length::Fixed(80.0)),
-        text(&entry.entry_type).width(Length::Fill),
-    ]
-    .spacing(10);
+    // TODO: show entry type as a dropdown selection or icon
 
     let tags_text = if entry.tags.is_empty() {
         "None".to_string()
@@ -935,7 +931,6 @@ pub fn secret_entry_widget<'a, Message: 'a>(
         secret_row,
         url_row,
         notes_row,
-        type_row,
         tags_row,
         created_row,
         modified_row,
