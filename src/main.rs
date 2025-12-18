@@ -792,7 +792,7 @@ impl AskryptApp {
 
         let controls = row![
             padded_button("Unlock").on_press(Message::Answer0Finished),
-            padded_button("Back").on_press(Message::BackToWelcome),
+            padded_button("Main menu").on_press(Message::BackToWelcome),
         ]
             .spacing(10);
         column = column.push(controls);
@@ -833,7 +833,7 @@ impl AskryptApp {
 
             let controls = row![
                 padded_button("Unlock").on_press(Message::UnlockVault),
-                padded_button("Back").on_press(Message::BackToWelcome),
+                padded_button("Cancel").on_press(Message::BackToWelcome),
             ]
                 .spacing(10);
             column = column.push(controls);
