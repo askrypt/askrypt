@@ -11,7 +11,18 @@ use std::cmp::PartialEq;
 use std::path::PathBuf;
 
 pub fn main() {
-    let _ = iced::application(AskryptApp::new, AskryptApp::update, AskryptApp::view)
+    let args: Vec<String> = std::env::args().collect();
+    let vault_path = if args.len() > 1 {
+        Some(PathBuf::from(&args[1]))
+    } else {
+        None
+    };
+
+    let _ = iced::application(
+        move || AskryptApp::new(vault_path.clone()),
+        AskryptApp::update,
+        AskryptApp::view,
+    )
         .title(AskryptApp::title)
         .subscription(AskryptApp::subscription)
         .centered()
@@ -96,8 +107,8 @@ pub const DEFAULT_ITERATIONS: u32 = 600_000;
 pub const DEFAULT_KDF: &str = "pbkdf2";
 
 impl AskryptApp {
-    fn new() -> Self {
-        Self {
+    fn new(vault_path: Option<PathBuf>) -> Self {
+        let mut app = Self {
             screen: Screen::Welcome,
             path: None,
             file: None,
@@ -114,7 +125,26 @@ impl AskryptApp {
             editing_questions: Vec::new(),
             editing_answers: Vec::new(),
             shown_password_index: None,
+        };
+
+        // Load vault from program argument if provided
+        if let Some(path) = vault_path {
+            match AskryptFile::load_from_file(path.as_path()) {
+                Ok(file) => {
+                    app.question0 = file.question0.clone();
+                    app.path = Some(path);
+                    app.file = Some(file);
+                    app.screen = Screen::FirstQuestion;
+                    // TODO: Focus on the first answer input
+                }
+                Err(e) => {
+                    eprintln!("ERROR: Failed to open vault from arguments: {}", e);
+                    app.error_message = Some("Failed to open vault".into());
+                }
+            }
         }
+
+        app
     }
 
     fn title(&self) -> String {
