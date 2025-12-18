@@ -3,7 +3,9 @@
 use askrypt::{encode_base64, generate_salt, AskryptFile, QuestionsData, SecretEntry};
 use iced::event::{self, Event};
 use iced::keyboard::key;
-use iced::widget::{button, column, container, operation, row, scrollable, text, text_input};
+use iced::widget::{
+    button, column, container, operation, row, scrollable, text, text_input, tooltip,
+};
 use iced::widget::{Button, Column};
 use iced::{
     alignment, clipboard, keyboard, Element, Fill, Font, Function, Length, Subscription, Task,
@@ -52,6 +54,8 @@ pub struct AskryptApp {
     editing_answers: Vec<String>,
     // Track which entry's password is being shown
     shown_password_index: Option<usize>,
+    // Track which question answer is being shown in edit questions screen
+    shown_question_answer_index: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +94,8 @@ pub enum Message {
     // Password management messages
     ShowPassword(usize),
     HidePassword,
+    ShowQuestionAnswer(usize),
+    HideQuestionAnswer,
     CopyPassword(usize),
     Event(Event),
 }
@@ -127,6 +133,7 @@ impl AskryptApp {
             editing_questions: Vec::new(),
             editing_answers: Vec::new(),
             shown_password_index: None,
+            shown_question_answer_index: None,
         };
 
         // Load vault from program argument if provided
@@ -570,12 +577,21 @@ impl AskryptApp {
             Message::BackFromQuestionEditor => {
                 self.editing_questions.clear();
                 self.editing_answers.clear();
+                self.shown_question_answer_index = None;
                 if self.questions_data.is_some() {
                     self.shown_password_index = None;
                     self.screen = Screen::ShowEntries;
                 } else {
                     self.screen = Screen::Welcome;
                 }
+                Task::none()
+            }
+            Message::ShowQuestionAnswer(index) => {
+                self.shown_question_answer_index = Some(index);
+                Task::none()
+            }
+            Message::HideQuestionAnswer => {
+                self.shown_question_answer_index = None;
                 Task::none()
             }
             Message::LockVault => {
@@ -684,10 +700,25 @@ impl AskryptApp {
             for i in 0..self.editing_questions.len() {
                 let question = &self.editing_questions[i];
                 let answer = self.editing_answers.get(i).cloned().unwrap_or_default();
+                let is_answer_shown = self.shown_question_answer_index == Some(i);
 
                 let delete_button = control_button("Delete")
                     .style(button::danger)
                     .on_press(Message::DeleteQuestion(i));
+
+                let toggle_button = if is_answer_shown {
+                    tooltip(
+                        button(text("👁️")).on_press(Message::HideQuestionAnswer),
+                        "Hide Answer",
+                        tooltip::Position::Top,
+                    )
+                } else {
+                    tooltip(
+                        button(text("👁️")).on_press(Message::ShowQuestionAnswer(i)),
+                        "Show Answer",
+                        tooltip::Position::Top,
+                    )
+                };
 
                 column = column
                     .push(text(format!("Question {}:", i + 1)).size(12))
@@ -700,12 +731,17 @@ impl AskryptApp {
                     )
                     .push(text("Answer:").size(12))
                     .push(
-                        text_input("Enter the answer", &answer)
-                            .on_input(Message::AnswerEditedInEditor.with(i))
-                            .padding(10)
-                            .width(400)
-                            .secure(true)
-                            .size(12),
+                        row![
+                            text_input("Enter the answer", &answer)
+                                .on_input(Message::AnswerEditedInEditor.with(i))
+                                .padding(10)
+                                .width(350)
+                                .secure(!is_answer_shown)
+                                .size(12),
+                            toggle_button,
+                        ]
+                            .spacing(10)
+                            .align_y(alignment::Vertical::Center),
                     )
                     .push(delete_button);
             }
