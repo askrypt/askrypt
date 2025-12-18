@@ -49,7 +49,6 @@
 //!     answers.clone(),
 //!     secrets.clone(),
 //!     Some(5000),
-//!     Some(5000),
 //! ).unwrap();
 //!
 //! // Save to disk
@@ -100,7 +99,8 @@ pub struct KdfParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuestionsData {
     pub questions: Vec<String>,
-    pub params: KdfParams,
+    // sal1 - used to derive a second_key
+    pub salt: String,
 }
 
 /// Represents the encrypted master key and IV
@@ -130,8 +130,7 @@ impl AskryptFile {
     /// * `questions` - A vector of at least 2 questions
     /// * `answers` - A vector of normalized answers (must be pre-normalized, same length as questions)
     /// * `secret_data` - A vector of SecretEntry items to encrypt
-    /// * `iterations0` - Optional iterations for first KDF (default: 600000)
-    /// * `iterations1` - Optional iterations for second KDF (default: 600000)
+    /// * `iterations` - Optional iterations for first KDF (default: 600000)
     ///
     /// # Returns
     ///
@@ -165,14 +164,13 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000), Some(6000)).unwrap();
+    /// let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000)).unwrap();
     /// ```
     pub fn create(
         questions: Vec<String>,
         answers: Vec<String>,
         secret_data: Vec<SecretEntry>,
-        iterations0: Option<u32>,
-        iterations1: Option<u32>,
+        iterations: Option<u32>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Validate inputs
         if questions.len() < 2 {
@@ -189,8 +187,7 @@ impl AskryptFile {
 
         let answers: Vec<String> = answers.into_iter().map(|a| normalize_answer(&a)).collect();
 
-        let iterations0 = iterations0.unwrap_or(600000);
-        let iterations1 = iterations1.unwrap_or(600000);
+        let iterations = iterations.unwrap_or(600000);
 
         // Step 1: Generate random values
         let salt0 = generate_salt(16);
@@ -199,7 +196,7 @@ impl AskryptFile {
         let iv_bytes = generate_salt(16);
 
         // Step 2: Derive first-key from first answer and salt0
-        let first_key = calc_pbkdf2(&answers[0], &salt0, iterations0)?;
+        let first_key = calc_pbkdf2(&answers[0], &salt0, iterations)?;
         let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
         let salt0_iv: [u8; 16] = salt0.clone().try_into().map_err(|_| "Invalid IV length")?;
 
@@ -207,17 +204,13 @@ impl AskryptFile {
         let remaining_questions: Vec<String> = questions.iter().skip(1).cloned().collect();
         let questions_data = QuestionsData {
             questions: remaining_questions,
-            params: KdfParams {
-                kdf: "pbkdf2".to_string(),
-                iterations: iterations1,
-                salt: encode_base64(&salt1),
-            },
+            salt: encode_base64(&salt1),
         };
         let qs = encrypt_to_base64(&questions_data, &first_key_array, &salt0_iv)?;
 
         // Step 4: Derive second-key from combined remaining answers and salt1
         let combined_answers: String = answers.iter().skip(1).cloned().collect();
-        let second_key = calc_pbkdf2(&combined_answers, &salt1, iterations1)?;
+        let second_key = calc_pbkdf2(&combined_answers, &salt1, iterations)?;
         let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
         let salt1_iv: [u8; 16] = salt1.clone().try_into().map_err(|_| "Invalid IV length")?;
 
@@ -241,7 +234,7 @@ impl AskryptFile {
             question0: questions[0].clone(),
             params: KdfParams {
                 kdf: "pbkdf2".to_string(),
-                iterations: iterations0,
+                iterations,
                 salt: encode_base64(&salt0),
             },
             qs,
@@ -288,7 +281,7 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), Some(6000)).unwrap();
+    /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000)).unwrap();
     /// let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
     /// let decrypted_data = askrypt_file.decrypt(questions_data, answers[1..].into()).unwrap();
     /// assert_eq!(decrypted_data, data);
@@ -308,17 +301,13 @@ impl AskryptFile {
         }
 
         // Decode salt1
-        let salt1 = decode_base64(&questions_data.params.salt)?;
+        let salt1 = decode_base64(&questions_data.salt)?;
         let salt1_iv: [u8; 16] = salt1.try_into().map_err(|_| "Invalid salt1 length")?;
 
         let answers: Vec<String> = answers.into_iter().map(|a| normalize_answer(&a)).collect();
         // Derive second-key from combined remaining answers and salt1
         let combined_answers: String = answers.iter().cloned().collect();
-        let second_key = calc_pbkdf2(
-            &combined_answers,
-            &salt1_iv,
-            questions_data.params.iterations,
-        )?;
+        let second_key = calc_pbkdf2(&combined_answers, &salt1_iv, self.params.iterations)?;
         let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
 
         // Decrypt master key and IV using second-key and salt1
@@ -774,11 +763,7 @@ mod tests {
     fn test_encrypt_decrypt_to_base64() {
         let data = QuestionsData {
             questions: vec!["Question 2".to_string(), "Question 3".to_string()],
-            params: KdfParams {
-                iterations: 600000,
-                salt: "test_salt".to_string(),
-                kdf: "pbkdf2".to_string(),
-            },
+            salt: "test_salt".to_string(),
         };
         let key = [0x42; 32];
         let iv = [0x24; 16];
@@ -830,11 +815,7 @@ mod tests {
     fn test_questions_data_serialization() {
         let qs = QuestionsData {
             questions: vec!["Question 1".to_string(), "Question 2".to_string()],
-            params: KdfParams {
-                kdf: "pbkdf2".to_string(),
-                iterations: 100000,
-                salt: "test-salt1".to_string(),
-            },
+            salt: "test-salt1".to_string(),
         };
 
         let json = serde_json::to_string(&qs).unwrap();
@@ -842,8 +823,7 @@ mod tests {
         assert_eq!(qs, deserialized);
 
         // Verify JSON has correct field names
-        assert!(json.contains("\"kdf\""));
-        assert!(json.contains("\"iterations\""));
+        assert!(json.contains("\"questions\""));
         assert!(json.contains("\"salt\""));
     }
 
@@ -890,14 +870,9 @@ mod tests {
             modified: "2024-01-01T00:00:00Z".to_string(),
         }];
 
-        let askrypt_file = AskryptFile::create(
-            questions.clone(),
-            answers.clone(),
-            data.clone(),
-            Some(6000),
-            Some(6000),
-        )
-        .unwrap();
+        let askrypt_file =
+            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), Some(6000))
+                .unwrap();
 
         // Verify basic structure
         assert_eq!(askrypt_file.version, "0.9");
@@ -917,7 +892,7 @@ mod tests {
         let answers = vec![];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None, None);
+        let result = AskryptFile::create(questions, answers, data, None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -928,7 +903,7 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None, None);
+        let result = AskryptFile::create(questions, answers, data2, None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -939,7 +914,7 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None, None);
+        let result = AskryptFile::create(questions, answers, data2, None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -962,7 +937,7 @@ mod tests {
         ];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None, None);
+        let result = AskryptFile::create(questions, answers, data, None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -1011,9 +986,8 @@ mod tests {
             answers.clone(),
             original_data.clone(),
             Some(6000),
-            Some(6000),
         )
-        .unwrap();
+            .unwrap();
 
         // Decrypt and verify
         let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
@@ -1046,14 +1020,9 @@ mod tests {
             modified: "2024-01-01T00:00:00Z".to_string(),
         }];
 
-        let askrypt_file = AskryptFile::create(
-            questions.clone(),
-            answers.clone(),
-            data.clone(),
-            Some(6000),
-            Some(6000),
-        )
-        .unwrap();
+        let askrypt_file =
+            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), Some(6000))
+                .unwrap();
 
         // Try to decrypt with wrong answer
         let wrong_answers = vec!["Fluffy".to_string(), "New York2".to_string()];
@@ -1093,14 +1062,9 @@ mod tests {
             modified: "2024-01-01T00:00:00Z".to_string(),
         }];
 
-        let askrypt_file = AskryptFile::create(
-            questions.clone(),
-            answers.clone(),
-            data.clone(),
-            Some(6000),
-            Some(6000),
-        )
-        .unwrap();
+        let askrypt_file =
+            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), Some(6000))
+                .unwrap();
 
         let temp_file = "test_askrypt_file.json";
 

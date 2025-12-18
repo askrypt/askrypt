@@ -13,10 +13,7 @@ An Askrypt file is a JSON with the following fields:
   * `salt` - base64 encoded salt, 16 bytes (string)
 * `qs` - base64 encoded encrypted data (string, json), which encrypted by first answer: 
   * `questions` - the rest of the questions
-  * `params` (second-level kdf parameters):
-    * `kdf` - key derivation function used (string, default: "pbkdf2")
-    * `iterations` - iterations count (integer)
-    * `salt` - base64 encoded salt, 16 bytes (string)
+  * `salt` - base64 encoded salt, 16 bytes (string)
 * `master` - base64 encoded encrypted master key (string, json), which includes:
   * `masterKey` - base64 encoded encrypted master key (string), used to encrypt/decrypt data
   * `iv` - base64 encoded initialization vector (string)
@@ -65,14 +62,14 @@ Then salt, masterKey and iv are generated at the beginning.
 
 The salt and first answer used as input to calc_pbkdf2 (with specified iterations) 
 function to derive the encryption key - named **first-key** (32 bytes).
-All other questions and second-level KDF parameters (iterations, salt, kdf) are then encrypted by function encrypt_with_aes (AES-256) via first-key and salt (as IV).
+All other questions and second-level salt are then encrypted by function encrypt_with_aes (AES-256) via first-key and salt (as IV).
 
 All normalized answers (from second to the last), salt and kdf are then used as input to calc_pbkdf2 (with specified iterations) 
 function to derive the encryption key - named **second-key** (32 bytes).
 
 The masterKey and iv are then encrypted by function encrypt_with_aes (AES-256) via second-key and salt (as IV).
 
-The main secret data (list of user items) is then encrypted by function encrypt_with_aes (AES-256) via masterKey and iv.
+The main secret data (list of user secret entry) is then encrypted by function encrypt_with_aes (AES-256) via masterKey and iv.
 
-The masterKey is used because it allows changing the answers without re-encrypting all data
+The masterKey (+salt) is used because it allows changing the answers without re-encrypting all data
 (in the future for large encrypted files).

@@ -1,5 +1,4 @@
-use std::cmp::PartialEq;
-use askrypt::{AskryptFile, QuestionsData, SecretEntry};
+use askrypt::{encode_base64, generate_salt, AskryptFile, QuestionsData, SecretEntry};
 use iced::event::{self, Event};
 use iced::keyboard::key;
 use iced::widget::{button, column, container, operation, row, scrollable, text, text_input};
@@ -8,6 +7,7 @@ use iced::{
     alignment, clipboard, keyboard, Element, Fill, Font, Function, Length, Subscription, Task,
     Theme,
 };
+use std::cmp::PartialEq;
 use std::path::PathBuf;
 
 pub fn main() {
@@ -359,7 +359,6 @@ impl AskryptApp {
                         all_answers,
                         self.entries.clone(),
                         Some(file.params.iterations),
-                        Some(questions_data.params.iterations),
                     ) {
                         Ok(new_file) => match new_file.save_to_file(path) {
                             Ok(_) => {
@@ -406,7 +405,6 @@ impl AskryptApp {
                         questions,
                         all_answers,
                         self.entries.clone(),
-                        Some(DEFAULT_ITERATIONS),
                         Some(DEFAULT_ITERATIONS), // TODO: allow user to set this iterations
                     ) {
                         Ok(new_file) => match new_file.save_to_file(&new_path) {
@@ -505,20 +503,15 @@ impl AskryptApp {
                 // Set the first question and answer
                 self.question0 = self.editing_questions[0].clone();
                 self.answer0 = self.editing_answers[0].clone();
-                let params = if let Some(file) = &self.file {
-                    file.params.clone()
+                let iterations = if let Some(file) = &self.file {
+                    file.params.iterations
                 } else {
-                    askrypt::KdfParams {
-                        kdf: DEFAULT_KDF.to_string(),
-                        iterations: DEFAULT_ITERATIONS,
-                        salt: String::new(), // Salt will be generated during encryption
-                    }
+                    DEFAULT_ITERATIONS
                 };
-                let iterations = params.iterations;
                 // Set the other questions and answers
                 self.questions_data = Some(QuestionsData {
                     questions: self.editing_questions[1..].to_vec(),
-                    params,
+                    salt: encode_base64(&generate_salt(16)),
                 });
                 self.answers = self.editing_answers[1..].to_vec();
 
@@ -526,7 +519,6 @@ impl AskryptApp {
                     self.editing_questions.clone(),
                     self.editing_answers.clone(),
                     self.entries.clone(),
-                    Some(iterations),
                     Some(iterations),
                 ) {
                     Ok(file) => {
@@ -580,17 +572,17 @@ impl AskryptApp {
                 Task::none()
             }
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
-                key: keyboard::Key::Named(key::Named::Tab),
-                modifiers,
-                ..
-            })) if modifiers.shift() => operation::focus_previous(),
+                                               key: keyboard::Key::Named(key::Named::Tab),
+                                               modifiers,
+                                               ..
+                                           })) if modifiers.shift() => operation::focus_previous(),
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
-                key: keyboard::Key::Named(key::Named::Tab),
-                ..
-            })) => operation::focus_next(),
+                                               key: keyboard::Key::Named(key::Named::Tab),
+                                               ..
+                                           })) => operation::focus_next(),
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
-                key, modifiers, ..
-            })) => {
+                                               key, modifiers, ..
+                                           })) => {
                 // TODO: handle hot key through Subscription
                 if modifiers.control()
                     && key.as_ref() == keyboard::Key::Character("s")
@@ -693,7 +685,7 @@ impl AskryptApp {
             padded_button("Save").on_press(Message::SaveQuestions),
             padded_button("Cancel").on_press(Message::BackFromQuestionEditor),
         ]
-        .spacing(10);
+            .spacing(10);
 
         column = column.push(button_row);
 
@@ -722,7 +714,7 @@ impl AskryptApp {
             padded_button("Unlock").on_press(Message::Answer0Finished),
             padded_button("Back").on_press(Message::BackToWelcome),
         ]
-        .spacing(10);
+            .spacing(10);
         column = column.push(controls);
 
         column
@@ -763,7 +755,7 @@ impl AskryptApp {
                 padded_button("Unlock").on_press(Message::UnlockVault),
                 padded_button("Back").on_press(Message::BackToWelcome),
             ]
-            .spacing(10);
+                .spacing(10);
             column = column.push(controls);
         }
 
@@ -780,7 +772,7 @@ impl AskryptApp {
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
         ]
-        .spacing(10);
+            .spacing(10);
         column = column.push(save_row);
 
         if self.entries.is_empty() {
@@ -799,7 +791,7 @@ impl AskryptApp {
                     entry,
                     self.shown_password_index == Some(index)
                 )]
-                .spacing(5);
+                    .spacing(5);
                 let show_button_label = if self.shown_password_index == Some(index) {
                     "👁️Hide Password"
                 } else {
@@ -818,7 +810,7 @@ impl AskryptApp {
                     control_button("📋Copy Password").on_press(Message::CopyPassword(index)),
                     control_button(show_button_label).on_press(show_button_message),
                 ]
-                .spacing(10);
+                    .spacing(10);
                 entry_col = entry_col.push(button_row);
                 column = column.push(container(entry_col).width(Length::Fill));
             }
@@ -892,7 +884,7 @@ impl AskryptApp {
             padded_button("Save").on_press(Message::SaveEntry),
             padded_button("Cancel").on_press(Message::BackToEntries),
         ]
-        .spacing(10);
+            .spacing(10);
 
         column = column.push(button_row);
 
@@ -916,7 +908,7 @@ pub fn secret_entry_widget<'a, Message: 'a>(
             ..Default::default()
         }),
     ]
-    .spacing(10);
+        .spacing(10);
 
     let secret_text = if show_password {
         entry.secret.clone()
@@ -927,19 +919,19 @@ pub fn secret_entry_widget<'a, Message: 'a>(
         text("Secret:").width(Length::Fixed(80.0)),
         text(secret_text).width(Length::Fill),
     ]
-    .spacing(10);
+        .spacing(10);
 
     let url_row = row![
         text("URL:").width(Length::Fixed(80.0)),
         text(&entry.url).width(Length::Fill),
     ]
-    .spacing(10);
+        .spacing(10);
 
     let notes_row = row![
         text("Notes:").width(Length::Fixed(80.0)),
         text(&entry.notes).width(Length::Fill),
     ]
-    .spacing(10);
+        .spacing(10);
 
     // TODO: show entry type as a dropdown selection or icon
 
@@ -952,19 +944,19 @@ pub fn secret_entry_widget<'a, Message: 'a>(
         text("Tags:").width(Length::Fixed(80.0)),
         text(tags_text).width(Length::Fill),
     ]
-    .spacing(10);
+        .spacing(10);
 
     let created_row = row![
         text("Created:").width(Length::Fixed(80.0)),
         text(&entry.created).width(Length::Fill),
     ]
-    .spacing(10);
+        .spacing(10);
 
     let modified_row = row![
         text("Modified:").width(Length::Fixed(80.0)),
         text(&entry.modified).width(Length::Fill),
     ]
-    .spacing(10);
+        .spacing(10);
 
     let content = column![
         name_row,
@@ -975,8 +967,8 @@ pub fn secret_entry_widget<'a, Message: 'a>(
         created_row,
         modified_row,
     ]
-    .spacing(8)
-    .padding(15);
+        .spacing(8)
+        .padding(15);
 
     container(content)
         .style(|theme: &Theme| container::Style {
