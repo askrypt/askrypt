@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use askrypt::{encode_base64, generate_salt, AskryptFile, QuestionsData, SecretEntry};
 use iced::event::{self, Event};
 use iced::keyboard::key;
