@@ -6,6 +6,7 @@
     <title>Askrypt Vault Decryptor (read-only)</title>
     <!--TODO: embed jszip into the file-->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/crypto-js.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -399,6 +400,21 @@
         }
 
         /**
+         * Hash a normalized data using SHA256 with salt
+         * Implements: askrypt::sha256(data, salt) from lib.rs
+         * Note: salt should be base64-encoded string, not raw bytes
+         */
+        sha256WithSalt(data, salt) {
+            // salt can be passed as either base64 string or bytes
+            let saltStr = salt;
+            if (salt instanceof Uint8Array) {
+                saltStr = this.bytesToBase64(salt);
+            }
+            const combined = data + saltStr;
+            return CryptoJS.SHA256(combined).toString();
+        }
+
+        /**
          * Decode base64 string to bytes
          */
         base64ToBytes(base64) {
@@ -597,13 +613,14 @@
                 const salt0 = this.base64ToBytes(
                     this.vaultData.params.salt,
                 );
+                const salt0_b64 = this.vaultData.params.salt; // Base64-encoded salt0
                 const salt0Iv = salt0;
 
-                // Normalize and derive first key
-                const normalizedAnswer =
-                    this.normalizeAnswer(firstAnswer);
+                // Hash first answer with base64-encoded salt0 and derive first key
+                const hashedAnswer =
+                    this.sha256WithSalt(this.normalizeAnswer(firstAnswer), salt0_b64);
                 const firstKey = await this.derivePBKDF2(
-                    normalizedAnswer,
+                    hashedAnswer,
                     salt0Iv,
                     this.vaultData.params.iterations,
                 );
@@ -652,15 +669,18 @@
                 );
                 const salt1Iv = salt1;
 
+                // Get base64-encoded salt0 for hashing
+                const salt0_b64 = this.vaultData.params.salt;
+
                 // Normalize answers
                 const normalizedAnswers = answers.map((a) =>
                     this.normalizeAnswer(a),
                 );
 
-                // Combine answers and derive second key
+                // Combine hashed answers and derive second key
                 const combinedAnswers = normalizedAnswers.join("");
                 const secondKey = await this.derivePBKDF2(
-                    combinedAnswers,
+                    this.sha256WithSalt(combinedAnswers, salt0_b64),
                     salt1Iv,
                     this.vaultData.params.iterations,
                 );

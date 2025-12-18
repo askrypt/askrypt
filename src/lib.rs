@@ -22,7 +22,7 @@
 //!     "What city were you born in?".to_string(),
 //! ];
 //!
-//! // Provide answers (they will be normalized)
+//! // Provide answers
 //! let answers = vec![
 //!     "Smith".to_string(),
 //!     "Fluffy".to_string(),
@@ -68,7 +68,7 @@ use base64::{engine::general_purpose, Engine as _};
 use cbc::{Decryptor, Encryptor};
 use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use zip::write::SimpleFileOptions;
 
@@ -132,7 +132,7 @@ impl AskryptFile {
     /// # Arguments
     ///
     /// * `questions` - A vector of at least 2 questions
-    /// * `answers` - A vector of normalized answers (must be pre-normalized, same length as questions)
+    /// * `answers` - A vector of answers (same length as questions)
     /// * `secret_data` - A vector of SecretEntry items to encrypt
     /// * `iterations` - Optional iterations for first KDF (default: 600000)
     ///
@@ -200,7 +200,9 @@ impl AskryptFile {
         let iv_bytes = generate_salt(16);
 
         // Step 2: Derive first-key from first answer and salt0
-        let first_key = calc_pbkdf2(&answers[0], &salt0, iterations)?;
+        let salt0_b64 = encode_base64(&salt0);
+        // first answer is hashed with salt0 before PBKDF2
+        let first_key = calc_pbkdf2(&sha256(&answers[0], &salt0_b64), &salt0, iterations)?;
         let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
         let salt0_iv: [u8; 16] = salt0.clone().try_into().map_err(|_| "Invalid IV length")?;
 
@@ -214,7 +216,8 @@ impl AskryptFile {
 
         // Step 4: Derive second-key from combined remaining answers and salt1
         let combined_answers: String = answers.iter().skip(1).cloned().collect();
-        let second_key = calc_pbkdf2(&combined_answers, &salt1, iterations)?;
+        // combined_answers is hashed with salt0 before PBKDF2
+        let second_key = calc_pbkdf2(&sha256(&combined_answers, &salt0_b64), &salt1, iterations)?;
         let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
         let salt1_iv: [u8; 16] = salt1.clone().try_into().map_err(|_| "Invalid IV length")?;
 
@@ -239,7 +242,7 @@ impl AskryptFile {
             params: KdfParams {
                 kdf: DEFAULT_KDF.to_string(),
                 iterations,
-                salt: encode_base64(&salt0),
+                salt: salt0_b64,
             },
             qs,
             master,
@@ -251,7 +254,7 @@ impl AskryptFile {
     ///
     /// # Arguments
     ///
-    /// * `answers` - A vector of normalized answers (must be pre-normalized)
+    /// * `answers` - A vector of answers
     ///
     /// # Returns
     ///
@@ -311,7 +314,12 @@ impl AskryptFile {
         let answers: Vec<String> = answers.into_iter().map(|a| normalize_answer(&a)).collect();
         // Derive second-key from combined remaining answers and salt1
         let combined_answers: String = answers.iter().cloned().collect();
-        let second_key = calc_pbkdf2(&combined_answers, &salt1_iv, self.params.iterations)?;
+        // combined_answers is hashed with salt0 before PBKDF2
+        let second_key = calc_pbkdf2(
+            &sha256(&combined_answers, &self.params.salt),
+            &salt1_iv,
+            self.params.iterations,
+        )?;
         let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
 
         // Decrypt master key and IV using second-key and salt1
@@ -333,11 +341,11 @@ impl AskryptFile {
         Ok(secret_data)
     }
 
-    /// Get QuestionsData by first normalized answer from the AskryptFile
+    /// Get QuestionsData by first answer from the AskryptFile
     ///
     /// # Arguments
     ///
-    /// * `first_answer` - The normalized first answer to decrypt the remaining questions
+    /// * `first_answer` - The first answer to decrypt the remaining questions
     ///
     /// # Returns
     ///
@@ -350,8 +358,9 @@ impl AskryptFile {
         let salt0 = decode_base64(&self.params.salt)?;
         let salt0_iv: [u8; 16] = salt0.try_into().map_err(|_| "Invalid salt0 length")?;
 
+        // Hash first answer with salt0
+        let first_answer = sha256(&normalize_answer(&first_answer), &self.params.salt);
         // Derive first-key from first answer and salt0
-        let first_answer = normalize_answer(&first_answer);
         let first_key = calc_pbkdf2(&first_answer, &salt0_iv, self.params.iterations)?;
         let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
 
@@ -550,6 +559,33 @@ pub fn normalize_answer(answer: &str) -> String {
         .filter(|c| !c.is_whitespace() && *c != '-' && *c != '–' && *c != '—') // remove all types of dashes
         .collect::<String>()
         .to_lowercase()
+}
+
+/// Hash a str using SHA256 + salt
+///
+/// # Arguments
+///
+/// * `answer` - The answer to hash
+///
+/// # Returns
+///
+/// Returns the SHA256 hash of the str as a hex string
+///
+/// # Example
+///
+/// ```
+/// use askrypt::sha256;
+///
+/// let str1 = "Hello World";
+/// let hashed = sha256(str1, "salt42");
+/// assert_eq!(hashed, "6867f8dfd55dcf8b366244cf78fedf3deae645bfef316e393fd79b125bbbe63a");
+/// // hashed will be consistent and reproducible
+/// ```
+pub fn sha256(data: &str, salt: &str) -> String {
+    let data = data.to_string() + salt;
+    let mut hasher = Sha256::new();
+    hasher.update(data.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Encrypt data to base64-encoded string
