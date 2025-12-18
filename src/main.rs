@@ -58,6 +58,10 @@ pub struct AskryptApp {
     shown_question_answer_index: Option<usize>,
     // Track if secret is shown in edit entry screen
     show_secret_in_edit: bool,
+    // Track if first question answer is shown
+    show_answer0: bool,
+    // Track which additional answer is shown in OtherQuestions screen
+    shown_answer_index: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +103,9 @@ pub enum Message {
     ShowQuestionAnswer(usize),
     HideQuestionAnswer,
     ToggleSecretInEdit,
+    ToggleAnswer0Visibility,
+    ShowAnswer(usize),
+    HideAnswer,
     CopyPassword(usize),
     Event(Event),
 }
@@ -138,6 +145,8 @@ impl AskryptApp {
             shown_password_index: None,
             shown_question_answer_index: None,
             show_secret_in_edit: false,
+            show_answer0: false,
+            shown_answer_index: None,
         };
 
         // Load vault from program argument if provided
@@ -219,6 +228,8 @@ impl AskryptApp {
                 self.entries.clear();
                 self.edited_entry_index = None;
                 self.editing_entry = None;
+                self.show_answer0 = false;
+                self.shown_answer_index = None;
                 Task::none()
             }
             Message::Answer0Edited(value) => {
@@ -236,6 +247,7 @@ impl AskryptApp {
                         let questions_count = questions_data.questions.len();
                         self.questions_data = Some(questions_data);
                         self.screen = Screen::OtherQuestions;
+                        self.shown_answer_index = None;
                         while self.answers.len() < questions_count {
                             self.answers.push(String::new());
                         }
@@ -614,6 +626,8 @@ impl AskryptApp {
                 self.screen = Screen::FirstQuestion;
                 self.edited_entry_index = None;
                 self.editing_entry = None;
+                self.show_answer0 = false;
+                self.shown_answer_index = None;
                 operation::focus_next()
             }
             Message::ShowPassword(index) => {
@@ -622,6 +636,18 @@ impl AskryptApp {
             }
             Message::HidePassword => {
                 self.shown_password_index = None;
+                Task::none()
+            }
+            Message::ToggleAnswer0Visibility => {
+                self.show_answer0 = !self.show_answer0;
+                Task::none()
+            }
+            Message::ShowAnswer(index) => {
+                self.shown_answer_index = Some(index);
+                Task::none()
+            }
+            Message::HideAnswer => {
+                self.shown_answer_index = None;
                 Task::none()
             }
             Message::CopyPassword(index) => {
@@ -786,9 +812,24 @@ impl AskryptApp {
             .on_submit(Message::Answer0Finished)
             .padding(10)
             .width(300)
-            .secure(true)
+            .secure(!self.show_answer0)
             .size(12);
-        column = column.push(text(&self.question0).size(15)).push(text_input);
+
+        let toggle_button = tooltip(
+            button(text("👁️")).on_press(Message::ToggleAnswer0Visibility),
+            if self.show_answer0 {
+                "Hide Answer"
+            } else {
+                "Show Answer"
+            },
+            tooltip::Position::Top,
+        );
+
+        let input_row = row![text_input, toggle_button,]
+            .spacing(10)
+            .align_y(alignment::Vertical::Center);
+
+        column = column.push(text(&self.question0).size(15)).push(input_row);
 
         let controls = row![
             padded_button("Unlock").on_press(Message::Answer0Finished),
@@ -814,21 +855,58 @@ impl AskryptApp {
                 let text_input = text_input("Type the first answer...", &self.answer0)
                     .padding(10)
                     .width(300)
-                    .secure(true)
+                    .secure(!self.show_answer0)
                     .size(12);
-                column = column.push(text(&file.question0).size(15)).push(text_input);
+
+                let toggle_button = tooltip(
+                    button(text("👁️")).on_press(Message::ToggleAnswer0Visibility),
+                    if self.show_answer0 {
+                        "Hide Answer"
+                    } else {
+                        "Show Answer"
+                    },
+                    tooltip::Position::Top,
+                );
+
+                let input_row = row![text_input, toggle_button,]
+                    .spacing(10)
+                    .align_y(alignment::Vertical::Center);
+
+                column = column.push(text(&file.question0).size(15)).push(input_row);
             }
 
             for (i, question) in data.questions.iter().enumerate() {
+                let is_answer_shown = self.shown_answer_index == Some(i);
+
                 column = column.push(text(question).size(15));
+
                 let text_input = text_input("Type the answer...", &self.answers[i])
                     .on_input(Message::AnswerEdited.with(i))
                     .on_submit(Message::AnswerFinished(i))
                     .padding(10)
                     .width(300)
-                    .secure(true)
+                    .secure(!is_answer_shown)
                     .size(12);
-                column = column.push(text_input);
+
+                let toggle_button = if is_answer_shown {
+                    tooltip(
+                        button(text("👁️")).on_press(Message::HideAnswer),
+                        "Hide Answer",
+                        tooltip::Position::Top,
+                    )
+                } else {
+                    tooltip(
+                        button(text("👁️")).on_press(Message::ShowAnswer(i)),
+                        "Show Answer",
+                        tooltip::Position::Top,
+                    )
+                };
+
+                let input_row = row![text_input, toggle_button,]
+                    .spacing(10)
+                    .align_y(alignment::Vertical::Center);
+
+                column = column.push(input_row);
             }
 
             let controls = row![
