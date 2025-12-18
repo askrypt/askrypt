@@ -62,6 +62,8 @@ pub struct AskryptApp {
     show_answer0: bool,
     // Track which additional answer is shown in OtherQuestions screen
     shown_answer_index: Option<usize>,
+    // Track if vault data has been modified
+    is_modified: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +149,7 @@ impl AskryptApp {
             show_secret_in_edit: false,
             show_answer0: false,
             shown_answer_index: None,
+            is_modified: false,
         };
 
         // Load vault from program argument if provided
@@ -170,7 +173,8 @@ impl AskryptApp {
     }
 
     fn title(&self) -> String {
-        String::from("Askrypt Password Manager - 0.2.0")
+        let suffix = if self.is_modified { " *" } else { "" };
+        format!("Askrypt Password Manager - 0.2.0{}", suffix)
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -208,6 +212,7 @@ impl AskryptApp {
                             self.path = Some(path);
                             self.file = Some(file);
                             self.screen = Screen::FirstQuestion;
+                            self.is_modified = false;
                         }
                         Err(e) => {
                             eprintln!("ERROR: Failed to open vault: {}", e);
@@ -383,6 +388,7 @@ impl AskryptApp {
                         self.entries.push(new_entry);
                     }
 
+                    self.is_modified = true;
                     self.screen = Screen::ShowEntries;
                     self.editing_entry = None;
                     self.edited_entry_index = None;
@@ -395,6 +401,7 @@ impl AskryptApp {
             Message::DeleteEntry(index) => {
                 if index < self.entries.len() {
                     self.entries.remove(index);
+                    self.is_modified = true;
                 }
                 self.error_message = None;
                 self.shown_password_index = None;
@@ -422,6 +429,7 @@ impl AskryptApp {
                         Ok(new_file) => match new_file.save_to_file(path) {
                             Ok(_) => {
                                 self.file = Some(new_file);
+                                self.is_modified = false;
                                 self.success_message = Some("Vault saved successfully".into());
                             }
                             Err(e) => {
@@ -470,6 +478,7 @@ impl AskryptApp {
                             Ok(_) => {
                                 self.path = Some(new_path);
                                 self.file = Some(new_file);
+                                self.is_modified = false;
                                 self.success_message = Some("Vault saved successfully".into());
                             }
                             Err(e) => {
@@ -512,11 +521,13 @@ impl AskryptApp {
             Message::Question0EditedInEditor(value) => {
                 if !self.editing_questions.is_empty() {
                     self.editing_questions[0] = value;
+                    self.is_modified = true;
                 }
                 Task::none()
             }
             Message::QuestionEditedInEditor(index, value) => {
                 self.editing_questions[index] = value;
+                self.is_modified = true;
                 Task::none()
             }
             Message::AnswerEditedInEditor(index, value) => {
@@ -524,11 +535,13 @@ impl AskryptApp {
                     self.editing_answers.push(String::new());
                 }
                 self.editing_answers[index] = value;
+                self.is_modified = true;
                 Task::none()
             }
             Message::AddQuestion => {
                 self.editing_questions.push(String::new());
                 self.editing_answers.push(String::new());
+                self.is_modified = true;
                 Task::none()
             }
             Message::DeleteQuestion(index) => {
@@ -537,6 +550,7 @@ impl AskryptApp {
                     if index < self.editing_answers.len() {
                         self.editing_answers.remove(index);
                     }
+                    self.is_modified = true;
                 }
                 Task::none()
             }
@@ -589,6 +603,7 @@ impl AskryptApp {
                 };
                 self.editing_questions.clear();
                 self.editing_answers.clear();
+                self.is_modified = true;
                 self.shown_password_index = None;
                 self.screen = Screen::ShowEntries;
 
