@@ -56,6 +56,8 @@ pub struct AskryptApp {
     shown_password_index: Option<usize>,
     // Track which question answer is being shown in edit questions screen
     shown_question_answer_index: Option<usize>,
+    // Track if secret is shown in edit entry screen
+    show_secret_in_edit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +98,7 @@ pub enum Message {
     HidePassword,
     ShowQuestionAnswer(usize),
     HideQuestionAnswer,
+    ToggleSecretInEdit,
     CopyPassword(usize),
     Event(Event),
 }
@@ -134,6 +137,7 @@ impl AskryptApp {
             editing_answers: Vec::new(),
             shown_password_index: None,
             shown_question_answer_index: None,
+            show_secret_in_edit: false,
         };
 
         // Load vault from program argument if provided
@@ -290,6 +294,7 @@ impl AskryptApp {
                     modified: chrono::Local::now().to_rfc3339(),
                 });
                 self.editing_tags = String::new();
+                self.show_secret_in_edit = false;
                 self.screen = Screen::EditEntry;
                 operation::focus_next()
             }
@@ -298,6 +303,7 @@ impl AskryptApp {
                     self.edited_entry_index = Some(index);
                     self.editing_entry = Some(entry.clone());
                     self.editing_tags = entry.tags.join(", ");
+                    self.show_secret_in_edit = false;
                     self.screen = Screen::EditEntry;
                     operation::focus_next()
                 } else {
@@ -306,6 +312,7 @@ impl AskryptApp {
             }
             Message::BackToEntries => {
                 self.shown_password_index = None;
+                self.show_secret_in_edit = false;
                 self.screen = Screen::ShowEntries;
                 Task::none()
             }
@@ -369,6 +376,7 @@ impl AskryptApp {
                     self.edited_entry_index = None;
                     self.editing_tags = String::new();
                     self.shown_password_index = None;
+                    self.show_secret_in_edit = false;
                 }
                 Task::none()
             }
@@ -592,6 +600,10 @@ impl AskryptApp {
             }
             Message::HideQuestionAnswer => {
                 self.shown_question_answer_index = None;
+                Task::none()
+            }
+            Message::ToggleSecretInEdit => {
+                self.show_secret_in_edit = !self.show_secret_in_edit;
                 Task::none()
             }
             Message::LockVault => {
@@ -907,15 +919,28 @@ impl AskryptApp {
                         .width(400)
                         .size(12),
                 )
-                .push(text("Secret:").size(14))
+                .push(text("Password:").size(14))
                 .push(
-                    text_input("Password or secret value", &entry.secret)
-                        .on_input(Message::EntrySecretEdited)
-                        .on_submit(Message::FocusNext)
-                        .padding(10)
-                        .width(400)
-                        .secure(true)
-                        .size(12),
+                    row![
+                        text_input("Password or secret value", &entry.secret)
+                            .on_input(Message::EntrySecretEdited)
+                            .on_submit(Message::FocusNext)
+                            .padding(10)
+                            .width(350)
+                            .secure(!self.show_secret_in_edit)
+                            .size(12),
+                        tooltip(
+                            button(text("👁️")).on_press(Message::ToggleSecretInEdit),
+                            if self.show_secret_in_edit {
+                                "Hide password"
+                            } else {
+                                "Show password"
+                            },
+                            tooltip::Position::Top,
+                        )
+                    ]
+                        .spacing(10)
+                        .align_y(alignment::Vertical::Center),
                 )
                 .push(text("URL:").size(14))
                 .push(
