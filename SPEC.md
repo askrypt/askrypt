@@ -1,9 +1,11 @@
 # Askrypt format specification v1.0
 
-This document specifies the JSON text format used by Askrypt for storing password entries. 
-The format is designed to be straightforward, human-readable.
+This document specifies the JSON format used by Askrypt to store passwords/secrets. 
+The format is designed to be simple and human-readable. The JSON file (askrypt.json)
+contains the main encrypted data, questions, and parameters required for decryption. 
+This file is compressed into a ZIP archive (vault.askrypt) along with additional attachments (files).
 
-## File Structure
+## File Structure (askrypt.json)
 An Askrypt file is a JSON with the following fields:
 * `version` - version of the Askrypt format (currently "1.0")
 * `question0` - first question (string)
