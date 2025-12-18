@@ -124,6 +124,8 @@ pub struct AskryptFile {
     pub data: String,
 }
 
+const DEFAULT_KDF: &'static str = "pbkdf2";
+
 impl AskryptFile {
     /// Create a new AskryptFile from questions, answers, and secret data
     ///
@@ -235,7 +237,7 @@ impl AskryptFile {
             version: "0.9".to_string(),
             question0: questions[0].clone(),
             params: KdfParams {
-                kdf: "pbkdf2".to_string(),
+                kdf: DEFAULT_KDF.to_string(),
                 iterations,
                 salt: encode_base64(&salt0),
             },
@@ -849,7 +851,7 @@ mod tests {
             version: "0.9".to_string(),
             question0: "What is your mother's maiden name?".to_string(),
             params: KdfParams {
-                kdf: "pbkdf2".to_string(),
+                kdf: DEFAULT_KDF.to_string(),
                 iterations: 600000,
                 salt: "base64-salt".to_string(),
             },
@@ -893,7 +895,7 @@ mod tests {
         // Verify basic structure
         assert_eq!(askrypt_file.version, "0.9");
         assert_eq!(askrypt_file.question0, questions[0]);
-        assert_eq!(askrypt_file.params.kdf, "pbkdf2");
+        assert_eq!(askrypt_file.params.kdf, DEFAULT_KDF);
         assert_eq!(askrypt_file.params.iterations, 6000);
         assert!(!askrypt_file.params.salt.is_empty());
         assert!(!askrypt_file.qs.is_empty());
