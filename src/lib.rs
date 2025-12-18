@@ -52,15 +52,15 @@
 //! ).unwrap();
 //!
 //! // Save to disk
-//! askrypt_file.save_to_file("my_vault.json").unwrap();
+//! askrypt_file.save_to_file("my_vault.askrypt").unwrap();
 //!
 //! // Later, load and decrypt
-//! let loaded = AskryptFile::load_from_file("my_vault.json").unwrap();
+//! let loaded = AskryptFile::load_from_file("my_vault.askrypt").unwrap();
 //! let question_data = loaded.get_questions_data("Smith".into()).unwrap();
 //! let decrypted_secrets = loaded.decrypt(question_data, answers[1..].into()).unwrap();
 //!
 //! assert_eq!(decrypted_secrets, secrets);
-//! # std::fs::remove_file("my_vault.json").ok();
+//! # std::fs::remove_file("my_vault.askrypt").ok();
 //! ```
 
 use aes::Aes256;
@@ -69,6 +69,8 @@ use cbc::{Decryptor, Encryptor};
 use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::io::Write;
+use zip::write::SimpleFileOptions;
 
 type Aes256CbcEnc = Encryptor<Aes256>;
 type Aes256CbcDec = Decryptor<Aes256>;
@@ -358,11 +360,11 @@ impl AskryptFile {
         Ok(questions_data)
     }
 
-    /// Save the AskryptFile to a JSON file
+    /// Save the AskryptFile to a ZIP file with internal file name "askrypt.json"
     ///
     /// # Arguments
     ///
-    /// * `path` - The file path where the JSON file should be saved
+    /// * `path` - The file path where the ZIP file should be saved
     ///
     /// # Returns
     ///
@@ -372,15 +374,22 @@ impl AskryptFile {
         path: P,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        let file = std::fs::File::create(path)?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+
+        zip.start_file("askrypt.json", options)?;
+        zip.write_all(json.as_bytes())?;
+
+        zip.finish()?;
         Ok(())
     }
 
-    /// Load an AskryptFile from a JSON file
+    /// Load an AskryptFile from a ZIP file containing "askrypt.json"
     ///
     /// # Arguments
     ///
-    /// * `path` - The file path to load the JSON file from
+    /// * `path` - The file path to load the ZIP file from
     ///
     /// # Returns
     ///
@@ -388,7 +397,14 @@ impl AskryptFile {
     pub fn load_from_file<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let json = std::fs::read_to_string(path)?;
+        let file = std::fs::File::open(path)?;
+        let mut zip = zip::ZipArchive::new(file)?;
+
+        let mut askrypt_json = zip.by_name("askrypt.json")?;
+        let mut json = String::new();
+        // TODO: Handle large files more efficiently in future
+        std::io::Read::read_to_string(&mut askrypt_json, &mut json)?;
+
         let askrypt_file: AskryptFile = serde_json::from_str(&json)?;
         // TODO: Support multiple versions in future
         if askrypt_file.version != "0.9" {
@@ -987,7 +1003,7 @@ mod tests {
             original_data.clone(),
             Some(6000),
         )
-            .unwrap();
+        .unwrap();
 
         // Decrypt and verify
         let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
@@ -1066,7 +1082,7 @@ mod tests {
             AskryptFile::create(questions.clone(), answers.clone(), data.clone(), Some(6000))
                 .unwrap();
 
-        let temp_file = "test_askrypt_file.json";
+        let temp_file = "test_askrypt_file.askrypt";
 
         // Save to file
         askrypt_file.save_to_file(temp_file).unwrap();
@@ -1083,6 +1099,47 @@ mod tests {
             .decrypt(questions_data, answers[1..].into())
             .unwrap();
         assert_eq!(decrypted_data, data);
+
+        // Cleanup
+        fs::remove_file(temp_file).ok();
+    }
+
+    #[test]
+    fn test_askrypt_file_zip_contains_askrypt_json() {
+        use std::fs;
+
+        let questions = vec![
+            "What is your mother's maiden name?".to_string(),
+            "What was your first pet's name?".to_string(),
+        ];
+
+        let answers = vec!["Smith".to_string(), "Fluffy".to_string()];
+
+        let data = vec![SecretEntry {
+            name: "test".to_string(),
+            secret: "secret".to_string(),
+            url: "https://test.com".to_string(),
+            notes: "notes".to_string(),
+            entry_type: "password".to_string(),
+            tags: vec![],
+            created: "2024-01-01T00:00:00Z".to_string(),
+            modified: "2024-01-01T00:00:00Z".to_string(),
+        }];
+
+        let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000)).unwrap();
+
+        let temp_file = "test_vault_content.askrypt";
+
+        // Save to zip file
+        askrypt_file.save_to_file(temp_file).unwrap();
+
+        // Verify the zip file contains askrypt.json
+        let file = fs::File::open(temp_file).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        // Check that askrypt.json exists in the archive
+        let result = archive.by_name("askrypt.json");
+        assert!(result.is_ok(), "askrypt.json should exist in the zip file");
 
         // Cleanup
         fs::remove_file(temp_file).ok();

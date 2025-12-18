@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Askrypt Vault Decryptor</title>
+    <title>Askrypt Vault Decryptor (read-only)</title>
     <!--TODO: embed jszip into the file-->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
@@ -60,6 +60,7 @@
 
         input[type="file"],
         input[type="text"],
+        input[type="password"],
         textarea {
             width: 100%;
             padding: 12px;
@@ -73,7 +74,7 @@
             padding: 8px;
         }
 
-        input[type="text"]:focus,
+        input[type="password"]:focus,
         textarea:focus {
             outline: none;
             border-color: #667eea;
@@ -313,12 +314,12 @@
     <form id="decryptForm">
         <div class="form-group">
             <label for="fileInput"
-            >1. Select Askrypt JSON or ZIP File</label
+            >1. Select Askrypt or ZIP File</label
             >
             <input
                     type="file"
                     id="fileInput"
-                    accept=".json,.zip"
+                    accept=".*"
                     required
             />
         </div>
@@ -328,7 +329,7 @@
             >2. Answer the First Security Question</label
             >
             <input
-                    type="text"
+                    type="password"
                     id="firstAnswer"
                     placeholder="Your answer..."
                     required
@@ -504,7 +505,7 @@
                     // Check if file is a zip
                     const fileName = file.name.toLowerCase();
 
-                    if (fileName.endsWith(".zip")) {
+                    if (fileName.endsWith(".zip") || fileName.endsWith(".askrypt")) {
                         // Handle zip file
                         const zip = new JSZip();
                         const arrayBuffer = await file.arrayBuffer();
@@ -522,7 +523,7 @@
                             if (
                                 filename
                                     .toLowerCase()
-                                    .endsWith(".askrypt") &&
+                                    .endsWith(".json") &&
                                 !fileObj.dir
                             ) {
                                 jsonContent =
@@ -647,7 +648,7 @@
 
                 // Decode salt1
                 const salt1 = this.base64ToBytes(
-                    this.questionsData.params.salt,
+                    this.questionsData.salt,
                 );
                 const salt1Iv = salt1;
 
@@ -661,7 +662,7 @@
                 const secondKey = await this.derivePBKDF2(
                     combinedAnswers,
                     salt1Iv,
-                    this.questionsData.params.iterations,
+                    this.vaultData.params.iterations,
                 );
 
                 // Decrypt master key and IV
@@ -761,7 +762,7 @@
                     div.className = "question-input";
                     div.innerHTML = `
                         <label for="answer${index}">Question ${index + 2}: ${question}</label>
-                        <input type="text" id="answer${index}" placeholder="Your answer..." required>
+                        <input type="password" id="answer${index}" placeholder="Your answer..." required>
                     `;
                     questionsInputs.appendChild(div);
                 },
