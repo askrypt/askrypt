@@ -174,7 +174,7 @@ impl AskryptApp {
 
     fn title(&self) -> String {
         let suffix = if self.is_modified { " *" } else { "" };
-        format!("Askrypt Password Manager - 0.2.0{}", suffix)
+        format!("Askrypt Password Manager - 0.3.0{}", suffix)
     }
 
     fn subscription(&self) -> Subscription<Message> {
