@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>derivePBKDF2 Performance Test</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+
+            .container {
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+                padding: 40px;
+                max-width: 600px;
+                width: 100%;
+            }
+
+            h1 {
+                color: #333;
+                margin-bottom: 10px;
+                text-align: center;
+            }
+
+            .subtitle {
+                color: #666;
+                text-align: center;
+                margin-bottom: 30px;
+                font-size: 14px;
+            }
+
+            .test-info {
+                background: #f5f5f5;
+                border-left: 4px solid #667eea;
+                padding: 15px;
+                margin-bottom: 30px;
+                border-radius: 5px;
+            }
+
+            .test-info p {
+                color: #555;
+                margin: 8px 0;
+                font-size: 14px;
+            }
+
+            .test-info strong {
+                color: #333;
+            }
+
+            button {
+                width: 100%;
+                padding: 14px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition:
+                    transform 0.2s,
+                    box-shadow 0.2s;
+                margin-bottom: 20px;
+            }
+
+            button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+            }
+
+            button:active {
+                transform: translateY(0);
+            }
+
+            button:disabled {
+                background: #ccc;
+                cursor: not-allowed;
+                transform: none;
+                box-shadow: none;
+            }
+
+            .results {
+                background: #f9f9f9;
+                border: 2px solid #667eea;
+                border-radius: 8px;
+                padding: 25px;
+                margin-top: 20px;
+                display: none;
+            }
+
+            .results.show {
+                display: block;
+                animation: slideIn 0.3s ease-out;
+            }
+
+            @keyframes slideIn {
+                from {
+                    opacity: 0;
+                    transform: translateY(10px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            .results h2 {
+                color: #333;
+                margin-bottom: 20px;
+                font-size: 20px;
+                border-bottom: 2px solid #667eea;
+                padding-bottom: 10px;
+            }
+
+            .result-item {
+                margin: 15px 0;
+                padding: 12px;
+                background: white;
+                border-radius: 5px;
+                border-left: 4px solid #764ba2;
+            }
+
+            .result-label {
+                color: #666;
+                font-size: 13px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 5px;
+            }
+
+            .result-value {
+                color: #333;
+                font-size: 24px;
+                font-weight: 700;
+                font-family: "Courier New", monospace;
+            }
+
+            .result-unit {
+                color: #999;
+                font-size: 14px;
+                margin-left: 5px;
+            }
+
+            .loading {
+                text-align: center;
+                display: none;
+            }
+
+            .loading.show {
+                display: block;
+            }
+
+            .spinner {
+                border: 4px solid #f3f3f3;
+                border-top: 4px solid #667eea;
+                border-radius: 50%;
+                width: 40px;
+                height: 40px;
+                animation: spin 1s linear infinite;
+                margin: 0 auto 15px;
+            }
+
+            @keyframes spin {
+                0% {
+                    transform: rotate(0deg);
+                }
+                100% {
+                    transform: rotate(360deg);
+                }
+            }
+
+            .loading-text {
+                color: #666;
+                font-size: 14px;
+            }
+
+            .error {
+                background: #fee;
+                border-left: 4px solid #e74c3c;
+                color: #c0392b;
+                padding: 15px;
+                border-radius: 5px;
+                margin-top: 15px;
+                display: none;
+                font-size: 14px;
+            }
+
+            .error.show {
+                display: block;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>derivePBKDF2 Performance Test</h1>
+            <p class="subtitle">Benchmarking WebCrypto PBKDF2 Implementation</p>
+
+            <div class="test-info">
+                <p><strong>Test Configuration:</strong></p>
+                <p>• Iterations: <strong>600,000</strong></p>
+                <p>• Number of runs: <strong>10</strong></p>
+                <p>• Hash algorithm: <strong>SHA-256</strong></p>
+                <p>• Output bits: <strong>256</strong></p>
+                <p>• Result: <strong>Average execution time</strong></p>
+            </div>
+
+            <button id="startBtn">Start Performance Test</button>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div class="loading-text">Running performance test...</div>
+            </div>
+
+            <div class="error" id="error"></div>
+
+            <div class="results" id="results">
+                <h2>Performance Results</h2>
+                <div class="result-item">
+                    <div class="result-label">Average Execution Time</div>
+                    <div class="result-value">
+                        <span id="avgTime">0</span>
+                        <span class="result-unit">ms</span>
+                    </div>
+                </div>
+                <div class="result-item">
+                    <div class="result-label">Minimum Time</div>
+                    <div class="result-value">
+                        <span id="minTime">0</span>
+                        <span class="result-unit">ms</span>
+                    </div>
+                </div>
+                <div class="result-item">
+                    <div class="result-label">Maximum Time</div>
+                    <div class="result-value">
+                        <span id="maxTime">0</span>
+                        <span class="result-unit">ms</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            class PerformanceTester {
+                constructor() {
+                    this.iterations = 600000;
+                    this.runs = 10;
+                    this.times = [];
+                }
+
+                async derivePBKDF2(secret, salt, iterations) {
+                    const encoder = new TextEncoder();
+                    const secretKey = await crypto.subtle.importKey(
+                        "raw",
+                        encoder.encode(secret),
+                        "PBKDF2",
+                        false,
+                        ["deriveBits"],
+                    );
+
+                    const derivedBits = await crypto.subtle.deriveBits(
+                        {
+                            name: "PBKDF2",
+                            hash: "SHA-256",
+                            salt: salt,
+                            iterations: iterations,
+                        },
+                        secretKey,
+                        256,
+                    );
+
+                    return new Uint8Array(derivedBits);
+                }
+
+                async runTest() {
+                    this.times = [];
+
+                    for (let i = 0; i < this.runs; i++) {
+                        // Generate different secret for each run
+                        const secret = `test-secret-${i}-${Date.now()}`;
+
+                        // Generate random salt
+                        const salt = crypto.getRandomValues(new Uint8Array(16));
+
+                        // Measure time
+                        const startTime = performance.now();
+                        await this.derivePBKDF2(secret, salt, this.iterations);
+                        const endTime = performance.now();
+
+                        const executionTime = endTime - startTime;
+                        this.times.push(executionTime);
+
+                        // Allow UI to update between runs
+                        await new Promise((resolve) => setTimeout(resolve, 10));
+                    }
+
+                    return this.getStatistics();
+                }
+
+                getStatistics() {
+                    const avgTime =
+                        this.times.reduce((a, b) => a + b, 0) /
+                        this.times.length;
+                    const minTime = Math.min(...this.times);
+                    const maxTime = Math.max(...this.times);
+
+                    return {
+                        average: avgTime,
+                        minimum: minTime,
+                        maximum: maxTime,
+                        runs: this.times,
+                    };
+                }
+            }
+
+            // UI Elements
+            const startBtn = document.getElementById("startBtn");
+            const loading = document.getElementById("loading");
+            const results = document.getElementById("results");
+            const error = document.getElementById("error");
+            const avgTimeEl = document.getElementById("avgTime");
+            const minTimeEl = document.getElementById("minTime");
+            const maxTimeEl = document.getElementById("maxTime");
+
+            // Event listener
+            startBtn.addEventListener("click", async () => {
+                startBtn.disabled = true;
+                loading.classList.add("show");
+                results.classList.remove("show");
+                error.classList.remove("show");
+
+                try {
+                    const tester = new PerformanceTester();
+                    const stats = await tester.runTest();
+
+                    // Display results
+                    avgTimeEl.textContent = stats.average.toFixed(2);
+                    minTimeEl.textContent = stats.minimum.toFixed(2);
+                    maxTimeEl.textContent = stats.maximum.toFixed(2);
+
+                    loading.classList.remove("show");
+                    results.classList.add("show");
+                } catch (err) {
+                    error.textContent =
+                        "Error during performance test: " + err.message;
+                    error.classList.add("show");
+                    loading.classList.remove("show");
+                } finally {
+                    startBtn.disabled = false;
+                }
+            });
+        </script>
+    </body>
+</html>
