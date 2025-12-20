@@ -761,13 +761,14 @@ impl AskryptApp {
 
                 let toggle_button = if is_answer_shown {
                     tooltip(
-                        button(text("👁️")).on_press(Message::HideQuestionAnswer),
+                        button(text(icon_show_hide(true))).on_press(Message::HideQuestionAnswer),
                         "Hide Answer",
                         tooltip::Position::Top,
                     )
                 } else {
                     tooltip(
-                        button(text("👁️")).on_press(Message::ShowQuestionAnswer(i)),
+                        button(text(icon_show_hide(false)))
+                            .on_press(Message::ShowQuestionAnswer(i)),
                         "Show Answer",
                         tooltip::Position::Top,
                     )
@@ -831,7 +832,8 @@ impl AskryptApp {
             .size(12);
 
         let toggle_button = tooltip(
-            button(text("👁️")).on_press(Message::ToggleAnswer0Visibility),
+            button(text(icon_show_hide(self.show_answer0)))
+                .on_press(Message::ToggleAnswer0Visibility),
             if self.show_answer0 {
                 "Hide Answer"
             } else {
@@ -874,7 +876,8 @@ impl AskryptApp {
                     .size(12);
 
                 let toggle_button = tooltip(
-                    button(text("👁️")).on_press(Message::ToggleAnswer0Visibility),
+                    button(text(icon_show_hide(self.show_answer0)))
+                        .on_press(Message::ToggleAnswer0Visibility),
                     if self.show_answer0 {
                         "Hide Answer"
                     } else {
@@ -905,13 +908,13 @@ impl AskryptApp {
 
                 let toggle_button = if is_answer_shown {
                     tooltip(
-                        button(text("👁️")).on_press(Message::HideAnswer),
+                        button(text(icon_show_hide(true))).on_press(Message::HideAnswer),
                         "Hide Answer",
                         tooltip::Position::Top,
                     )
                 } else {
                     tooltip(
-                        button(text("👁️")).on_press(Message::ShowAnswer(i)),
+                        button(text(icon_show_hide(false))).on_press(Message::ShowAnswer(i)),
                         "Show Answer",
                         tooltip::Position::Top,
                     )
@@ -966,9 +969,9 @@ impl AskryptApp {
                 )]
                 .spacing(5);
                 let show_button_label = if self.shown_password_index == Some(index) {
-                    "👁️Hide Password"
+                    icon_show_hide(true) + "Hide Password"
                 } else {
-                    "👁️Show Password"
+                    icon_show_hide(false) + "Show Password"
                 };
                 let show_button_message = if self.shown_password_index == Some(index) {
                     Message::HidePassword
@@ -1023,7 +1026,8 @@ impl AskryptApp {
                             .secure(!self.show_secret_in_edit)
                             .size(12),
                         tooltip(
-                            button(text("👁️")).on_press(Message::ToggleSecretInEdit),
+                            button(text(icon_show_hide(self.show_secret_in_edit)))
+                                .on_press(Message::ToggleSecretInEdit),
                             if self.show_secret_in_edit {
                                 "Hide password"
                             } else {
@@ -1174,6 +1178,14 @@ fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
     button(text(label)).padding([10, 20])
 }
 
-fn control_button<Message: Clone>(label: &str) -> Button<'_, Message> {
-    button(text(label)).padding([5, 10])
+fn control_button<Message: Clone, S: Into<String>>(label: S) -> Button<'static, Message> {
+    button(text(label.into())).padding([5, 10])
+}
+
+fn icon_show_hide(show: bool) -> String {
+    if show {
+        "👁‍🗨".to_string()
+    } else {
+        "👁".to_string()
+    }
 }
