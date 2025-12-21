@@ -124,7 +124,7 @@ pub struct AskryptFile {
     pub data: String,
 }
 
-const DEFAULT_KDF: &'static str = "pbkdf2";
+const DEFAULT_KDF: &str = "pbkdf2";
 
 impl AskryptFile {
     /// Create a new AskryptFile from questions, answers, and secret data
@@ -299,7 +299,7 @@ impl AskryptFile {
         answers: Vec<String>,
     ) -> Result<Vec<SecretEntry>, Box<dyn std::error::Error>> {
         // Validate inputs
-        if answers.len() < 1 {
+        if answers.is_empty() {
             return Err("At least 1 answer is required".into());
         }
 

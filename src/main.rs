@@ -124,7 +124,7 @@ enum Screen {
 
 // Default number of iterations for key derivation (OWASP recommendation for 2025)
 const DEFAULT_ITERATIONS: u32 = 600_000;
-const APP_TITLE: &'static str = "Askrypt 0.3.0";
+const APP_TITLE: &str = "Askrypt 0.3.0";
 
 impl AskryptApp {
     fn new(vault_path: Option<PathBuf>) -> Self {
@@ -752,7 +752,7 @@ impl AskryptApp {
             .spacing(15);
 
         // Additional questions
-        if self.editing_questions.len() > 0 {
+        if !self.editing_questions.is_empty() {
             column = column.push(text("Questions:").size(14).font(Font {
                 weight: iced::font::Weight::Bold,
                 ..Default::default()
