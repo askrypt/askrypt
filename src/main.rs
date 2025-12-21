@@ -123,8 +123,8 @@ enum Screen {
 }
 
 // Default number of iterations for key derivation (OWASP recommendation for 2025)
-pub const DEFAULT_ITERATIONS: u32 = 600_000;
-pub const DEFAULT_KDF: &str = "pbkdf2";
+const DEFAULT_ITERATIONS: u32 = 600_000;
+const APP_TITLE: &'static str = "Askrypt 0.3.0";
 
 impl AskryptApp {
     fn new(vault_path: Option<PathBuf>) -> Self {
@@ -173,8 +173,16 @@ impl AskryptApp {
     }
 
     fn title(&self) -> String {
-        let suffix = if self.is_modified { " *" } else { "" };
-        format!("Askrypt Password Manager - 0.3.0{}", suffix)
+        if let Some(path) = &self.path {
+            let suffix = if self.is_modified { "*" } else { "" };
+            let file_name = path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Untitled")
+                .to_string();
+             format!("{}{} - {}", file_name, suffix, APP_TITLE)
+         } else {
+             APP_TITLE.to_string()
+         }
     }
 
     fn subscription(&self) -> Subscription<Message> {
