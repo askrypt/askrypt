@@ -4,7 +4,8 @@ use askrypt::{encode_base64, generate_salt, AskryptFile, QuestionsData, SecretEn
 use iced::event::{self, Event};
 use iced::keyboard::key;
 use iced::widget::{
-    button, column, container, operation, row, scrollable, text, text_input, tooltip,
+    button, column, container, operation, row, scrollable, text, text_input, tooltip, Container,
+    Row, Scrollable,
 };
 use iced::widget::{Button, Column};
 use iced::{
@@ -175,14 +176,15 @@ impl AskryptApp {
     fn title(&self) -> String {
         if let Some(path) = &self.path {
             let suffix = if self.is_modified { "*" } else { "" };
-            let file_name = path.file_name()
+            let file_name = path
+                .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("Untitled")
                 .to_string();
-             format!("{}{} - {}", file_name, suffix, APP_TITLE)
-         } else {
-             APP_TITLE.to_string()
-         }
+            format!("{}{} - {}", file_name, suffix, APP_TITLE)
+        } else {
+            APP_TITLE.to_string()
+        }
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -730,33 +732,35 @@ impl AskryptApp {
             }));
         }
 
-        let content = container(screen).center_x(Fill);
-
-        let scrollable = scrollable(content);
-
-        container(scrollable).center_y(Fill).into()
+        container(screen).center_x(Fill).center_y(Fill).into()
     }
 
     fn welcome(&self) -> Column<'_, Message> {
-        Self::container("Welcome!")
-            .push("Askrypt Password Manager without the master password")
+        Self::title_h1("Askrypt")
+            .push("Password Manager without master password")
+            .push("Your secrets are protected by security questions only you know")
             .push(padded_button("Create New Vault").on_press(Message::CreateNewVault))
             .push(padded_button("Open Existing Vault").on_press(Message::OpenVault))
             .align_x(alignment::Horizontal::Center)
     }
 
     fn edit_questions(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Edit Security Questions")
+        let title = Self::title_h1("Edit Security Questions")
             .push("Define security questions and answers for your vault")
             .align_x(alignment::Horizontal::Center)
-            .spacing(15);
+            .width(Length::Fill);
+        // Top section: Fixed control buttons
+        let top_section = Self::controls_block(row![
+            padded_button("Add Question").on_press(Message::AddQuestion),
+            padded_button("Save").on_press(Message::SaveQuestions),
+            padded_button("Cancel").on_press(Message::BackFromQuestionEditor),
+        ]);
 
-        // Additional questions
-        if !self.editing_questions.is_empty() {
-            column = column.push(text("Questions:").size(14).font(Font {
-                weight: iced::font::Weight::Bold,
-                ..Default::default()
-            }));
+        // Middle section: Scrollable questions
+        let middle_section = if self.editing_questions.is_empty() {
+            Self::caption_block("No security questions defined. Add a new one...")
+        } else {
+            let mut questions_column = column![].spacing(15).padding(15).width(Length::Fill);
 
             for i in 0..self.editing_questions.len() {
                 let question = &self.editing_questions[i];
@@ -782,48 +786,50 @@ impl AskryptApp {
                     )
                 };
 
-                column = column
-                    .push(text(format!("Question {}:", i + 1)).size(12))
-                    .push(
-                        text_input("Enter a security question", question)
-                            .on_input(Message::QuestionEditedInEditor.with(i))
+                let question_item = column![
+                    text(format!("Question {}:", i + 1)).size(12),
+                    text_input("Enter a security question", question)
+                        .on_input(Message::QuestionEditedInEditor.with(i))
+                        .padding(10)
+                        .width(Length::Fill)
+                        .size(12),
+                    text("Answer:").size(12),
+                    row![
+                        text_input("Enter the answer", &answer)
+                            .on_input(Message::AnswerEditedInEditor.with(i))
                             .padding(10)
-                            .width(400)
+                            .width(Length::Fill)
+                            .secure(!is_answer_shown)
                             .size(12),
-                    )
-                    .push(text("Answer:").size(12))
-                    .push(
-                        row![
-                            text_input("Enter the answer", &answer)
-                                .on_input(Message::AnswerEditedInEditor.with(i))
-                                .padding(10)
-                                .width(350)
-                                .secure(!is_answer_shown)
-                                .size(12),
-                            toggle_button,
-                        ]
-                        .spacing(10)
-                        .align_y(alignment::Vertical::Center),
-                    )
-                    .push(delete_button);
+                        toggle_button,
+                    ]
+                    .spacing(10)
+                    .align_y(alignment::Vertical::Center),
+                    delete_button,
+                ]
+                .spacing(10)
+                .width(Length::Fill);
+
+                questions_column =
+                    questions_column.push(Self::container_with_border(question_item));
             }
-        }
 
-        // Control buttons
-        let button_row = row![
-            padded_button("Add Question").on_press(Message::AddQuestion),
-            padded_button("Save").on_press(Message::SaveQuestions),
-            padded_button("Cancel").on_press(Message::BackFromQuestionEditor),
-        ]
-        .spacing(10);
+            scrollable(questions_column)
+                .width(Length::Fill)
+                .height(Length::Fill)
+        };
 
-        column = column.push(button_row);
+        // Bottom section: Fixed status line
+        let bottom_section = Self::status_bar();
 
-        column
+        // Combine all three sections
+        column![title, top_section, middle_section, bottom_section]
+            .width(Length::Fill)
+            .height(Length::Fill)
     }
 
     fn first_question(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Try to unlock the vault")
+        let mut column = Self::title_h1("Try to unlock the vault")
             .push("Answer the first security question to reveal the other questions")
             .align_x(alignment::Horizontal::Center);
 
@@ -867,7 +873,7 @@ impl AskryptApp {
     }
 
     fn other_questions(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Try to unlock the file")
+        let mut column = Self::title_h1("Try to unlock the file")
             .push("Answer the questions")
             .align_x(alignment::Horizontal::Center);
 
@@ -947,60 +953,44 @@ impl AskryptApp {
     }
 
     fn show_entries(&self) -> Column<'_, Message> {
-        let mut column = Self::container("Secret entries").spacing(15).padding(20);
-
-        let save_row = row![
+        // Top section: Fixed control buttons
+        let top_section = Self::controls_block(row![
             padded_button("Add New Entry").on_press(Message::AddNewEntry),
             padded_button("Edit Questions").on_press(Message::EditQuestions),
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
-        ]
-        .spacing(10);
-        column = column.push(save_row);
+        ]);
 
-        if self.entries.is_empty() {
-            column = column.push(
-                text("No secret entries available. Add a new entry...")
-                    .width(Length::Fill)
-                    .size(15)
-                    .font(Font {
-                        weight: iced::font::Weight::Bold,
-                        ..Default::default()
-                    }),
-            );
+        // Middle section: Scrollable entries
+        let middle_section = if self.entries.is_empty() {
+            Self::caption_block("No secret entries available. Add a new one...")
         } else {
+            let mut entries_column = column![].spacing(15).padding(15).width(Length::Fill);
+
             for (index, entry) in self.entries.iter().enumerate() {
-                let mut entry_col = column![secret_entry_widget(
+                let entry_col = column![self.secret_entry_widget(
                     entry,
-                    self.shown_password_index == Some(index)
+                    self.shown_password_index == Some(index),
+                    index
                 )]
                 .spacing(5);
-                let show_button_label = if self.shown_password_index == Some(index) {
-                    icon_show_hide(true) + "Hide Password"
-                } else {
-                    icon_show_hide(false) + "Show Password"
-                };
-                let show_button_message = if self.shown_password_index == Some(index) {
-                    Message::HidePassword
-                } else {
-                    Message::ShowPassword(index)
-                };
-                let button_row = row![
-                    control_button("📝Edit").on_press(Message::EditEntry(index)),
-                    control_button("✖Delete")
-                        .style(button::danger)
-                        .on_press(Message::DeleteEntry(index)),
-                    control_button("📋Copy Password").on_press(Message::CopyPassword(index)),
-                    control_button(show_button_label).on_press(show_button_message),
-                ]
-                .spacing(10);
-                entry_col = entry_col.push(button_row);
-                column = column.push(container(entry_col).width(Length::Fill));
-            }
-        }
 
-        column
+                entries_column = entries_column.push(container(entry_col).width(Length::Fill));
+            }
+
+            scrollable(entries_column)
+                .width(Length::Fill)
+                .height(Length::Fill)
+        };
+
+        // Bottom section: Fixed status line
+        let bottom_section = Self::status_bar();
+
+        // Combine all three sections
+        column![top_section, middle_section, bottom_section]
+            .width(Length::Fill)
+            .height(Length::Fill)
     }
 
     fn edit_entry(&self) -> Column<'_, Message> {
@@ -1010,7 +1000,7 @@ impl AskryptApp {
             "Create New Entry"
         };
 
-        let mut column = Self::container(title);
+        let mut column = Self::title_h1(title);
 
         if let Some(entry) = &self.editing_entry {
             column = column
@@ -1089,97 +1079,148 @@ impl AskryptApp {
         column
     }
 
-    fn container(title: &str) -> Column<'_, Message> {
-        column![text(title).size(50)].spacing(20)
+    fn title_h1(title: &str) -> Column<'_, Message> {
+        column![text(title).size(40)].spacing(10)
     }
-}
 
-/// Custom widget for displaying a SecretEntry
-pub fn secret_entry_widget<'a, Message: 'a>(
-    entry: &'a SecretEntry,
-    show_password: bool,
-) -> Element<'a, Message> {
-    let name_row = row![
-        text("Name:").width(Length::Fixed(80.0)),
-        text(&entry.name).width(Length::Fill).font(Font {
-            weight: iced::font::Weight::Bold,
-            ..Default::default()
-        }),
-    ]
-    .spacing(10);
+    fn status_bar() -> Element<'static, Message> {
+        container(text("Loaded").size(12).width(Length::Fill))
+            .padding(3)
+            .width(Length::Fill)
+            .style(|theme: &Theme| container::Style {
+                border: iced::Border {
+                    color: theme.extended_palette().background.neutral.color,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                background: Some(theme.palette().background.into()),
+                ..Default::default()
+            })
+            .into()
+    }
 
-    let secret_text = if show_password {
-        entry.secret.clone()
-    } else {
-        "••••••••".to_string()
-    };
-    let secret_row = row![
-        text("Secret:").width(Length::Fixed(80.0)),
-        text(secret_text).width(Length::Fill),
-    ]
-    .spacing(10);
+    fn controls_block(row: Row<'_, Message>) -> Element<'_, Message> {
+        row.spacing(10).padding(10).width(Length::Fill).into()
+    }
 
-    let url_row = row![
-        text("URL:").width(Length::Fixed(80.0)),
-        text(&entry.url).width(Length::Fill),
-    ]
-    .spacing(10);
-
-    let notes_row = row![
-        text("Notes:").width(Length::Fixed(80.0)),
-        text(&entry.notes).width(Length::Fill),
-    ]
-    .spacing(10);
-
-    // TODO: show entry type as a dropdown selection or icon
-
-    let tags_text = if entry.tags.is_empty() {
-        "None".to_string()
-    } else {
-        entry.tags.join(", ")
-    };
-    let tags_row = row![
-        text("Tags:").width(Length::Fixed(80.0)),
-        text(tags_text).width(Length::Fill),
-    ]
-    .spacing(10);
-
-    let created_row = row![
-        text("Created:").width(Length::Fixed(80.0)),
-        text(&entry.created).width(Length::Fill),
-    ]
-    .spacing(10);
-
-    let modified_row = row![
-        text("Modified:").width(Length::Fixed(80.0)),
-        text(&entry.modified).width(Length::Fill),
-    ]
-    .spacing(10);
-
-    let content = column![
-        name_row,
-        secret_row,
-        url_row,
-        notes_row,
-        tags_row,
-        created_row,
-        modified_row,
-    ]
-    .spacing(8)
-    .padding(15);
-
-    container(content)
-        .style(|theme: &Theme| container::Style {
-            border: iced::Border {
-                color: theme.palette().text,
-                width: 1.0,
-                radius: 8.0.into(),
-            },
-            background: Some(theme.palette().background.into()),
-            ..Default::default()
-        })
+    fn caption_block(caption: &str) -> Scrollable<'_, Message> {
+        scrollable(
+            container(text(caption).width(Length::Fill).size(15).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            }))
+            .padding(20)
+            .width(Length::Fill),
+        )
         .width(Length::Fill)
-        .into()
+        .height(Length::Fill)
+    }
+
+    pub fn secret_entry_widget<'a>(
+        &self,
+        entry: &'a SecretEntry,
+        show_password: bool,
+        index: usize,
+    ) -> Element<'a, Message> {
+        let name_row = row![
+            text("Name:").width(Length::Fixed(80.0)),
+            text(&entry.name).width(Length::Fill).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            }),
+        ]
+        .spacing(10);
+
+        let secret_text = if show_password {
+            entry.secret.clone()
+        } else {
+            "••••••••".to_string()
+        };
+        let secret_row = row![
+            text("Secret:").width(Length::Fixed(80.0)),
+            text(secret_text).width(Length::Fill),
+        ]
+        .spacing(10);
+
+        let url_row = row![
+            text("URL:").width(Length::Fixed(80.0)),
+            text(&entry.url).width(Length::Fill),
+        ]
+        .spacing(10);
+
+        let notes_row = row![
+            text("Notes:").width(Length::Fixed(80.0)),
+            text(&entry.notes).width(Length::Fill),
+        ]
+        .spacing(10);
+
+        // TODO: show entry type as a dropdown selection or icon
+
+        let tags_text = if entry.tags.is_empty() {
+            "None".to_string()
+        } else {
+            entry.tags.join(", ")
+        };
+        let tags_row = row![
+            text("Tags:").width(Length::Fixed(80.0)),
+            text(tags_text).width(Length::Fill),
+        ]
+        .spacing(10);
+
+        let created_row = row![
+            text("Created:").width(Length::Fixed(80.0)),
+            text(&entry.created).width(Length::Fill),
+        ]
+        .spacing(10);
+
+        let modified_row = row![
+            text("Modified:").width(Length::Fixed(80.0)),
+            text(&entry.modified).width(Length::Fill),
+        ]
+        .spacing(10);
+
+        let show_button_label = if show_password {
+            icon_show_hide(true) + "Hide Password"
+        } else {
+            icon_show_hide(false) + "Show Password"
+        };
+        let show_button_message = if show_password {
+            crate::Message::HidePassword
+        } else {
+            crate::Message::ShowPassword(index)
+        };
+
+        let button_row = row![
+            control_button("📝Edit").on_press(Message::EditEntry(index)),
+            control_button("✖Delete")
+                .style(button::danger)
+                .on_press(Message::DeleteEntry(index)),
+            control_button("📋Copy Password").on_press(Message::CopyPassword(index)),
+            control_button(show_button_label).on_press(show_button_message),
+        ]
+        .spacing(10);
+
+        let content = column![
+            name_row,
+            secret_row,
+            url_row,
+            notes_row,
+            tags_row,
+            created_row,
+            modified_row,
+            button_row,
+        ]
+        .spacing(8);
+
+        Self::container_with_border(content).into()
+    }
+
+    fn container_with_border(item: Column<'_, Message>) -> Container<'_, Message> {
+        container(item)
+            .padding(10)
+            .width(Length::Fill)
+            .style(container_border_r5)
+    }
 }
 
 fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
@@ -1195,5 +1236,17 @@ fn icon_show_hide(show: bool) -> String {
         "👁‍🗨".to_string()
     } else {
         "👁".to_string()
+    }
+}
+
+fn container_border_r5(theme: &Theme) -> container::Style {
+    container::Style {
+        border: iced::Border {
+            color: theme.palette().text,
+            width: 1.0,
+            radius: 5.0.into(),
+        },
+        background: Some(theme.palette().background.into()),
+        ..Default::default()
     }
 }
