@@ -64,9 +64,9 @@
 //! ```
 
 use aes::Aes256;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use cbc::{Decryptor, Encryptor};
-use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -948,10 +948,12 @@ mod tests {
 
         let result = AskryptFile::create(questions, answers, data, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("At least 2 questions"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("At least 2 questions")
+        );
 
         let questions = vec!["Question 1".to_string()]; // Only 1
         let answers = vec!["Answer1".to_string()];
@@ -959,10 +961,12 @@ mod tests {
 
         let result = AskryptFile::create(questions, answers, data2, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("At least 2 questions"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("At least 2 questions")
+        );
 
         let questions = vec!["Question 1".to_string(), "Question 2".to_string()];
         let answers = vec!["Answer1".to_string()];
@@ -970,10 +974,12 @@ mod tests {
 
         let result = AskryptFile::create(questions, answers, data2, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Number of questions and answers must match"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Number of questions and answers must match")
+        );
     }
 
     #[test]
@@ -993,10 +999,12 @@ mod tests {
 
         let result = AskryptFile::create(questions, answers, data, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Question length must not exceed 500 characters"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Question length must not exceed 500 characters")
+        );
     }
 
     #[test]
@@ -1085,10 +1093,12 @@ mod tests {
         let result = askrypt_file.decrypt(questions_data, wrong_answers);
         // Should fail due to wrong answer (decryption error or invalid JSON)
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Decryption padding error"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Decryption padding error")
+        );
     }
 
     #[test]
