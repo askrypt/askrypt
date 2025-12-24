@@ -1,16 +1,16 @@
 #![windows_subsystem = "windows"]
 
-use askrypt::{encode_base64, generate_salt, AskryptFile, QuestionsData, SecretEntry};
+use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
 use iced::event::{self, Event};
 use iced::keyboard::key;
-use iced::widget::{
-    button, column, container, operation, row, scrollable, text, text_input, tooltip, Container,
-    Row, Scrollable,
-};
 use iced::widget::{Button, Column};
+use iced::widget::{
+    Container, Row, Scrollable, button, column, container, operation, row, scrollable, text,
+    text_input, tooltip,
+};
 use iced::{
-    alignment, clipboard, keyboard, Element, Fill, Font, Function, Length, Subscription, Task,
-    Theme,
+    Element, Fill, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard,
+    keyboard,
 };
 use std::cmp::PartialEq;
 use std::path::PathBuf;
@@ -104,11 +104,9 @@ pub enum Message {
     ShowPassword(usize),
     HidePassword,
     ShowQuestionAnswer(usize),
-    HideQuestionAnswer,
     ToggleSecretInEdit,
     ToggleAnswer0Visibility,
     ShowAnswer(usize),
-    HideAnswer,
     CopyPassword(usize),
     Event(Event),
 }
@@ -632,11 +630,13 @@ impl AskryptApp {
                 Task::none()
             }
             Message::ShowQuestionAnswer(index) => {
-                self.shown_question_answer_index = Some(index);
-                Task::none()
-            }
-            Message::HideQuestionAnswer => {
-                self.shown_question_answer_index = None;
+                if let Some(old_index) = self.shown_question_answer_index
+                    && index == old_index
+                {
+                    self.shown_question_answer_index = None;
+                } else {
+                    self.shown_question_answer_index = Some(index);
+                }
                 Task::none()
             }
             Message::ToggleSecretInEdit => {
@@ -665,14 +665,20 @@ impl AskryptApp {
             }
             Message::ToggleAnswer0Visibility => {
                 self.show_answer0 = !self.show_answer0;
+                if self.show_answer0 {
+                    self.shown_answer_index = None;
+                }
                 Task::none()
             }
             Message::ShowAnswer(index) => {
-                self.shown_answer_index = Some(index);
-                Task::none()
-            }
-            Message::HideAnswer => {
-                self.shown_answer_index = None;
+                if let Some(old_index) = self.shown_answer_index
+                    && index == old_index
+                {
+                    self.shown_answer_index = None;
+                } else {
+                    self.shown_answer_index = Some(index);
+                    self.show_answer0 = false;
+                }
                 Task::none()
             }
             Message::CopyPassword(index) => {
@@ -771,40 +777,27 @@ impl AskryptApp {
                     .style(button::danger)
                     .on_press(Message::DeleteQuestion(i));
 
-                let toggle_button = if is_answer_shown {
-                    tooltip(
-                        button(text(icon_show_hide(true))).on_press(Message::HideQuestionAnswer),
-                        "Hide Answer",
-                        tooltip::Position::Top,
-                    )
-                } else {
-                    tooltip(
-                        button(text(icon_show_hide(false)))
-                            .on_press(Message::ShowQuestionAnswer(i)),
-                        "Show Answer",
-                        tooltip::Position::Top,
-                    )
-                };
+                let answer_input = self.security_input_with_toggle(
+                    &answer,
+                    is_answer_shown,
+                    Some(Message::AnswerEditedInEditor.with(i)),
+                    Some(Message::FocusNext),
+                    Message::ShowQuestionAnswer(i),
+                    "Type the answer",
+                    "Hide Answer",
+                    "Show Answer",
+                );
 
                 let question_item = column![
                     text(format!("Question {}:", i + 1)).size(12),
-                    text_input("Enter a security question", question)
+                    text_input("Type a security question", question)
                         .on_input(Message::QuestionEditedInEditor.with(i))
+                        .on_submit(Message::FocusNext)
                         .padding(10)
                         .width(Length::Fill)
                         .size(12),
                     text("Answer:").size(12),
-                    row![
-                        text_input("Enter the answer", &answer)
-                            .on_input(Message::AnswerEditedInEditor.with(i))
-                            .padding(10)
-                            .width(Length::Fill)
-                            .secure(!is_answer_shown)
-                            .size(12),
-                        toggle_button,
-                    ]
-                    .spacing(10)
-                    .align_y(alignment::Vertical::Center),
+                    answer_input,
                     delete_button,
                 ]
                 .spacing(10)
@@ -834,33 +827,25 @@ impl AskryptApp {
             .align_x(alignment::Horizontal::Center);
 
         if let Some(path) = &self.path {
-            column = column.push(text(format!("Vault Path: {}", path.display())));
+            column = column.push(text(format!("Vault File: {}", path.display())));
         }
 
-        let text_input = text_input("Type the first answer...", &self.answer0)
-            .on_input(Message::Answer0Edited)
-            .on_submit(Message::Answer0Finished)
-            .padding(10)
-            .width(300)
-            .secure(!self.show_answer0)
-            .size(12);
+        let answer0_input = self
+            .security_input_with_toggle(
+                &self.answer0,
+                self.show_answer0,
+                Some(Message::Answer0Edited),
+                Some(Message::Answer0Finished),
+                Message::ToggleAnswer0Visibility,
+                "Type the first answer...",
+                "Hide Answer",
+                "Show Answer",
+            )
+            .width(400);
 
-        let toggle_button = tooltip(
-            button(text(icon_show_hide(self.show_answer0)))
-                .on_press(Message::ToggleAnswer0Visibility),
-            if self.show_answer0 {
-                "Hide Answer"
-            } else {
-                "Show Answer"
-            },
-            tooltip::Position::Top,
-        );
-
-        let input_row = row![text_input, toggle_button,]
-            .spacing(10)
-            .align_y(alignment::Vertical::Center);
-
-        column = column.push(text(&self.question0).size(15)).push(input_row);
+        column = column
+            .push(text(&self.question0).size(15))
+            .push(answer0_input);
 
         let controls = row![
             padded_button("Unlock").on_press(Message::Answer0Finished),
@@ -882,63 +867,42 @@ impl AskryptApp {
         }
 
         if let Some(data) = &self.questions_data {
-            if let Some(file) = &self.file {
-                let text_input = text_input("Type the first answer...", &self.answer0)
-                    .padding(10)
-                    .width(300)
-                    .secure(!self.show_answer0)
-                    .size(12);
+            let answer0_input = self
+                .security_input_with_toggle(
+                    &self.answer0,
+                    self.show_answer0,
+                    None::<fn(String) -> Message>,
+                    None,
+                    Message::ToggleAnswer0Visibility,
+                    "Type the first answer...",
+                    "Hide Answer",
+                    "Show Answer",
+                )
+                .width(400);
 
-                let toggle_button = tooltip(
-                    button(text(icon_show_hide(self.show_answer0)))
-                        .on_press(Message::ToggleAnswer0Visibility),
-                    if self.show_answer0 {
-                        "Hide Answer"
-                    } else {
-                        "Show Answer"
-                    },
-                    tooltip::Position::Top,
-                );
-
-                let input_row = row![text_input, toggle_button,]
-                    .spacing(10)
-                    .align_y(alignment::Vertical::Center);
-
-                column = column.push(text(&file.question0).size(15)).push(input_row);
-            }
+            column = column
+                .push(text(&self.question0).size(15))
+                .push(answer0_input);
 
             for (i, question) in data.questions.iter().enumerate() {
                 let is_answer_shown = self.shown_answer_index == Some(i);
 
                 column = column.push(text(question).size(15));
 
-                let text_input = text_input("Type the answer...", &self.answers[i])
-                    .on_input(Message::AnswerEdited.with(i))
-                    .on_submit(Message::AnswerFinished(i))
-                    .padding(10)
-                    .width(300)
-                    .secure(!is_answer_shown)
-                    .size(12);
-
-                let toggle_button = if is_answer_shown {
-                    tooltip(
-                        button(text(icon_show_hide(true))).on_press(Message::HideAnswer),
+                let answer_input = self
+                    .security_input_with_toggle(
+                        &self.answers[i],
+                        is_answer_shown,
+                        Some(Message::AnswerEdited.with(i)),
+                        Some(Message::AnswerFinished(i)),
+                        Message::ShowAnswer(i),
+                        "Type the answer...",
                         "Hide Answer",
-                        tooltip::Position::Top,
-                    )
-                } else {
-                    tooltip(
-                        button(text(icon_show_hide(false))).on_press(Message::ShowAnswer(i)),
                         "Show Answer",
-                        tooltip::Position::Top,
                     )
-                };
+                    .width(400);
 
-                let input_row = row![text_input, toggle_button,]
-                    .spacing(10)
-                    .align_y(alignment::Vertical::Center);
-
-                column = column.push(input_row);
+                column = column.push(answer_input);
             }
 
             let controls = row![
@@ -1015,27 +979,17 @@ impl AskryptApp {
                 )
                 .push(text("Password:").size(14))
                 .push(
-                    row![
-                        text_input("Password or secret value", &entry.secret)
-                            .on_input(Message::EntrySecretEdited)
-                            .on_submit(Message::FocusNext)
-                            .padding(10)
-                            .width(350)
-                            .secure(!self.show_secret_in_edit)
-                            .size(12),
-                        tooltip(
-                            button(text(icon_show_hide(self.show_secret_in_edit)))
-                                .on_press(Message::ToggleSecretInEdit),
-                            if self.show_secret_in_edit {
-                                "Hide password"
-                            } else {
-                                "Show password"
-                            },
-                            tooltip::Position::Top,
-                        )
-                    ]
-                    .spacing(10)
-                    .align_y(alignment::Vertical::Center),
+                    self.security_input_with_toggle(
+                        &entry.secret,
+                        self.show_secret_in_edit,
+                        Some(Message::EntrySecretEdited),
+                        Some(Message::FocusNext),
+                        Message::ToggleSecretInEdit,
+                        "Password or secret value",
+                        "Hide Password",
+                        "Show Password",
+                    )
+                    .width(400),
                 )
                 .push(text("URL:").size(14))
                 .push(
@@ -1077,6 +1031,42 @@ impl AskryptApp {
         column = column.push(button_row);
 
         column
+    }
+
+    /// Creates a security input field with a toggle button to show/hide the input.
+    fn security_input_with_toggle<'a>(
+        &self,
+        password: &str,
+        show_password: bool,
+        on_input_msg: Option<impl Fn(String) -> Message + 'a>,
+        on_submit_msg: Option<Message>,
+        toggle_msg: Message,
+        input_placeholder: &'a str,
+        hide_tooltip: &'a str,
+        show_tooltip: &'a str,
+    ) -> Row<'a, Message> {
+        let toggle_button = tooltip(
+            button(text(icon_show_hide(show_password))).on_press(toggle_msg),
+            if show_password {
+                hide_tooltip
+            } else {
+                show_tooltip
+            },
+            tooltip::Position::Top,
+        );
+
+        row![
+            text_input(input_placeholder, password)
+                .on_input_maybe(on_input_msg)
+                .on_submit_maybe(on_submit_msg)
+                .padding(10)
+                .width(Length::Fill)
+                .secure(!show_password)
+                .size(12),
+            toggle_button,
+        ]
+        .spacing(10)
+        .align_y(alignment::Vertical::Center)
     }
 
     fn title_h1(title: &str) -> Column<'_, Message> {
