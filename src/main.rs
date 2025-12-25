@@ -1171,7 +1171,7 @@ impl AskryptApp {
         index: usize,
     ) -> Element<'a, Message> {
         let name_row = row![
-            text("Name:").width(Length::Fixed(80.0)),
+            text("Name:").width(Length::Fixed(90.0)),
             text(&entry.name).width(Length::Fill).font(Font {
                 weight: iced::font::Weight::Bold,
                 ..Default::default()
@@ -1189,7 +1189,7 @@ impl AskryptApp {
         };
 
         let secret_row = row![
-            text("Secret:").width(Length::Fixed(80.0)),
+            text("Password:").width(Length::Fixed(90.0)),
             text(secret_text),
             text_button_icon(show_password_icon, show_password_tooltip)
                 .on_press(Message::ShowPassword(index)),
@@ -1198,12 +1198,12 @@ impl AskryptApp {
         ];
 
         let url_row = row![
-            text("URL:").width(Length::Fixed(80.0)),
+            text("URL:").width(Length::Fixed(90.0)),
             text(&entry.url).width(Length::Fill),
         ];
 
         let notes_row = row![
-            text("Notes:").width(Length::Fixed(80.0)),
+            text("Notes:").width(Length::Fixed(90.0)),
             text(&entry.notes).width(Length::Fill),
         ];
 
@@ -1215,17 +1215,17 @@ impl AskryptApp {
             entry.tags.join(", ")
         };
         let tags_row = row![
-            text("Tags:").width(Length::Fixed(80.0)),
+            text("Tags:").width(Length::Fixed(90.0)),
             text(tags_text).width(Length::Fill),
         ];
 
         let created_row = row![
-            text("Created:").width(Length::Fixed(80.0)),
+            text("Created:").width(Length::Fixed(90.0)),
             text(&entry.created).width(Length::Fill),
         ];
 
         let modified_row = row![
-            text("Modified:").width(Length::Fixed(80.0)),
+            text("Modified:").width(Length::Fixed(90.0)),
             text(&entry.modified).width(Length::Fill),
         ];
 
