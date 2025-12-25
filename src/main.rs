@@ -1,16 +1,22 @@
 #![windows_subsystem = "windows"]
 
+mod icon;
+mod ui;
+
+use crate::ui::{
+    container_border_r5, control_button, control_button_icon, icon_show_hide, padded_button,
+    text_button_icon,
+};
 use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
 use iced::event::{self, Event};
 use iced::keyboard::key;
-use iced::widget::{Button, Column};
+use iced::widget::Column;
 use iced::widget::{
     Container, Row, Scrollable, button, column, container, operation, row, scrollable, text,
     text_input, tooltip,
 };
 use iced::{
-    Element, Fill, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard,
-    keyboard,
+    Element, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard, keyboard,
 };
 use std::cmp::PartialEq;
 use std::path::PathBuf;
@@ -32,6 +38,7 @@ pub fn main() {
     .subscription(AskryptApp::subscription)
     .centered()
     .theme(Theme::Light)
+    .font(include_bytes!("../static/bootstrap-icons.ttf"))
     .run();
 }
 
@@ -103,7 +110,6 @@ pub enum Message {
     BackFromQuestionEditor,
     // Password management messages
     ShowPassword(usize),
-    HidePassword,
     ShowQuestionAnswer(usize),
     ToggleSecretInEdit,
     ToggleAnswer0Visibility,
@@ -668,11 +674,13 @@ impl AskryptApp {
                 operation::focus_next()
             }
             Message::ShowPassword(index) => {
-                self.shown_password_index = Some(index);
-                Task::none()
-            }
-            Message::HidePassword => {
-                self.shown_password_index = None;
+                if let Some(old_index) = self.shown_password_index
+                    && index == old_index
+                {
+                    self.shown_password_index = None;
+                } else {
+                    self.shown_password_index = Some(index);
+                }
                 Task::none()
             }
             Message::ToggleAnswer0Visibility => {
@@ -750,7 +758,10 @@ impl AskryptApp {
             }));
         }
 
-        container(screen).center_x(Fill).center_y(Fill).into()
+        container(screen)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
     }
 
     fn welcome(&self) -> Column<'_, Message> {
@@ -1132,31 +1143,36 @@ impl AskryptApp {
                 weight: iced::font::Weight::Bold,
                 ..Default::default()
             }),
-        ]
-        .spacing(10);
+        ];
 
-        let secret_text = if show_password {
-            entry.secret.clone()
+        let (show_password_tooltip, secret_text, show_password_icon) = if show_password {
+            (
+                "Hide Password",
+                entry.secret.clone(),
+                icon::eye_slash_icon(),
+            )
         } else {
-            "••••••••".to_string()
+            ("Show Password", "••••••••".to_string(), icon::eye_icon())
         };
+
         let secret_row = row![
             text("Secret:").width(Length::Fixed(80.0)),
-            text(secret_text).width(Length::Fill),
-        ]
-        .spacing(10);
+            text(secret_text),
+            text_button_icon(show_password_icon, show_password_tooltip)
+                .on_press(Message::ShowPassword(index)),
+            text_button_icon(icon::copy_icon(), "Copy password")
+                .on_press(Message::CopyPassword(index)),
+        ];
 
         let url_row = row![
             text("URL:").width(Length::Fixed(80.0)),
             text(&entry.url).width(Length::Fill),
-        ]
-        .spacing(10);
+        ];
 
         let notes_row = row![
             text("Notes:").width(Length::Fixed(80.0)),
             text(&entry.notes).width(Length::Fill),
-        ]
-        .spacing(10);
+        ];
 
         // TODO: show entry type as a dropdown selection or icon
 
@@ -1168,39 +1184,23 @@ impl AskryptApp {
         let tags_row = row![
             text("Tags:").width(Length::Fixed(80.0)),
             text(tags_text).width(Length::Fill),
-        ]
-        .spacing(10);
+        ];
 
         let created_row = row![
             text("Created:").width(Length::Fixed(80.0)),
             text(&entry.created).width(Length::Fill),
-        ]
-        .spacing(10);
+        ];
 
         let modified_row = row![
             text("Modified:").width(Length::Fixed(80.0)),
             text(&entry.modified).width(Length::Fill),
-        ]
-        .spacing(10);
-
-        let show_button_label = if show_password {
-            icon_show_hide(true) + "Hide Password"
-        } else {
-            icon_show_hide(false) + "Show Password"
-        };
-        let show_button_message = if show_password {
-            crate::Message::HidePassword
-        } else {
-            crate::Message::ShowPassword(index)
-        };
+        ];
 
         let button_row = row![
-            control_button("📝Edit").on_press(Message::EditEntry(index)),
-            control_button("✖Delete")
+            control_button_icon(icon::pencil_icon(), "Edit").on_press(Message::EditEntry(index)),
+            control_button_icon(icon::x_lg_icon(), "Delete")
                 .style(button::danger)
                 .on_press(Message::DeleteEntry(index)),
-            control_button("📋Copy Password").on_press(Message::CopyPassword(index)),
-            control_button(show_button_label).on_press(show_button_message),
         ]
         .spacing(10);
 
@@ -1224,33 +1224,5 @@ impl AskryptApp {
             .padding(10)
             .width(Length::Fill)
             .style(container_border_r5)
-    }
-}
-
-fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
-    button(text(label)).padding([10, 20])
-}
-
-fn control_button<Message: Clone, S: Into<String>>(label: S) -> Button<'static, Message> {
-    button(text(label.into())).padding([5, 10])
-}
-
-fn icon_show_hide(show: bool) -> String {
-    if show {
-        "👁‍🗨".to_string()
-    } else {
-        "👁".to_string()
-    }
-}
-
-fn container_border_r5(theme: &Theme) -> container::Style {
-    container::Style {
-        border: iced::Border {
-            color: theme.palette().text,
-            width: 1.0,
-            radius: 5.0.into(),
-        },
-        background: Some(theme.palette().background.into()),
-        ..Default::default()
     }
 }
