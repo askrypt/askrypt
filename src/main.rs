@@ -301,7 +301,7 @@ impl AskryptApp {
                         .file
                         .clone()
                         .unwrap()
-                        .decrypt(data.clone(), self.answers.clone())
+                        .decrypt(data, self.answers.clone())
                     {
                         Ok(entries) => {
                             self.entries = entries;

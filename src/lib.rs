@@ -57,7 +57,7 @@
 //! // Later, load and decrypt
 //! let loaded = AskryptFile::load_from_file("my_vault.askrypt").unwrap();
 //! let question_data = loaded.get_questions_data("Smith".into()).unwrap();
-//! let decrypted_secrets = loaded.decrypt(question_data, answers[1..].into()).unwrap();
+//! let decrypted_secrets = loaded.decrypt(&question_data, answers[1..].into()).unwrap();
 //!
 //! assert_eq!(decrypted_secrets, secrets);
 //! # std::fs::remove_file("my_vault.askrypt").ok();
@@ -290,12 +290,12 @@ impl AskryptFile {
     ///
     /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000)).unwrap();
     /// let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
-    /// let decrypted_data = askrypt_file.decrypt(questions_data, answers[1..].into()).unwrap();
+    /// let decrypted_data = askrypt_file.decrypt(&questions_data, answers[1..].into()).unwrap();
     /// assert_eq!(decrypted_data, data);
     /// ```
     pub fn decrypt(
         &self,
-        questions_data: QuestionsData,
+        questions_data: &QuestionsData,
         answers: Vec<String>,
     ) -> Result<Vec<SecretEntry>, Box<dyn std::error::Error>> {
         // Validate inputs
@@ -1054,7 +1054,7 @@ mod tests {
         // Decrypt and verify
         let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
         let decrypted_data = askrypt_file
-            .decrypt(questions_data, answers[1..].into())
+            .decrypt(&questions_data, answers[1..].into())
             .unwrap();
         assert_eq!(decrypted_data, original_data);
     }
@@ -1090,7 +1090,7 @@ mod tests {
         let wrong_answers = vec!["Fluffy".to_string(), "New York2".to_string()];
 
         let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
-        let result = askrypt_file.decrypt(questions_data, wrong_answers);
+        let result = askrypt_file.decrypt(&questions_data, wrong_answers);
         // Should fail due to wrong answer (decryption error or invalid JSON)
         assert!(result.is_err());
         assert!(
@@ -1144,7 +1144,7 @@ mod tests {
         // Verify we can still decrypt with the loaded file
         let questions_data = loaded_file.get_questions_data(answers[0].clone()).unwrap();
         let decrypted_data = loaded_file
-            .decrypt(questions_data, answers[1..].into())
+            .decrypt(&questions_data, answers[1..].into())
             .unwrap();
         assert_eq!(decrypted_data, data);
 
