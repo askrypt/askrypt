@@ -735,7 +735,7 @@ impl AskryptApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let mut screen = match self.screen {
+        let screen = match self.screen {
             Screen::Welcome => self.welcome(),
             Screen::EditQuestions => self.edit_questions(),
             Screen::FirstQuestion => self.first_question(),
@@ -744,20 +744,6 @@ impl AskryptApp {
             Screen::EditEntry => self.edit_entry(),
         };
 
-        // TODO: show errors and success messages as toasts
-        if let Some(error) = &self.error_message {
-            screen = screen.push(text(error).style(text::danger).size(16).font(Font {
-                weight: iced::font::Weight::Bold,
-                ..Default::default()
-            }));
-        }
-        if let Some(success) = &self.success_message {
-            screen = screen.push(text(success).style(text::success).size(16).font(Font {
-                weight: iced::font::Weight::Bold,
-                ..Default::default()
-            }));
-        }
-
         container(screen)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
@@ -765,12 +751,14 @@ impl AskryptApp {
     }
 
     fn welcome(&self) -> Column<'_, Message> {
-        Self::title_h1("Askrypt")
+        let column = Self::title_h1("Askrypt")
             .push("Password Manager without master password")
             .push("Your secrets are protected by security questions only you know")
             .push(padded_button("Create New Vault").on_press(Message::CreateNewVault))
             .push(padded_button("Open Existing Vault").on_press(Message::OpenVault))
-            .align_x(alignment::Horizontal::Center)
+            .align_x(alignment::Horizontal::Center);
+
+        self.show_messages_in_column(column)
     }
 
     fn edit_questions(&self) -> Column<'_, Message> {
@@ -836,7 +824,7 @@ impl AskryptApp {
         };
 
         // Bottom section: Fixed status line
-        let bottom_section = Self::status_bar();
+        let bottom_section = self.status_bar();
 
         // Combine all three sections
         column![title, top_section, middle_section, bottom_section]
@@ -876,6 +864,7 @@ impl AskryptApp {
         ]
         .spacing(10);
         column = column.push(controls);
+        column = self.show_messages_in_column(column);
 
         column
     }
@@ -934,6 +923,7 @@ impl AskryptApp {
             ]
             .spacing(10);
             column = column.push(controls);
+            column = self.show_messages_in_column(column);
         }
 
         column
@@ -972,7 +962,7 @@ impl AskryptApp {
         };
 
         // Bottom section: Fixed status line
-        let bottom_section = Self::status_bar();
+        let bottom_section = self.status_bar();
 
         // Combine all three sections
         column![top_section, middle_section, bottom_section]
@@ -1052,11 +1042,13 @@ impl AskryptApp {
         .spacing(10);
 
         column = column.push(button_row);
+        column = self.show_messages_in_column(column);
 
         column
     }
 
     /// Creates a security input field with a toggle button to show/hide the input.
+    #[allow(clippy::too_many_arguments)]
     fn security_input_with_toggle<'a>(
         &self,
         password: &str,
@@ -1098,8 +1090,45 @@ impl AskryptApp {
         column![text(title).size(40)].spacing(10)
     }
 
-    fn status_bar() -> Element<'static, Message> {
-        container(text("Loaded").size(12).width(Length::Fill))
+    /// Displays error and success messages in the given column.
+    fn show_messages_in_column<'a>(&'a self, column: Column<'a, Message>) -> Column<'a, Message> {
+        let column = if let Some(error) = &self.error_message {
+            column.push(text(error).style(text::danger).size(14).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            }))
+        } else {
+            column
+        };
+
+        if let Some(success) = &self.success_message {
+            column.push(text(success).style(text::success).size(14).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            }))
+        } else {
+            column
+        }
+    }
+
+    /// Creates status bar and displays error/success messages.
+    fn status_bar(&self) -> Element<'_, Message> {
+        let text = if let Some(error) = &self.error_message {
+            text(error).style(text::danger).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            })
+        } else if let Some(success) = &self.success_message {
+            text(success).style(text::success).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            })
+        } else {
+            // TODO: show information message as well
+            text("")
+        };
+
+        container(text.size(14))
             .padding(3)
             .width(Length::Fill)
             .style(|theme: &Theme| container::Style {
