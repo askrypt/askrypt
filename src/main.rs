@@ -1058,7 +1058,9 @@ impl AskryptApp {
         show_tooltip: &'a str,
     ) -> Row<'a, Message> {
         let toggle_button = tooltip(
-            button(text(icon_show_hide(show_password))).on_press(toggle_msg),
+            button(text(icon_show_hide(show_password)))
+                .height(35)
+                .on_press(toggle_msg),
             if show_password {
                 hide_tooltip
             } else {
@@ -1077,7 +1079,7 @@ impl AskryptApp {
                 .size(12),
             toggle_button,
         ]
-        .spacing(10)
+        .spacing(5)
         .align_y(alignment::Vertical::Center)
     }
 
