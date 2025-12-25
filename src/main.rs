@@ -20,6 +20,7 @@ use iced::{
 };
 use std::cmp::PartialEq;
 use std::path::PathBuf;
+use std::time::Instant;
 
 pub fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -49,6 +50,7 @@ pub struct AskryptApp {
     questions_data: Option<QuestionsData>,
     error_message: Option<String>,
     success_message: Option<String>,
+    status_message: Option<String>,
     question0: String,
     answer0: String,
     answers: Vec<String>,
@@ -141,6 +143,7 @@ impl AskryptApp {
             questions_data: None,
             error_message: None,
             success_message: None,
+            status_message: None,
             question0: String::new(),
             answer0: String::new(),
             answers: Vec::new(),
@@ -211,6 +214,7 @@ impl AskryptApp {
             // Clear previous messages if message is not Message::Event
             self.error_message = None;
             self.success_message = None;
+            self.status_message = None;
         }
 
         match event {
@@ -303,6 +307,7 @@ impl AskryptApp {
             }
             Message::UnlockVault => {
                 if let Some(data) = &self.questions_data {
+                    let start = Instant::now();
                     match self
                         .file
                         .clone()
@@ -310,10 +315,14 @@ impl AskryptApp {
                         .decrypt(data, self.answers.clone())
                     {
                         Ok(entries) => {
+                            let duration = start.elapsed();
+                            let millis = duration.as_millis();
                             self.entries = entries;
                             self.shown_password_index = None;
                             self.screen = Screen::ShowEntries;
                             self.unlocked = true;
+                            self.status_message =
+                                Some(format!("The Vault unlocked in {} ms", millis));
                         }
                         Err(e) => {
                             eprintln!("ERROR: One or more answers are incorrect: {}", e);
@@ -1114,17 +1123,12 @@ impl AskryptApp {
     /// Creates status bar and displays error/success messages.
     fn status_bar(&self) -> Element<'_, Message> {
         let text = if let Some(error) = &self.error_message {
-            text(error).style(text::danger).font(Font {
-                weight: iced::font::Weight::Bold,
-                ..Default::default()
-            })
+            text(error).style(text::danger)
         } else if let Some(success) = &self.success_message {
-            text(success).style(text::success).font(Font {
-                weight: iced::font::Weight::Bold,
-                ..Default::default()
-            })
+            text(success).style(text::success)
+        } else if let Some(status) = &self.status_message {
+            text(status)
         } else {
-            // TODO: show information message as well
             text("")
         };
 
