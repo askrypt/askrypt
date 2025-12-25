@@ -46,6 +46,7 @@ pub struct AskryptApp {
     answer0: String,
     answers: Vec<String>,
     entries: Vec<SecretEntry>,
+    unlocked: bool,
     // Entry being edited (None for new entry, Some for existing/editing)
     edited_entry_index: Option<usize>,
     editing_entry: Option<SecretEntry>,
@@ -138,6 +139,7 @@ impl AskryptApp {
             answer0: String::new(),
             answers: Vec::new(),
             entries: Vec::new(),
+            unlocked: false,
             edited_entry_index: None,
             editing_entry: None,
             editing_tags: String::new(),
@@ -173,13 +175,20 @@ impl AskryptApp {
 
     fn title(&self) -> String {
         if let Some(path) = &self.path {
-            let suffix = if self.is_modified { "*" } else { "" };
-            let file_name = path
+            let mut title = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("Untitled")
                 .to_string();
-            format!("{}{} - {}", file_name, suffix, APP_TITLE)
+            if self.is_modified {
+                title.push('*');
+            }
+            if !self.unlocked {
+                title.push_str(" [Locked]");
+            }
+            title.push_str(" - ");
+            title.push_str(APP_TITLE);
+            title
         } else {
             APP_TITLE.to_string()
         }
@@ -287,21 +296,23 @@ impl AskryptApp {
                 }
             }
             Message::UnlockVault => {
-                let questions_data = self.questions_data.clone().unwrap();
-                match self
-                    .file
-                    .clone()
-                    .unwrap()
-                    .decrypt(questions_data, self.answers.clone())
-                {
-                    Ok(entries) => {
-                        self.entries = entries;
-                        self.shown_password_index = None;
-                        self.screen = Screen::ShowEntries;
-                    }
-                    Err(e) => {
-                        eprintln!("ERROR: One or more answers are incorrect: {}", e);
-                        self.error_message = Some("One or more answers are incorrect".into());
+                if let Some(data) = &self.questions_data {
+                    match self
+                        .file
+                        .clone()
+                        .unwrap()
+                        .decrypt(data.clone(), self.answers.clone())
+                    {
+                        Ok(entries) => {
+                            self.entries = entries;
+                            self.shown_password_index = None;
+                            self.screen = Screen::ShowEntries;
+                            self.unlocked = true;
+                        }
+                        Err(e) => {
+                            eprintln!("ERROR: One or more answers are incorrect: {}", e);
+                            self.error_message = Some("One or more answers are incorrect".into());
+                        }
                     }
                 }
                 Task::none()
@@ -647,6 +658,7 @@ impl AskryptApp {
                 self.answer0.clear();
                 self.answers.clear();
                 self.entries.clear();
+                self.unlocked = false;
                 self.questions_data = None;
                 self.screen = Screen::FirstQuestion;
                 self.edited_entry_index = None;
