@@ -138,7 +138,7 @@ const DEFAULT_ITERATIONS: u32 = 600_000;
 const APP_TITLE: &str = "Askrypt 0.3.0";
 
 impl AskryptApp {
-    fn new(vault_path: Option<PathBuf>) -> Self {
+    fn new(vault_path: Option<PathBuf>) -> (Self, Task<Message>) {
         let mut app = Self {
             screen: Screen::Welcome,
             path: None,
@@ -165,6 +165,8 @@ impl AskryptApp {
             is_modified: false,
         };
 
+        let mut task = Task::none();
+
         // Load vault from program argument if provided
         if let Some(path) = vault_path {
             match AskryptFile::load_from_file(path.as_path()) {
@@ -173,7 +175,7 @@ impl AskryptApp {
                     app.path = Some(path);
                     app.file = Some(file);
                     app.screen = Screen::FirstQuestion;
-                    // TODO: Focus on the first answer input
+                    task = operation::focus_next();
                 }
                 Err(e) => {
                     eprintln!("ERROR: Failed to open vault from arguments: {}", e);
@@ -182,7 +184,7 @@ impl AskryptApp {
             }
         }
 
-        app
+        (app, task)
     }
 
     fn title(&self) -> String {
