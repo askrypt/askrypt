@@ -15,9 +15,11 @@ use iced::widget::{
     Container, Row, Scrollable, button, column, container, operation, row, scrollable, text,
     text_input, tooltip,
 };
+use iced::window;
 use iced::{
     Element, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard, keyboard,
 };
+use rfd::MessageDialogResult;
 use std::cmp::PartialEq;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -39,6 +41,7 @@ pub fn main() {
     .subscription(AskryptApp::subscription)
     .centered()
     .theme(Theme::Light)
+    .exit_on_close_request(false)
     .font(include_bytes!("../static/bootstrap-icons.ttf"))
     .run();
 }
@@ -250,18 +253,21 @@ impl AskryptApp {
                 operation::focus_next()
             }
             Message::BackToWelcome => {
-                self.screen = Screen::Welcome;
-                self.path = None;
-                self.file = None;
-                self.questions_data = None;
-                self.question0.clear();
-                self.answer0.clear();
-                self.answers.clear();
-                self.entries.clear();
-                self.edited_entry_index = None;
-                self.editing_entry = None;
-                self.show_answer0 = false;
-                self.shown_answer_index = None;
+                if self.ask_user_about_changes() {
+                    self.screen = Screen::Welcome;
+                    self.path = None;
+                    self.file = None;
+                    self.questions_data = None;
+                    self.question0.clear();
+                    self.answer0.clear();
+                    self.answers.clear();
+                    self.entries.clear();
+                    self.edited_entry_index = None;
+                    self.editing_entry = None;
+                    self.show_answer0 = false;
+                    self.shown_answer_index = None;
+                    self.is_modified = false;
+                }
                 Task::none()
             }
             Message::Answer0Edited(value) => {
@@ -670,17 +676,22 @@ impl AskryptApp {
                 Task::none()
             }
             Message::LockVault => {
-                self.answer0.clear();
-                self.answers.clear();
-                self.entries.clear();
-                self.unlocked = false;
-                self.questions_data = None;
-                self.screen = Screen::FirstQuestion;
-                self.edited_entry_index = None;
-                self.editing_entry = None;
-                self.show_answer0 = false;
-                self.shown_answer_index = None;
-                operation::focus_next()
+                if self.ask_user_about_changes() {
+                    self.answer0.clear();
+                    self.answers.clear();
+                    self.entries.clear();
+                    self.unlocked = false;
+                    self.questions_data = None;
+                    self.screen = Screen::FirstQuestion;
+                    self.edited_entry_index = None;
+                    self.editing_entry = None;
+                    self.show_answer0 = false;
+                    self.shown_answer_index = None;
+                    self.is_modified = false;
+                    operation::focus_next()
+                } else {
+                    Task::none()
+                }
             }
             Message::ShowPassword(index) => {
                 if let Some(old_index) = self.shown_password_index
@@ -716,6 +727,13 @@ impl AskryptApp {
                     return clipboard::write(entry.secret.clone());
                 }
                 Task::none()
+            }
+            Message::Event(Event::Window(window::Event::CloseRequested)) => {
+                if self.ask_user_about_changes() {
+                    iced::exit()
+                } else {
+                    Task::none() // Cancel - don't close
+                }
             }
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(key::Named::Tab),
@@ -1257,5 +1275,29 @@ impl AskryptApp {
             .padding(10)
             .width(Length::Fill)
             .style(container_border_r5)
+    }
+
+    /// Ask user about unsaved changes. Returns true if it's okay to proceed, false to cancel.
+    fn ask_user_about_changes(&mut self) -> bool {
+        if self.is_modified {
+            let result = rfd::MessageDialog::new()
+                .set_title("Unsaved Changes")
+                .set_description("You have unsaved changes. Would you like to save them?")
+                .set_buttons(rfd::MessageButtons::YesNoCancel)
+                .show();
+
+            match result {
+                MessageDialogResult::Yes => {
+                    let _ = self.update(Message::SaveVault);
+                }
+                MessageDialogResult::Cancel => {
+                    return false;
+                }
+                _ => {
+                    // do nothing
+                }
+            }
+        }
+        true
     }
 }
