@@ -1,8 +1,10 @@
 #![windows_subsystem = "windows"]
 
 mod icon;
+mod settings;
 mod ui;
 
+use crate::settings::AppSettings;
 use crate::ui::{
     container_border_r5, control_button, control_button_icon, icon_show_hide, padded_button,
     text_button_icon,
@@ -78,6 +80,8 @@ pub struct AskryptApp {
     shown_answer_index: Option<usize>,
     // Track if vault data has been modified
     is_modified: bool,
+    // Application settings
+    settings: AppSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +143,8 @@ const APP_TITLE: &str = "Askrypt 0.3.0";
 
 impl AskryptApp {
     fn new(vault_path: Option<PathBuf>) -> (Self, Task<Message>) {
+        let settings = AppSettings::load();
+
         let mut app = Self {
             screen: Screen::Welcome,
             path: None,
@@ -163,11 +169,25 @@ impl AskryptApp {
             show_answer0: false,
             shown_answer_index: None,
             is_modified: false,
+            settings,
         };
 
         let mut task = Task::none();
+        let vault_path = match vault_path {
+            None => {
+                if let Some(last_file) = &app.settings.last_opened_file
+                    && last_file.exists()
+                {
+                    // Try to open last opened file if it exists
+                    Some(last_file.clone())
+                } else {
+                    None
+                }
+            }
+            // Load vault from program argument if provided
+            Some(_) => vault_path,
+        };
 
-        // Load vault from program argument if provided
         if let Some(path) = vault_path {
             match AskryptFile::load_from_file(path.as_path()) {
                 Ok(file) => {
@@ -269,6 +289,7 @@ impl AskryptApp {
                     self.show_answer0 = false;
                     self.shown_answer_index = None;
                     self.is_modified = false;
+                    self.settings.last_opened_file = None;
                 }
                 Task::none()
             }
@@ -329,6 +350,7 @@ impl AskryptApp {
                             self.shown_password_index = None;
                             self.screen = Screen::ShowEntries;
                             self.unlocked = true;
+                            self.settings.last_opened_file = self.path.clone();
                             self.status_message =
                                 Some(format!("The Vault unlocked in {} ms", millis));
                         }
@@ -518,10 +540,11 @@ impl AskryptApp {
                     ) {
                         Ok(new_file) => match new_file.save_to_file(&new_path) {
                             Ok(_) => {
-                                self.path = Some(new_path);
+                                self.path = Some(new_path.clone());
                                 self.file = Some(new_file);
                                 self.is_modified = false;
                                 self.success_message = Some("Vault saved successfully".into());
+                                self.settings.last_opened_file = Some(new_path);
                             }
                             Err(e) => {
                                 eprintln!("ERROR: Failed to save vault: {}", e);
@@ -659,6 +682,7 @@ impl AskryptApp {
                     self.shown_password_index = None;
                     self.screen = Screen::ShowEntries;
                 } else {
+                    self.settings.last_opened_file = None;
                     self.screen = Screen::Welcome;
                 }
                 Task::none()
@@ -732,6 +756,9 @@ impl AskryptApp {
             }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
                 if self.ask_user_about_changes() {
+                    // Save settings before exiting
+                    // TODO: handle potential error
+                    let _ = self.settings.save();
                     iced::exit()
                 } else {
                     Task::none() // Cancel - don't close
