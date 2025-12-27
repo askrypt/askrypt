@@ -33,6 +33,7 @@
 //! let secrets = vec![
 //!     SecretEntry {
 //!         name: "Gmail".to_string(),
+//!         user_name: "user2".to_string(),
 //!         secret: "my_super_secret_password".to_string(),
 //!         url: "https://gmail.com".to_string(),
 //!         notes: "Personal email account".to_string(),
@@ -79,6 +80,7 @@ type Aes256CbcDec = Decryptor<Aes256>;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecretEntry {
     pub name: String,
+    pub user_name: String,
     pub secret: String,
     pub url: String,
     pub notes: String,
@@ -158,6 +160,7 @@ impl AskryptFile {
     /// let data = vec![
     ///     SecretEntry {
     ///         name: "example".to_string(),
+    ///         user_name: "user5".to_string(),
     ///         secret: "password123".to_string(),
     ///         url: "https://example.com".to_string(),
     ///         notes: "My account".to_string(),
@@ -278,6 +281,7 @@ impl AskryptFile {
     /// let data = vec![
     ///     SecretEntry {
     ///         name: "example".to_string(),
+    ///         user_name: "user5".to_string(),
     ///         secret: "password123".to_string(),
     ///         url: "https://example.com".to_string(),
     ///         notes: "My account".to_string(),
@@ -851,6 +855,7 @@ mod tests {
     fn test_secret_entry_serialization() {
         let entry = SecretEntry {
             name: "test_user".to_string(),
+            user_name: "user5".to_string(),
             secret: "test_password".to_string(),
             url: "https://example.com".to_string(),
             notes: "Test notes".to_string(),
@@ -915,6 +920,7 @@ mod tests {
         ];
         let data = vec![SecretEntry {
             name: "example".to_string(),
+            user_name: "user5".to_string(),
             secret: "password123".to_string(),
             url: "https://example.com".to_string(),
             notes: "My account".to_string(),
@@ -1022,6 +1028,7 @@ mod tests {
         let original_data = vec![
             SecretEntry {
                 name: "example1".to_string(),
+                user_name: "user5".to_string(),
                 secret: "password123".to_string(),
                 url: "https://example.com".to_string(),
                 notes: "My account".to_string(),
@@ -1032,6 +1039,7 @@ mod tests {
             },
             SecretEntry {
                 name: "example2".to_string(),
+                user_name: "user5".to_string(),
                 secret: "secret456".to_string(),
                 url: "https://test.com".to_string(),
                 notes: "Test notes".to_string(),
@@ -1073,6 +1081,7 @@ mod tests {
         ];
         let data = vec![SecretEntry {
             name: "example".to_string(),
+            user_name: "user5".to_string(),
             secret: "password123".to_string(),
             url: "https://example.com".to_string(),
             notes: "My account".to_string(),
@@ -1117,6 +1126,7 @@ mod tests {
         ];
         let data = vec![SecretEntry {
             name: "example".to_string(),
+            user_name: "user5".to_string(),
             secret: "password123".to_string(),
             url: "https://example.com".to_string(),
             notes: "My account".to_string(),
@@ -1165,6 +1175,7 @@ mod tests {
 
         let data = vec![SecretEntry {
             name: "test".to_string(),
+            user_name: "user5".to_string(),
             secret: "secret".to_string(),
             url: "https://test.com".to_string(),
             notes: "notes".to_string(),

@@ -15,7 +15,9 @@ pub fn control_button_icon<'a, T: 'a>(icon: Text<'a>, t: &'static str) -> Button
 }
 
 pub fn text_button_icon<'a, T: 'a>(icon: Text<'a>, tooltip: &'static str) -> Button<'a, T> {
-    Button::new(iced::widget::tooltip(icon, tooltip, tooltip::Position::Top)).style(button::text)
+    Button::new(iced::widget::tooltip(icon, tooltip, tooltip::Position::Top))
+        .style(button::text)
+        .padding(3)
 }
 
 pub fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {

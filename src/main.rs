@@ -101,6 +101,7 @@ pub enum Message {
     BackToEntries,
     FocusNext,
     EntryNameEdited(String),
+    EntryUserNameEdited(String),
     EntrySecretEdited(String),
     EntryUrlEdited(String),
     EntryNotesEdited(String),
@@ -124,6 +125,7 @@ pub enum Message {
     ToggleAnswer0Visibility,
     ShowAnswer(usize),
     CopyPassword(usize),
+    CopyUsername(usize),
     OpenUrl(String),
     ClickTag(String),
     Event(Event),
@@ -362,6 +364,7 @@ impl AskryptApp {
                 self.edited_entry_index = None;
                 self.editing_entry = Some(SecretEntry {
                     name: String::new(),
+                    user_name: String::new(),
                     secret: String::new(),
                     url: String::new(),
                     notes: String::new(),
@@ -397,6 +400,12 @@ impl AskryptApp {
             Message::EntryNameEdited(value) => {
                 if let Some(entry) = &mut self.editing_entry {
                     entry.name = value;
+                }
+                Task::none()
+            }
+            Message::EntryUserNameEdited(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    entry.user_name = value;
                 }
                 Task::none()
             }
@@ -750,6 +759,13 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::CopyUsername(index) => {
+                if let Some(entry) = self.entries.get(index) {
+                    self.success_message = Some(format!("Copied username for '{}'", entry.name));
+                    return clipboard::write(entry.user_name.clone());
+                }
+                Task::none()
+            }
             Message::OpenUrl(url) => {
                 if !url.is_empty() {
                     if let Err(e) = open::that(&url) {
@@ -1055,6 +1071,15 @@ impl AskryptApp {
                         .width(400)
                         .size(12),
                 )
+                .push(text("Username:").size(14))
+                .push(
+                    text_input("User name", &entry.user_name)
+                        .on_input(Message::EntryUserNameEdited)
+                        .on_submit(Message::FocusNext)
+                        .padding(10)
+                        .width(400)
+                        .size(12),
+                )
                 .push(text("Password:").size(14))
                 .push(
                     self.security_input_with_toggle(
@@ -1226,12 +1251,19 @@ impl AskryptApp {
         show_password: bool,
         index: usize,
     ) -> Element<'a, Message> {
+        const ENTRY_FIXED: f32 = 100.0;
         let name_row = row![
-            text("Name:").width(Length::Fixed(90.0)),
+            text("Name:").width(Length::Fixed(ENTRY_FIXED)),
             text(&entry.name).width(Length::Fill).font(Font {
                 weight: iced::font::Weight::Bold,
                 ..Default::default()
             }),
+        ];
+        let user_name_row = row![
+            text("Username:").width(Length::Fixed(ENTRY_FIXED)),
+            text(&entry.user_name),
+            text_button_icon(icon::copy_icon(), "Copy username")
+                .on_press(Message::CopyUsername(index)),
         ];
 
         let (show_password_tooltip, secret_text, show_password_icon) = if show_password {
@@ -1245,7 +1277,7 @@ impl AskryptApp {
         };
 
         let secret_row = row![
-            text("Password:").width(Length::Fixed(90.0)),
+            text("Password:").width(Length::Fixed(ENTRY_FIXED)),
             text(secret_text),
             text_button_icon(show_password_icon, show_password_tooltip)
                 .on_press(Message::ShowPassword(index)),
@@ -1265,7 +1297,7 @@ impl AskryptApp {
             } else {
                 text(&entry.url).into()
             };
-            Some(row![text("URL:").width(Length::Fixed(90.0)), elem,])
+            Some(row![text("URL:").width(Length::Fixed(ENTRY_FIXED)), elem,])
         } else {
             // don't show URL row if URL is empty
             None
@@ -1273,7 +1305,7 @@ impl AskryptApp {
 
         let notes_row = if !entry.notes.is_empty() {
             Some(row![
-                text("Notes:").width(Length::Fixed(90.0)),
+                text("Notes:").width(Length::Fixed(ENTRY_FIXED)),
                 text(&entry.notes).width(Length::Fill),
             ])
         } else {
@@ -1291,19 +1323,19 @@ impl AskryptApp {
                         .on_press(Message::ClickTag(tag.clone())),
                 );
             }
-            Some(row![text("Tags:").width(Length::Fixed(90.0)), row])
+            Some(row![text("Tags:").width(Length::Fixed(ENTRY_FIXED)), row])
         } else {
             // don't show tags row if there are no tags
             None
         };
 
         let created_row = row![
-            text("Created:").width(Length::Fixed(90.0)),
+            text("Created:").width(Length::Fixed(ENTRY_FIXED)),
             text(&entry.created).width(Length::Fill),
         ];
 
         let modified_row = row![
-            text("Modified:").width(Length::Fixed(90.0)),
+            text("Modified:").width(Length::Fixed(ENTRY_FIXED)),
             text(&entry.modified).width(Length::Fill),
         ];
 
@@ -1317,6 +1349,7 @@ impl AskryptApp {
 
         let content = column![
             name_row,
+            user_name_row,
             secret_row,
             url_row,
             notes_row,
