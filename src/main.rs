@@ -1271,10 +1271,15 @@ impl AskryptApp {
             None
         };
 
-        let notes_row = row![
-            text("Notes:").width(Length::Fixed(90.0)),
-            text(&entry.notes).width(Length::Fill),
-        ];
+        let notes_row = if !entry.notes.is_empty() {
+            Some(row![
+                text("Notes:").width(Length::Fixed(90.0)),
+                text(&entry.notes).width(Length::Fill),
+            ])
+        } else {
+            // don't show notes row if notes are empty
+            None
+        };
 
         // TODO: show entry type as a dropdown selection or icon
 
