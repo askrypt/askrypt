@@ -1380,10 +1380,10 @@ impl AskryptApp {
         ];
 
         let button_row = row![
-            control_button_icon(icon::pencil_icon(), "Edit").on_press(Message::EditEntry(index)),
             control_button_icon(icon::x_lg_icon(), "Delete")
                 .style(button::danger)
                 .on_press(Message::DeleteEntry(index)),
+            control_button_icon(icon::pencil_icon(), "Edit").on_press(Message::EditEntry(index)),
         ]
         .spacing(10);
 
