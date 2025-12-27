@@ -45,3 +45,50 @@ pub fn container_border_r5(theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+
+/// Creates a button that looks like a link with an optional icon and tooltip
+pub fn button_link<'a, T: 'a, S: Into<String>>(
+    t: S,
+    tooltip: &'static str,
+    icon: Option<Text<'a>>,
+) -> Button<'a, T> {
+    let row = row![text(t.into()), icon]
+        .spacing(3)
+        .align_y(Vertical::Center);
+    let content = container(row).align_x(Horizontal::Left);
+    Button::new(iced::widget::tooltip(
+        content,
+        tooltip,
+        tooltip::Position::Right,
+    ))
+    .padding(0)
+    .style(button_link_style)
+}
+
+/// Style for link-like buttons
+fn button_link_style(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let base = button::Style::default();
+
+    match status {
+        button::Status::Active | button::Status::Pressed => button::Style {
+            text_color: palette.primary.strong.color.scale_alpha(0.8),
+            ..base
+        },
+        button::Status::Hovered => button::Style {
+            text_color: palette.primary.strong.color,
+            ..base
+        },
+        button::Status::Disabled => disabled(base),
+    }
+}
+
+fn disabled(style: button::Style) -> button::Style {
+    button::Style {
+        background: style
+            .background
+            .map(|background| background.scale_alpha(0.5)),
+        text_color: style.text_color.scale_alpha(0.5),
+        ..style
+    }
+}

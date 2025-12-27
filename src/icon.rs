@@ -29,3 +29,7 @@ pub fn eye_slash_icon() -> Text<'static> {
 pub fn x_lg_icon() -> Text<'static> {
     bootstrap_icon('\u{F659}')
 }
+
+pub fn box_arrow_up_right_icon() -> Text<'static> {
+    bootstrap_icon('\u{F1C5}')
+}

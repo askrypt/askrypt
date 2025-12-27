@@ -6,8 +6,8 @@ mod ui;
 
 use crate::settings::AppSettings;
 use crate::ui::{
-    container_border_r5, control_button, control_button_icon, icon_show_hide, padded_button,
-    text_button_icon,
+    button_link, container_border_r5, control_button, control_button_icon, icon_show_hide,
+    padded_button, text_button_icon,
 };
 use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
 use iced::event::{self, Event};
@@ -124,6 +124,7 @@ pub enum Message {
     ToggleAnswer0Visibility,
     ShowAnswer(usize),
     CopyPassword(usize),
+    OpenUrl(String),
     Event(Event),
 }
 
@@ -748,6 +749,15 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::OpenUrl(url) => {
+                if !url.is_empty() {
+                    if let Err(e) = open::that(&url) {
+                        eprintln!("ERROR: Failed to open URL: {}", e);
+                        self.error_message = Some("Failed to open URL".into());
+                    }
+                }
+                Task::none()
+            }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
                 if self.ask_user_about_changes() {
                     // Save settings before exiting
@@ -1238,10 +1248,23 @@ impl AskryptApp {
                 .on_press(Message::CopyPassword(index)),
         ];
 
-        let url_row = row![
-            text("URL:").width(Length::Fixed(90.0)),
-            text(&entry.url).width(Length::Fill),
-        ];
+        let url_row = if !entry.url.is_empty() {
+            let elem: Element<Message> = if is_link(&entry.url) {
+                button_link(
+                    entry.url.clone(),
+                    "Open link",
+                    Some(icon::box_arrow_up_right_icon()),
+                )
+                .on_press(Message::OpenUrl(entry.url.clone()))
+                .into()
+            } else {
+                text(&entry.url).into()
+            };
+            Some(row![text("URL:").width(Length::Fixed(90.0)), elem,])
+        } else {
+            // don't show URL row if URL is empty
+            None
+        };
 
         let notes_row = row![
             text("Notes:").width(Length::Fixed(90.0)),
@@ -1323,4 +1346,8 @@ impl AskryptApp {
         }
         true
     }
+}
+
+fn is_link(string: &str) -> bool {
+    string.starts_with("http://") || string.starts_with("https://")
 }
