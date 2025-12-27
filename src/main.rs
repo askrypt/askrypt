@@ -298,27 +298,26 @@ impl AskryptApp {
                 Task::none()
             }
             Message::Answer0Finished => {
-                match self
-                    .file
-                    .clone()
-                    .unwrap()
-                    .get_questions_data(self.answer0.to_string())
-                {
-                    Ok(questions_data) => {
-                        let questions_count = questions_data.questions.len();
-                        self.questions_data = Some(questions_data);
-                        self.screen = Screen::OtherQuestions;
-                        self.shown_answer_index = None;
-                        while self.answers.len() < questions_count {
-                            self.answers.push(String::new());
+                if let Some(file) = &self.file {
+                    match file.get_questions_data(self.answer0.to_string()) {
+                        Ok(questions_data) => {
+                            let questions_count = questions_data.questions.len();
+                            self.questions_data = Some(questions_data);
+                            self.screen = Screen::OtherQuestions;
+                            self.shown_answer_index = None;
+                            while self.answers.len() < questions_count {
+                                self.answers.push(String::new());
+                            }
+                            operation::focus_next()
                         }
-                        operation::focus_next()
+                        Err(e) => {
+                            eprintln!("ERROR: The answer is incorrect: {}", e);
+                            self.error_message = Some("The answer is incorrect".into());
+                            Task::none()
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("ERROR: The answer is incorrect: {}", e);
-                        self.error_message = Some("The answer is incorrect".into());
-                        Task::none()
-                    }
+                } else {
+                    Task::none()
                 }
             }
             Message::AnswerEdited(index, value) => {
@@ -335,14 +334,9 @@ impl AskryptApp {
                 }
             }
             Message::UnlockVault => {
-                if let Some(data) = &self.questions_data {
+                if let (Some(data), Some(file)) = (&self.questions_data, &self.file) {
                     let start = Instant::now();
-                    match self
-                        .file
-                        .clone()
-                        .unwrap()
-                        .decrypt(data, self.answers.clone())
-                    {
+                    match file.decrypt(data, self.answers.clone()) {
                         Ok(entries) => {
                             let duration = start.elapsed();
                             let millis = duration.as_millis();
