@@ -59,7 +59,7 @@ pub fn button_link<'a, T: 'a, S: Into<String>>(
     Button::new(iced::widget::tooltip(
         content,
         tooltip,
-        tooltip::Position::Right,
+        tooltip::Position::Top,
     ))
     .padding(0)
     .style(button_link_style)

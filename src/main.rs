@@ -125,6 +125,7 @@ pub enum Message {
     ShowAnswer(usize),
     CopyPassword(usize),
     OpenUrl(String),
+    ClickTag(String),
     Event(Event),
 }
 
@@ -758,6 +759,10 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::ClickTag(tag) => {
+                println!("TODO: implement search: {}", tag);
+                Task::none()
+            }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
                 if self.ask_user_about_changes() {
                     // Save settings before exiting
@@ -1273,15 +1278,19 @@ impl AskryptApp {
 
         // TODO: show entry type as a dropdown selection or icon
 
-        let tags_text = if entry.tags.is_empty() {
-            "None".to_string()
+        let tags_row = if !entry.tags.is_empty() {
+            let mut row = row![].spacing(5);
+            for tag in &entry.tags {
+                row = row.push(
+                    button_link(make_hash_tag(&tag), "Click to filter", None)
+                        .on_press(Message::ClickTag(tag.clone())),
+                );
+            }
+            Some(row![text("Tags:").width(Length::Fixed(90.0)), row])
         } else {
-            entry.tags.join(", ")
+            // don't show tags row if there are no tags
+            None
         };
-        let tags_row = row![
-            text("Tags:").width(Length::Fixed(90.0)),
-            text(tags_text).width(Length::Fill),
-        ];
 
         let created_row = row![
             text("Created:").width(Length::Fixed(90.0)),
@@ -1315,7 +1324,6 @@ impl AskryptApp {
 
         Self::container_with_border(content).into()
     }
-
     fn container_with_border(item: Column<'_, Message>) -> Container<'_, Message> {
         container(item)
             .padding(10)
@@ -1350,4 +1358,12 @@ impl AskryptApp {
 
 fn is_link(string: &str) -> bool {
     string.starts_with("http://") || string.starts_with("https://")
+}
+
+fn make_hash_tag(tag: &str) -> String {
+    if tag.starts_with('#') {
+        tag.to_string()
+    } else {
+        format!("#{}", tag)
+    }
 }
