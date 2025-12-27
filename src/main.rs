@@ -60,6 +60,7 @@ pub struct AskryptApp {
     answer0: String,
     answers: Vec<String>,
     entries: Vec<SecretEntry>,
+    entries_filter: String,
     unlocked: bool,
     // Entry being edited (None for new entry, Some for existing/editing)
     edited_entry_index: Option<usize>,
@@ -99,6 +100,7 @@ pub enum Message {
     AddNewEntry,
     EditEntry(usize),
     BackToEntries,
+    EntriesFilterEdited(String),
     FocusNext,
     EntryNameEdited(String),
     EntryUserNameEdited(String),
@@ -161,6 +163,7 @@ impl AskryptApp {
             answer0: String::new(),
             answers: Vec::new(),
             entries: Vec::new(),
+            entries_filter: String::new(),
             unlocked: false,
             edited_entry_index: None,
             editing_entry: None,
@@ -394,6 +397,10 @@ impl AskryptApp {
                 self.shown_password_index = None;
                 self.show_secret_in_edit = false;
                 self.screen = Screen::ShowEntries;
+                Task::none()
+            }
+            Message::EntriesFilterEdited(value) => {
+                self.entries_filter = value;
                 Task::none()
             }
             Message::FocusNext => operation::focus_next(),
@@ -1018,15 +1025,44 @@ impl AskryptApp {
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
+            text_input(
+                "Filter entries by name, username, ...",
+                &self.entries_filter,
+            )
+            .on_input(Message::EntriesFilterEdited)
+            .padding(10)
         ]);
+
+        // Filter entries based on search text
+        let filtered_entries: Vec<(usize, &SecretEntry)> = if self.entries_filter.is_empty() {
+            self.entries.iter().enumerate().collect()
+        } else {
+            let filter_lower = self.entries_filter.to_lowercase();
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    entry.name.to_lowercase().contains(&filter_lower)
+                        || entry.user_name.to_lowercase().contains(&filter_lower)
+                        || entry.url.to_lowercase().contains(&filter_lower)
+                        || entry.notes.to_lowercase().contains(&filter_lower)
+                        || entry
+                            .tags
+                            .iter()
+                            .any(|tag| tag.to_lowercase().contains(&filter_lower))
+                })
+                .collect()
+        };
 
         // Middle section: Scrollable entries
         let middle_section = if self.entries.is_empty() {
             Self::caption_block("No secret entries available. Add a new one...")
+        } else if filtered_entries.is_empty() {
+            Self::caption_block("No entries match the filter criteria.")
         } else {
             let mut entries_column = column![].spacing(15).padding(15).width(Length::Fill);
 
-            for (index, entry) in self.entries.iter().enumerate() {
+            for (index, entry) in filtered_entries {
                 let entry_col = column![self.secret_entry_widget(
                     entry,
                     self.shown_password_index == Some(index),
