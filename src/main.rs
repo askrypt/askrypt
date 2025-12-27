@@ -783,7 +783,11 @@ impl AskryptApp {
                 Task::none()
             }
             Message::ClickTag(tag) => {
-                println!("TODO: implement search: {}", tag);
+                self.entries_filter = if tag.starts_with('#') {
+                    tag[1..].to_string()
+                } else {
+                    tag
+                };
                 Task::none()
             }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
