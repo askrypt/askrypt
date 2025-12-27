@@ -858,6 +858,16 @@
                         <div class="secret-field-value">${entry.type}</div>
                     </div>
                     ${
+                entry.user_name
+                    ? `
+                    <div class="secret-field">
+                        <span class="secret-field-label">Username:</span>
+                        <div class="secret-field-value">${escapeHtml(entry.user_name)}</div>
+                    </div>
+                    `
+                    : ""
+            }
+                    ${
                 entry.secret
                     ? `
                     <div class="secret-field">
