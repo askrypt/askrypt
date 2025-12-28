@@ -1295,8 +1295,14 @@ impl AskryptApp {
         let user_name_row = row![
             text("Username:").width(Length::Fixed(ENTRY_FIXED)),
             text(&entry.user_name),
-            text_button_icon(icon::copy_icon(), "Copy username")
-                .on_press(Message::CopyUsername(index)),
+            if entry.user_name.is_empty() {
+                None
+            } else {
+                Some(
+                    text_button_icon(icon::copy_icon(), "Copy username")
+                        .on_press(Message::CopyUsername(index)),
+                )
+            },
         ];
 
         let (show_password_tooltip, secret_text, show_password_icon) = if show_password {
