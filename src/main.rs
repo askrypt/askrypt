@@ -774,11 +774,11 @@ impl AskryptApp {
                 Task::none()
             }
             Message::OpenUrl(url) => {
-                if !url.is_empty() {
-                    if let Err(e) = open::that(&url) {
-                        eprintln!("ERROR: Failed to open URL: {}", e);
-                        self.error_message = Some("Failed to open website".into());
-                    }
+                if !url.is_empty()
+                    && let Err(e) = open::that(&url)
+                {
+                    eprintln!("ERROR: Failed to open URL: {}", e);
+                    self.error_message = Some("Failed to open website".into());
                 }
                 Task::none()
             }
@@ -1361,7 +1361,7 @@ impl AskryptApp {
             let mut row = row![].spacing(5);
             for tag in &entry.tags {
                 row = row.push(
-                    button_link(make_hash_tag(&tag), "Click to filter", None)
+                    button_link(make_hash_tag(tag), "Click to filter", None)
                         .on_press(Message::ClickTag(tag.clone())),
                 );
             }
@@ -1449,8 +1449,8 @@ fn make_hash_tag(tag: &str) -> String {
 }
 
 fn clean_hash_tag(tag: String) -> String {
-    if tag.starts_with('#') {
-        tag[1..].to_string()
+    if let Some(end) = tag.strip_prefix('#') {
+        end.to_string()
     } else {
         tag
     }

@@ -2,34 +2,26 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     pub last_opened_file: Option<PathBuf>,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            last_opened_file: None,
-        }
-    }
 }
 
 impl AppSettings {
     /// Load settings from the config file
     pub fn load() -> Self {
-        if let Some(config_path) = Self::get_config_path() {
-            if config_path.exists() {
-                match fs::read_to_string(&config_path) {
-                    Ok(contents) => match serde_json::from_str(&contents) {
-                        Ok(settings) => return settings,
-                        Err(e) => {
-                            eprintln!("Failed to parse settings file: {}", e);
-                        }
-                    },
+        if let Some(config_path) = Self::get_config_path()
+            && config_path.exists()
+        {
+            match fs::read_to_string(&config_path) {
+                Ok(contents) => match serde_json::from_str(&contents) {
+                    Ok(settings) => return settings,
                     Err(e) => {
-                        eprintln!("Failed to read settings file: {}", e);
+                        eprintln!("Failed to parse settings file: {}", e);
                     }
+                },
+                Err(e) => {
+                    eprintln!("Failed to read settings file: {}", e);
                 }
             }
         }
