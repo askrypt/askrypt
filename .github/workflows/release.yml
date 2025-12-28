@@ -42,12 +42,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             artifact_name: askrypt
-            asset_name: askrypt-linux-x64
-            install_deps: |
-              sudo apt-get update
-              sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-render0-dev libxcb-shm0-dev
+            asset_name: askrypt-unknown-linux-musl-x86_64
+            install_deps: ""
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
