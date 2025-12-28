@@ -441,7 +441,7 @@ impl AskryptApp {
             Message::SaveEntry => {
                 if let Some(entry) = &mut self.editing_entry {
                     if entry.name.trim().is_empty() {
-                        self.error_message = Some("Entry name cannot be empty".into());
+                        self.error_message = Some("Item name cannot be empty".into());
                         return Task::none();
                     }
 
@@ -777,7 +777,7 @@ impl AskryptApp {
                 if !url.is_empty() {
                     if let Err(e) = open::that(&url) {
                         eprintln!("ERROR: Failed to open URL: {}", e);
-                        self.error_message = Some("Failed to open URL".into());
+                        self.error_message = Some("Failed to open website".into());
                     }
                 }
                 Task::none()
@@ -1024,17 +1024,14 @@ impl AskryptApp {
     fn show_entries(&self) -> Column<'_, Message> {
         // Top section: Fixed control buttons
         let top_section = Self::controls_block(row![
-            padded_button("Add New Entry").on_press(Message::AddNewEntry),
+            padded_button("Add New Item").on_press(Message::AddNewEntry),
             padded_button("Edit Questions").on_press(Message::EditQuestions),
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
-            text_input(
-                "Filter entries by name, username, ...",
-                &self.entries_filter,
-            )
-            .on_input(Message::EntriesFilterEdited)
-            .padding(10)
+            text_input("Filter items by name, username, ...", &self.entries_filter,)
+                .on_input(Message::EntriesFilterEdited)
+                .padding(10)
         ]);
 
         // Filter entries based on search text
@@ -1060,9 +1057,9 @@ impl AskryptApp {
 
         // Middle section: Scrollable entries
         let middle_section = if self.entries.is_empty() {
-            Self::caption_block("No secret entries available. Add a new one...")
+            Self::caption_block("You have no items. Add a new one...")
         } else if filtered_entries.is_empty() {
-            Self::caption_block("No entries match the filter criteria.")
+            Self::caption_block("No items match the filter criteria.")
         } else {
             let mut entries_column = column![].spacing(15).padding(15).width(Length::Fill);
 
@@ -1093,9 +1090,9 @@ impl AskryptApp {
 
     fn edit_entry(&self) -> Column<'_, Message> {
         let title = if self.edited_entry_index.is_some() {
-            "Edit Entry"
+            "Edit Item"
         } else {
-            "Create New Entry"
+            "Create New Item"
         };
 
         let mut column = Self::title_h1(title);
@@ -1113,7 +1110,7 @@ impl AskryptApp {
                 )
                 .push(text("Username:").size(14))
                 .push(
-                    text_input("User name", &entry.user_name)
+                    text_input("Username or email", &entry.user_name)
                         .on_input(Message::EntryUserNameEdited)
                         .on_submit(Message::FocusNext)
                         .padding(10)
@@ -1134,9 +1131,9 @@ impl AskryptApp {
                     )
                     .width(400),
                 )
-                .push(text("URL:").size(14))
+                .push(text("Website:").size(14))
                 .push(
-                    text_input("Website URL (optional)", &entry.url)
+                    text_input("Website (optional)", &entry.url)
                         .on_input(Message::EntryUrlEdited)
                         .on_submit(Message::FocusNext)
                         .padding(10)
@@ -1329,7 +1326,7 @@ impl AskryptApp {
             let elem: Element<Message> = if is_link(&entry.url) {
                 button_link(
                     entry.url.clone(),
-                    "Open link",
+                    "Open website",
                     Some(icon::box_arrow_up_right_icon()),
                 )
                 .on_press(Message::OpenUrl(entry.url.clone()))
@@ -1337,7 +1334,10 @@ impl AskryptApp {
             } else {
                 text(&entry.url).into()
             };
-            Some(row![text("URL:").width(Length::Fixed(ENTRY_FIXED)), elem,])
+            Some(row![
+                text("Website:").width(Length::Fixed(ENTRY_FIXED)),
+                elem,
+            ])
         } else {
             // don't show URL row if URL is empty
             None
