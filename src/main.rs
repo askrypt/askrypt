@@ -1,9 +1,11 @@
 #![windows_subsystem = "windows"]
 
 mod icon;
+mod passgen;
 mod settings;
 mod ui;
 
+use crate::passgen::{PasswordGenConfig, generate_password};
 use crate::settings::AppSettings;
 use crate::ui::{
     button_link, container_border_r5, control_button, control_button_icon, icon_show_hide,
@@ -15,8 +17,8 @@ use iced::event::{self, Event};
 use iced::keyboard::key;
 use iced::widget::Column;
 use iced::widget::{
-    Container, Row, Scrollable, button, column, container, operation, row, scrollable, text,
-    text_input, tooltip,
+    Container, Row, Scrollable, button, checkbox, column, container, operation, row, scrollable,
+    slider, text, text_input, tooltip,
 };
 use iced::window;
 use iced::{
@@ -84,6 +86,9 @@ pub struct AskryptApp {
     is_modified: bool,
     // Application settings
     settings: AppSettings,
+    // Password generator
+    passgen_config: PasswordGenConfig,
+    generated_password: String,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +137,16 @@ pub enum Message {
     OpenUrl(String),
     ClickTag(String),
     Event(Event),
+    // Password generator messages
+    OpenPasswordGenerator,
+    PassGenLengthChanged(f32),
+    PassGenToggleUppercase(bool),
+    PassGenToggleLowercase(bool),
+    PassGenToggleNumbers(bool),
+    PassGenToggleSymbols(bool),
+    PassGenGenerate,
+    PassGenCopy,
+    PassGenCancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +157,7 @@ enum Screen {
     OtherQuestions,
     ShowEntries,
     EditEntry,
+    PasswordGenerator,
 }
 
 // Default number of iterations for key derivation (OWASP recommendation for 2025)
@@ -178,6 +194,8 @@ impl AskryptApp {
             shown_answer_index: None,
             is_modified: false,
             settings,
+            passgen_config: PasswordGenConfig::default(),
+            generated_password: String::new(),
         };
 
         let mut task = Task::none();
@@ -787,6 +805,50 @@ impl AskryptApp {
                 self.entries_filter = clean_hash_tag(tag);
                 Task::none()
             }
+            Message::OpenPasswordGenerator => {
+                self.passgen_config = PasswordGenConfig::default();
+                self.generate_new_password();
+                self.screen = Screen::PasswordGenerator;
+                Task::none()
+            }
+            Message::PassGenLengthChanged(value) => {
+                self.passgen_config.set_length(value as usize);
+                Task::none()
+            }
+            Message::PassGenToggleUppercase(value) => {
+                self.passgen_config.use_uppercase = value;
+                Task::none()
+            }
+            Message::PassGenToggleLowercase(value) => {
+                self.passgen_config.use_lowercase = value;
+                Task::none()
+            }
+            Message::PassGenToggleNumbers(value) => {
+                self.passgen_config.use_numbers = value;
+                Task::none()
+            }
+            Message::PassGenToggleSymbols(value) => {
+                self.passgen_config.use_symbols = value;
+                Task::none()
+            }
+            Message::PassGenGenerate => {
+                self.generate_new_password();
+                Task::none()
+            }
+            Message::PassGenCopy => {
+                if !self.generated_password.is_empty() {
+                    self.success_message = Some("Password copied to clipboard".to_string());
+                    clipboard::write(self.generated_password.clone())
+                } else {
+                    self.error_message = Some("No password to copy".to_string());
+                    Task::none()
+                }
+            }
+            Message::PassGenCancel => {
+                self.screen = Screen::ShowEntries;
+                self.generated_password = String::new();
+                Task::none()
+            }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
                 if self.ask_user_about_changes() {
                     // Save settings before exiting
@@ -831,6 +893,7 @@ impl AskryptApp {
             Screen::OtherQuestions => self.other_questions(),
             Screen::ShowEntries => self.show_entries(),
             Screen::EditEntry => self.edit_entry(),
+            Screen::PasswordGenerator => self.password_generator(),
         };
 
         container(screen)
@@ -1022,13 +1085,14 @@ impl AskryptApp {
         // Top section: Fixed control buttons
         let top_section = Self::controls_block(row![
             padded_button("Add New Item").on_press(Message::AddNewEntry),
+            padded_button("Password Generator").on_press(Message::OpenPasswordGenerator),
             padded_button("Edit Questions").on_press(Message::EditQuestions),
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
             text_input("Filter items by name, username, ...", &self.entries_filter,)
                 .on_input(Message::EntriesFilterEdited)
-                .padding(10)
+                .padding(7)
         ]);
 
         // Filter entries based on search text
@@ -1169,6 +1233,94 @@ impl AskryptApp {
         column = self.show_messages_in_column(column);
 
         column
+    }
+
+    fn password_generator(&self) -> Column<'_, Message> {
+        let mut column =
+            Self::title_h1("Password Generator").align_x(alignment::Horizontal::Center);
+
+        // Password length slider
+        column = column
+            .push(text(format!("Password Length: {}", self.passgen_config.length)).size(14))
+            .push(
+                slider(
+                    PasswordGenConfig::MIN_LENGTH as f32..=PasswordGenConfig::MAX_LENGTH as f32,
+                    self.passgen_config.length as f32,
+                    Message::PassGenLengthChanged,
+                )
+                .width(400),
+            )
+            .push(text(" ").size(5)); // Spacing
+
+        // Checkboxes for character types
+        column = column
+            .push(
+                checkbox(self.passgen_config.use_uppercase)
+                    .label("Uppercase (A-Z)")
+                    .on_toggle(Message::PassGenToggleUppercase)
+                    .size(16),
+            )
+            .push(
+                checkbox(self.passgen_config.use_lowercase)
+                    .label("Lowercase (a-z)")
+                    .on_toggle(Message::PassGenToggleLowercase)
+                    .size(16),
+            )
+            .push(
+                checkbox(self.passgen_config.use_numbers)
+                    .label("Numbers (0-9)")
+                    .on_toggle(Message::PassGenToggleNumbers)
+                    .size(16),
+            )
+            .push(
+                checkbox(self.passgen_config.use_symbols)
+                    .label("Symbols (!@#$%...)")
+                    .on_toggle(Message::PassGenToggleSymbols)
+                    .size(16),
+            )
+            .push(text(" ").size(10)); // Spacing
+
+        // Display generated password
+        if !self.generated_password.is_empty() {
+            column = column
+                .push(text("Generated Password:").size(14))
+                .push(
+                    container(
+                        text(&self.generated_password)
+                            .size(14)
+                            .font(Font::MONOSPACE),
+                    )
+                    .padding(10)
+                    .width(400)
+                    .style(container_border_r5),
+                )
+                .push(text(" ").size(10)); // Spacing
+        }
+
+        // Buttons
+        let button_row = row![
+            padded_button("Generate").on_press(Message::PassGenGenerate),
+            padded_button("Copy").on_press(Message::PassGenCopy),
+            padded_button("Cancel").on_press(Message::PassGenCancel),
+        ]
+        .spacing(10);
+
+        column = column.push(button_row);
+        column = self.show_messages_in_column(column);
+
+        column
+    }
+
+    fn generate_new_password(&mut self) {
+        match generate_password(&self.passgen_config) {
+            Ok(password) => {
+                self.generated_password = password;
+                self.error_message = None;
+            }
+            Err(e) => {
+                self.error_message = Some(e);
+            }
+        }
     }
 
     /// Creates a security input field with a toggle button to show/hide the input.

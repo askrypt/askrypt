@@ -21,7 +21,7 @@ pub fn text_button_icon<'a, T: 'a>(icon: Text<'a>, tooltip: &'static str) -> But
 }
 
 pub fn padded_button<Message: Clone>(label: &str) -> Button<'_, Message> {
-    button(text(label)).padding([10, 20])
+    button(text(label)).padding([7, 14])
 }
 
 pub fn control_button<Message: Clone, S: Into<String>>(label: S) -> Button<'static, Message> {
