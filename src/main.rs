@@ -164,6 +164,7 @@ enum Screen {
 // Default number of iterations for key derivation (OWASP recommendation for 2025)
 const DEFAULT_ITERATIONS: u32 = 600_000;
 const APP_TITLE: &str = "Askrypt 0.3.0";
+const FILTER_INPUT_ID: &str = "FILTER_INPUT_ID";
 
 impl AskryptApp {
     fn new(vault_path: Option<PathBuf>) -> (Self, Task<Message>) {
@@ -873,11 +874,19 @@ impl AskryptApp {
                 key, modifiers, ..
             })) => {
                 // TODO: handle hot key through Subscription
-                if modifiers.control()
-                    && key.as_ref() == keyboard::Key::Character("s")
+                if modifiers.control() {
+                    if key.as_ref() == keyboard::Key::Character("s")
+                        && self.screen == Screen::ShowEntries
+                    {
+                        self.update(Message::SaveVault)
+                    } else {
+                        Task::none()
+                    }
+                } else if !modifiers.shift()
+                    && key.as_ref() == keyboard::Key::Character("/")
                     && self.screen == Screen::ShowEntries
                 {
-                    self.update(Message::SaveVault)
+                    operation::focus(FILTER_INPUT_ID)
                 } else {
                     Task::none()
                 }
@@ -1088,6 +1097,7 @@ impl AskryptApp {
             row![
                 text_input("Filter items by name, username, ...", &self.entries_filter,)
                     .on_input(Message::EntriesFilterEdited)
+                    .id(FILTER_INPUT_ID)
                     .padding(7),
                 text_button_icon(icon::x_lg_icon(), "Clear filter")
                     .style(button::background)
