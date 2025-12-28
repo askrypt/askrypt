@@ -39,8 +39,8 @@
 //!         notes: "Personal email account".to_string(),
 //!         entry_type: "password".to_string(),
 //!         tags: vec!["email".to_string(), "personal".to_string()],
-//!         created: "2024-01-01T00:00:00Z".to_string(),
-//!         modified: "2024-01-01T00:00:00Z".to_string(),
+//!         created: 1704067200,
+//!         modified: 1704067200,
 //!     }
 //! ];
 //!
@@ -87,8 +87,8 @@ pub struct SecretEntry {
     #[serde(rename = "type")]
     pub entry_type: String,
     pub tags: Vec<String>,
-    pub created: String,
-    pub modified: String,
+    pub created: i64,
+    pub modified: i64,
 }
 
 /// Represents KDF parameters for the first level (key derivation function, iterations, and salt)
@@ -166,8 +166,8 @@ impl AskryptFile {
     ///         notes: "My account".to_string(),
     ///         entry_type: "password".to_string(),
     ///         tags: vec![],
-    ///         created: "2024-01-01T00:00:00Z".to_string(),
-    ///         modified: "2024-01-01T00:00:00Z".to_string(),
+    ///         created: 1704067200,
+    ///         modified: 1704067200,
     ///     }
     /// ];
     ///
@@ -287,8 +287,8 @@ impl AskryptFile {
     ///         notes: "My account".to_string(),
     ///         entry_type: "password".to_string(),
     ///         tags: vec![],
-    ///         created: "2024-01-01T00:00:00Z".to_string(),
-    ///         modified: "2024-01-01T00:00:00Z".to_string(),
+    ///         created: 1704067200,
+    ///         modified: 1704067200,
     ///     }
     /// ];
     ///
@@ -861,8 +861,8 @@ mod tests {
             notes: "Test notes".to_string(),
             entry_type: "password".to_string(),
             tags: vec!["work".to_string(), "important".to_string()],
-            created: "2024-01-01T00:00:00Z".to_string(),
-            modified: "2024-01-01T00:00:00Z".to_string(),
+            created: 1704067200,
+            modified: 1704067200,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -926,8 +926,8 @@ mod tests {
             notes: "My account".to_string(),
             entry_type: "password".to_string(),
             tags: vec!["work".to_string()],
-            created: "2024-01-01T00:00:00Z".to_string(),
-            modified: "2024-01-01T00:00:00Z".to_string(),
+            created: 1704067200,
+            modified: 1704067200,
         }];
 
         let askrypt_file =
@@ -1034,8 +1034,8 @@ mod tests {
                 notes: "My account".to_string(),
                 entry_type: "password".to_string(),
                 tags: vec!["work".to_string()],
-                created: "2024-01-01T00:00:00Z".to_string(),
-                modified: "2024-01-01T00:00:00Z".to_string(),
+                created: 1704067200,
+                modified: 1704067200,
             },
             SecretEntry {
                 name: "example2".to_string(),
@@ -1045,8 +1045,8 @@ mod tests {
                 notes: "Test notes".to_string(),
                 entry_type: "note".to_string(),
                 tags: vec!["personal".to_string(), "important".to_string()],
-                created: "2024-01-02T00:00:00Z".to_string(),
-                modified: "2024-01-02T00:00:00Z".to_string(),
+                created: 1704153600,
+                modified: 1704153600,
             },
         ];
 
@@ -1087,8 +1087,8 @@ mod tests {
             notes: "My account".to_string(),
             entry_type: "password".to_string(),
             tags: vec![],
-            created: "2024-01-01T00:00:00Z".to_string(),
-            modified: "2024-01-01T00:00:00Z".to_string(),
+            created: 1704067200,
+            modified: 1704067200,
         }];
 
         let askrypt_file =
@@ -1132,8 +1132,8 @@ mod tests {
             notes: "My account".to_string(),
             entry_type: "password".to_string(),
             tags: vec!["work".to_string()],
-            created: "2024-01-01T00:00:00Z".to_string(),
-            modified: "2024-01-01T00:00:00Z".to_string(),
+            created: 1704067200,
+            modified: 1704067200,
         }];
 
         let askrypt_file =
@@ -1181,8 +1181,8 @@ mod tests {
             notes: "notes".to_string(),
             entry_type: "password".to_string(),
             tags: vec![],
-            created: "2024-01-01T00:00:00Z".to_string(),
-            modified: "2024-01-01T00:00:00Z".to_string(),
+            created: 1704067200,
+            modified: 1704067200,
         }];
 
         let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000)).unwrap();

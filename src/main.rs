@@ -10,6 +10,7 @@ use crate::ui::{
     padded_button, text_button_icon,
 };
 use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
+use chrono::{DateTime, Local, Utc};
 use iced::event::{self, Event};
 use iced::keyboard::key;
 use iced::widget::Column;
@@ -373,8 +374,8 @@ impl AskryptApp {
                     notes: String::new(),
                     entry_type: "password".to_string(),
                     tags: Vec::new(),
-                    created: chrono::Local::now().to_rfc3339(),
-                    modified: chrono::Local::now().to_rfc3339(),
+                    created: Utc::now().timestamp(),
+                    modified: Utc::now().timestamp(),
                 });
                 self.editing_tags = String::new();
                 self.show_secret_in_edit = false;
@@ -452,7 +453,7 @@ impl AskryptApp {
                         .filter(|s| !s.is_empty())
                         .collect();
 
-                    let now = chrono::Local::now().to_rfc3339();
+                    let now = Utc::now().timestamp();
                     let mut new_entry = entry.clone();
                     new_entry.modified = now;
 
@@ -1373,12 +1374,12 @@ impl AskryptApp {
 
         let created_row = row![
             text("Created:").width(Length::Fixed(ENTRY_FIXED)),
-            text(&entry.created).width(Length::Fill),
+            text(format_timestamp_local(entry.created)).width(Length::Fill),
         ];
 
         let modified_row = row![
             text("Modified:").width(Length::Fixed(ENTRY_FIXED)),
-            text(&entry.modified).width(Length::Fill),
+            text(format_timestamp_local(entry.modified)).width(Length::Fill),
         ];
 
         let button_row = row![
@@ -1454,4 +1455,10 @@ fn clean_hash_tag(tag: String) -> String {
     } else {
         tag
     }
+}
+
+fn format_timestamp_local(timestamp: i64) -> String {
+    let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now);
+    let local_datetime = datetime.with_timezone(&Local);
+    local_datetime.format("%Y-%m-%d %H:%M:%S").to_string()
 }
