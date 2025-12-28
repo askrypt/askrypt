@@ -1460,5 +1460,5 @@ fn clean_hash_tag(tag: String) -> String {
 fn format_timestamp_local(timestamp: i64) -> String {
     let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now);
     let local_datetime = datetime.with_timezone(&Local);
-    local_datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+    local_datetime.format("%b. %d, %Y - %T").to_string()
 }
