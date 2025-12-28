@@ -13,6 +13,7 @@ use crate::ui::{
 };
 use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
 use chrono::{DateTime, Local, Utc};
+use iced::alignment::Vertical;
 use iced::event::{self, Event};
 use iced::keyboard::key;
 use iced::widget::Column;
@@ -1083,6 +1084,20 @@ impl AskryptApp {
 
     fn show_entries(&self) -> Column<'_, Message> {
         // Top section: Fixed control buttons
+        let filter_input = container(
+            row![
+                text_input("Filter items by name, username, ...", &self.entries_filter,)
+                    .on_input(Message::EntriesFilterEdited)
+                    .padding(7),
+                text_button_icon(icon::x_lg_icon(), "Clear filter")
+                    .style(button::background)
+                    .padding(9)
+                    .on_press(Message::EntriesFilterEdited("".to_string())),
+            ]
+            .spacing(1)
+            .align_y(Vertical::Center),
+        );
+
         let top_section = Self::controls_block(row![
             padded_button("Add New Item").on_press(Message::AddNewEntry),
             padded_button("Password Generator").on_press(Message::OpenPasswordGenerator),
@@ -1090,9 +1105,7 @@ impl AskryptApp {
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
-            text_input("Filter items by name, username, ...", &self.entries_filter,)
-                .on_input(Message::EntriesFilterEdited)
-                .padding(7)
+            filter_input,
         ]);
 
         // Filter entries based on search text
