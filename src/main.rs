@@ -783,11 +783,7 @@ impl AskryptApp {
                 Task::none()
             }
             Message::ClickTag(tag) => {
-                self.entries_filter = if tag.starts_with('#') {
-                    tag[1..].to_string()
-                } else {
-                    tag
-                };
+                self.entries_filter = clean_hash_tag(tag);
                 Task::none()
             }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
@@ -1323,7 +1319,7 @@ impl AskryptApp {
         ];
 
         let url_row = if !entry.url.is_empty() {
-            let elem: Element<Message> = if is_link(&entry.url) {
+            let elem: Element<Message> = if is_url(&entry.url) {
                 button_link(
                     entry.url.clone(),
                     "Open website",
@@ -1434,7 +1430,7 @@ impl AskryptApp {
     }
 }
 
-fn is_link(string: &str) -> bool {
+fn is_url(string: &str) -> bool {
     string.starts_with("http://") || string.starts_with("https://")
 }
 
@@ -1443,5 +1439,13 @@ fn make_hash_tag(tag: &str) -> String {
         tag.to_string()
     } else {
         format!("#{}", tag)
+    }
+}
+
+fn clean_hash_tag(tag: String) -> String {
+    if tag.starts_with('#') {
+        tag[1..].to_string()
+    } else {
+        tag
     }
 }
