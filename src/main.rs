@@ -163,7 +163,7 @@ enum Screen {
 
 // Default number of iterations for key derivation (OWASP recommendation for 2025)
 const DEFAULT_ITERATIONS: u32 = 600_000;
-const APP_TITLE: &str = "Askrypt 0.3.0";
+const APP_TITLE: &str = "Askrypt 0.4.0-dev"; // TODO: get version from Cargo.toml
 const FILTER_INPUT_ID: &str = "FILTER_INPUT_ID";
 
 impl AskryptApp {
