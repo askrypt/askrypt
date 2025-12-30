@@ -28,14 +28,6 @@ pub fn control_button<Message: Clone, S: Into<String>>(label: S) -> Button<'stat
     button(text(label.into())).padding([5, 10])
 }
 
-pub fn icon_show_hide(show: bool) -> String {
-    if show {
-        "👁‍🗨".to_string()
-    } else {
-        "👁".to_string()
-    }
-}
-
 pub fn container_border_r5(theme: &Theme) -> container::Style {
     container::Style {
         border: iced::Border {

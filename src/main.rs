@@ -8,8 +8,8 @@ mod ui;
 use crate::passgen::{PasswordGenConfig, generate_password};
 use crate::settings::AppSettings;
 use crate::ui::{
-    button_link, container_border_r5, control_button, control_button_icon, icon_show_hide,
-    padded_button, text_button_icon,
+    button_link, container_border_r5, control_button, control_button_icon, padded_button,
+    text_button_icon,
 };
 use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
 use chrono::{DateTime, Local, Utc};
@@ -950,7 +950,7 @@ impl AskryptApp {
                     .style(button::danger)
                     .on_press(Message::DeleteQuestion(i));
 
-                let answer_input = self.security_input_with_toggle(
+                let answer_input = Self::security_input_with_toggle(
                     &answer,
                     is_answer_shown,
                     Some(Message::AnswerEditedInEditor.with(i)),
@@ -1003,18 +1003,17 @@ impl AskryptApp {
             column = column.push(text(format!("Vault File: {}", path.display())));
         }
 
-        let answer0_input = self
-            .security_input_with_toggle(
-                &self.answer0,
-                self.show_answer0,
-                Some(Message::Answer0Edited),
-                Some(Message::Answer0Finished),
-                Message::ToggleAnswer0Visibility,
-                "Type the first answer...",
-                "Hide Answer",
-                "Show Answer",
-            )
-            .width(400);
+        let answer0_input = Self::security_input_with_toggle(
+            &self.answer0,
+            self.show_answer0,
+            Some(Message::Answer0Edited),
+            Some(Message::Answer0Finished),
+            Message::ToggleAnswer0Visibility,
+            "Type the first answer...",
+            "Hide Answer",
+            "Show Answer",
+        )
+        .width(400);
 
         column = column
             .push(text(&self.question0).size(15))
@@ -1041,18 +1040,17 @@ impl AskryptApp {
         }
 
         if let Some(data) = &self.questions_data {
-            let answer0_input = self
-                .security_input_with_toggle(
-                    &self.answer0,
-                    self.show_answer0,
-                    None::<fn(String) -> Message>,
-                    None,
-                    Message::ToggleAnswer0Visibility,
-                    "Type the first answer...",
-                    "Hide Answer",
-                    "Show Answer",
-                )
-                .width(400);
+            let answer0_input = Self::security_input_with_toggle(
+                &self.answer0,
+                self.show_answer0,
+                None::<fn(String) -> Message>,
+                None,
+                Message::ToggleAnswer0Visibility,
+                "Type the first answer...",
+                "Hide Answer",
+                "Show Answer",
+            )
+            .width(400);
 
             column = column
                 .push(text(&self.question0).size(15))
@@ -1063,18 +1061,17 @@ impl AskryptApp {
 
                 column = column.push(text(question).size(15));
 
-                let answer_input = self
-                    .security_input_with_toggle(
-                        &self.answers[i],
-                        is_answer_shown,
-                        Some(Message::AnswerEdited.with(i)),
-                        Some(Message::AnswerFinished(i)),
-                        Message::ShowAnswer(i),
-                        "Type the answer...",
-                        "Hide Answer",
-                        "Show Answer",
-                    )
-                    .width(400);
+                let answer_input = Self::security_input_with_toggle(
+                    &self.answers[i],
+                    is_answer_shown,
+                    Some(Message::AnswerEdited.with(i)),
+                    Some(Message::AnswerFinished(i)),
+                    Message::ShowAnswer(i),
+                    "Type the answer...",
+                    "Hide Answer",
+                    "Show Answer",
+                )
+                .width(400);
 
                 column = column.push(answer_input);
             }
@@ -1100,11 +1097,11 @@ impl AskryptApp {
                     .id(FILTER_INPUT_ID)
                     .padding(7),
                 text_button_icon(icon::x_lg_icon(), "Clear filter")
-                    .style(button::background)
-                    .padding(9)
+                    .style(button::subtle)
+                    .padding(10)
                     .on_press(Message::EntriesFilterEdited("".to_string())),
             ]
-            .spacing(1)
+            .spacing(3)
             .align_y(Vertical::Center),
         );
 
@@ -1203,7 +1200,7 @@ impl AskryptApp {
                 )
                 .push(text("Password:").size(14))
                 .push(
-                    self.security_input_with_toggle(
+                    Self::security_input_with_toggle(
                         &entry.secret,
                         self.show_secret_in_edit,
                         Some(Message::EntrySecretEdited),
@@ -1234,7 +1231,7 @@ impl AskryptApp {
                         .size(12),
                 )
                 // TODO: show entry type as a dropdown selection
-                .push(text("Tags:").size(14))
+                .push(text("Tags (comma separated):").size(14))
                 .push(
                     text_input("Tags (comma separated)", &self.editing_tags)
                         .on_input(Message::EntryTagsEdited)
@@ -1349,19 +1346,25 @@ impl AskryptApp {
     /// Creates a security input field with a toggle button to show/hide the input.
     #[allow(clippy::too_many_arguments)]
     fn security_input_with_toggle<'a>(
-        &self,
         password: &str,
         show_password: bool,
         on_input_msg: Option<impl Fn(String) -> Message + 'a>,
         on_submit_msg: Option<Message>,
         toggle_msg: Message,
         input_placeholder: &'a str,
-        hide_tooltip: &'a str,
-        show_tooltip: &'a str,
+        hide_tooltip: &'static str,
+        show_tooltip: &'static str,
     ) -> Row<'a, Message> {
+        let button_icon = if show_password {
+            icon::eye_slash_icon()
+        } else {
+            icon::eye_icon()
+        };
         let toggle_button = tooltip(
-            button(text(icon_show_hide(show_password)))
-                .height(35)
+            button(button_icon)
+                .padding(11)
+                .height(36)
+                .style(button::subtle)
                 .on_press(toggle_msg),
             if show_password {
                 hide_tooltip
