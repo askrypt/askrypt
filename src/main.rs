@@ -999,9 +999,7 @@ impl AskryptApp {
             .push("Answer the first security question to reveal the other questions")
             .align_x(alignment::Horizontal::Center);
 
-        if let Some(path) = &self.path {
-            column = column.push(text(format!("Vault File: {}", path.display())));
-        }
+        column = self.show_vault_path(column);
 
         let answer0_input = Self::security_input_with_toggle(
             &self.answer0,
@@ -1035,9 +1033,7 @@ impl AskryptApp {
             .push("Answer the questions")
             .align_x(alignment::Horizontal::Center);
 
-        if let Some(path) = &self.path {
-            column = column.push(text(format!("Vault Path: {}", path.display())));
-        }
+        column = self.show_vault_path(column);
 
         if let Some(data) = &self.questions_data {
             let answer0_input = Self::security_input_with_toggle(
@@ -1390,6 +1386,19 @@ impl AskryptApp {
 
     fn title_h1(title: &str) -> Column<'_, Message> {
         column![text(title).size(40)].spacing(10)
+    }
+
+    fn show_vault_path<'a>(&'a self, mut column: Column<'a, Message>) -> Column<'a, Message> {
+        if let Some(path) = &self.path {
+            let text_prefix = text("Vault File:");
+            let text_path = text(path.to_str().expect("Invalid vault path")).font(Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            });
+            column = column.push(row![text_prefix, text_path].spacing(5));
+            column = column.push(text(""));
+        }
+        column
     }
 
     /// Displays error and success messages in the given column.
