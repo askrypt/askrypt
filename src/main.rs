@@ -551,7 +551,7 @@ impl AskryptApp {
                 if let Some(new_path) = rfd::FileDialog::new()
                     .add_filter("Askrypt Files", &["askrypt"])
                     .add_filter("All files", &["*"])
-                    .set_file_name("vault.askrypt")
+                    .set_file_name("MyVault.askrypt")
                     .save_file()
                 {
                     // Reconstruct questions list
