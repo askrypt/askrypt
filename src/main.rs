@@ -1112,7 +1112,7 @@ impl AskryptApp {
         ]);
 
         // Filter entries based on search text
-        let filtered_entries: Vec<(usize, &SecretEntry)> = if self.entries_filter.is_empty() {
+        let mut filtered_entries: Vec<(usize, &SecretEntry)> = if self.entries_filter.is_empty() {
             self.entries.iter().enumerate().collect()
         } else {
             let filter_lower = self.entries_filter.to_lowercase();
@@ -1131,6 +1131,9 @@ impl AskryptApp {
                 })
                 .collect()
         };
+
+        // Sort by modified timestamp in descending order (most recent first)
+        filtered_entries.sort_by(|a, b| b.1.modified.cmp(&a.1.modified));
 
         // Middle section: Scrollable entries
         let middle_section = if self.entries.is_empty() {
