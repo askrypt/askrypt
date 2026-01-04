@@ -1115,20 +1115,10 @@ impl AskryptApp {
         let mut filtered_entries: Vec<(usize, &SecretEntry)> = if self.entries_filter.is_empty() {
             self.entries.iter().enumerate().collect()
         } else {
-            let filter_lower = self.entries_filter.to_lowercase();
             self.entries
                 .iter()
                 .enumerate()
-                .filter(|(_, entry)| {
-                    entry.name.to_lowercase().contains(&filter_lower)
-                        || entry.user_name.to_lowercase().contains(&filter_lower)
-                        || entry.url.to_lowercase().contains(&filter_lower)
-                        || entry.notes.to_lowercase().contains(&filter_lower)
-                        || entry
-                            .tags
-                            .iter()
-                            .any(|tag| tag.to_lowercase().contains(&filter_lower))
-                })
+                .filter(|(_, entry)| entry_matches_filter(entry, &self.entries_filter))
                 .collect()
         };
 
@@ -1625,6 +1615,18 @@ impl AskryptApp {
         }
         true
     }
+}
+
+fn entry_matches_filter(entry: &SecretEntry, filter: &str) -> bool {
+    let filter_lower = filter.to_lowercase();
+    entry.name.to_lowercase().contains(&filter_lower)
+        || entry.user_name.to_lowercase().contains(&filter_lower)
+        || entry.url.to_lowercase().contains(&filter_lower)
+        || entry.notes.to_lowercase().contains(&filter_lower)
+        || entry
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(&filter_lower))
 }
 
 fn is_url(string: &str) -> bool {
