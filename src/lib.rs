@@ -41,6 +41,7 @@
 //!         tags: vec!["email".to_string(), "personal".to_string()],
 //!         created: 1704067200,
 //!         modified: 1704067200,
+//!         hidden: false,
 //!     }
 //! ];
 //!
@@ -89,6 +90,8 @@ pub struct SecretEntry {
     pub tags: Vec<String>,
     pub created: i64,
     pub modified: i64,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// Represents KDF parameters for the first level (key derivation function, iterations, and salt)
@@ -168,6 +171,7 @@ impl AskryptFile {
     ///         tags: vec![],
     ///         created: 1704067200,
     ///         modified: 1704067200,
+    ///         hidden: false,
     ///     }
     /// ];
     ///
@@ -289,6 +293,7 @@ impl AskryptFile {
     ///         tags: vec![],
     ///         created: 1704067200,
     ///         modified: 1704067200,
+    ///         hidden: false,
     ///     }
     /// ];
     ///
@@ -863,6 +868,7 @@ mod tests {
             tags: vec!["work".to_string(), "important".to_string()],
             created: 1704067200,
             modified: 1704067200,
+            hidden: false,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -928,6 +934,7 @@ mod tests {
             tags: vec!["work".to_string()],
             created: 1704067200,
             modified: 1704067200,
+            hidden: false,
         }];
 
         let askrypt_file =
@@ -1036,6 +1043,7 @@ mod tests {
                 tags: vec!["work".to_string()],
                 created: 1704067200,
                 modified: 1704067200,
+                hidden: false,
             },
             SecretEntry {
                 name: "example2".to_string(),
@@ -1047,6 +1055,7 @@ mod tests {
                 tags: vec!["personal".to_string(), "important".to_string()],
                 created: 1704153600,
                 modified: 1704153600,
+                hidden: false,
             },
         ];
 
@@ -1089,6 +1098,7 @@ mod tests {
             tags: vec![],
             created: 1704067200,
             modified: 1704067200,
+            hidden: false,
         }];
 
         let askrypt_file =
@@ -1134,6 +1144,7 @@ mod tests {
             tags: vec!["work".to_string()],
             created: 1704067200,
             modified: 1704067200,
+            hidden: false,
         }];
 
         let askrypt_file =
@@ -1183,6 +1194,7 @@ mod tests {
             tags: vec![],
             created: 1704067200,
             modified: 1704067200,
+            hidden: false,
         }];
 
         let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000)).unwrap();

@@ -85,6 +85,8 @@ pub struct AskryptApp {
     shown_answer_index: Option<usize>,
     // Track if vault data has been modified
     is_modified: bool,
+    // Track if hidden entries should be shown
+    show_hidden: bool,
     // Application settings
     settings: AppSettings,
     // Password generator
@@ -138,6 +140,9 @@ pub enum Message {
     OpenUrl(String),
     ClickTag(String),
     Event(Event),
+    // Hidden entries messages
+    ToggleShowHidden(bool),
+    EntryHiddenToggled(bool),
     // Password generator messages
     OpenPasswordGenerator,
     PassGenLengthChanged(f32),
@@ -195,6 +200,7 @@ impl AskryptApp {
             show_answer0: false,
             shown_answer_index: None,
             is_modified: false,
+            show_hidden: true,
             settings,
             passgen_config: PasswordGenConfig::default(),
             generated_password: String::new(),
@@ -396,6 +402,7 @@ impl AskryptApp {
                     tags: Vec::new(),
                     created: Utc::now().timestamp(),
                     modified: Utc::now().timestamp(),
+                    hidden: false,
                 });
                 self.editing_tags = String::new();
                 self.show_secret_in_edit = false;
@@ -807,6 +814,16 @@ impl AskryptApp {
                 self.entries_filter = clean_hash_tag(tag);
                 Task::none()
             }
+            Message::ToggleShowHidden(value) => {
+                self.show_hidden = value;
+                Task::none()
+            }
+            Message::EntryHiddenToggled(value) => {
+                if let Some(entry) = &mut self.editing_entry {
+                    entry.hidden = value;
+                }
+                Task::none()
+            }
             Message::OpenPasswordGenerator => {
                 self.passgen_config = PasswordGenConfig::default();
                 self.generate_new_password();
@@ -1101,6 +1118,11 @@ impl AskryptApp {
             .align_y(Vertical::Center),
         );
 
+        let show_hidden_checkbox = checkbox(self.show_hidden)
+            .label("Show hidden")
+            .on_toggle(Message::ToggleShowHidden)
+            .size(16);
+
         let top_section = Self::controls_block(row![
             padded_button("Add New Item").on_press(Message::AddNewEntry),
             padded_button("Password Generator").on_press(Message::OpenPasswordGenerator),
@@ -1109,18 +1131,26 @@ impl AskryptApp {
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
             filter_input,
+            show_hidden_checkbox,
         ]);
 
-        // Filter entries based on search text
-        let mut filtered_entries: Vec<(usize, &SecretEntry)> = if self.entries_filter.is_empty() {
-            self.entries.iter().enumerate().collect()
-        } else {
-            self.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, entry)| entry_matches_filter(entry, &self.entries_filter))
-                .collect()
-        };
+        // Filter entries based on search text and hidden status
+        let mut filtered_entries: Vec<(usize, &SecretEntry)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                // Filter by hidden status
+                if !self.show_hidden && entry.hidden {
+                    return false;
+                }
+                // Filter by search text
+                if !self.entries_filter.is_empty() {
+                    return entry_matches_filter(entry, &self.entries_filter);
+                }
+                true
+            })
+            .collect();
 
         // Sort by modified timestamp in descending order (most recent first)
         filtered_entries.sort_by(|a, b| b.1.modified.cmp(&a.1.modified));
@@ -1228,6 +1258,12 @@ impl AskryptApp {
                         .padding(10)
                         .width(400)
                         .size(12),
+                )
+                .push(
+                    checkbox(entry.hidden)
+                        .label("Hidden")
+                        .on_toggle(Message::EntryHiddenToggled)
+                        .size(16),
                 )
                 .align_x(alignment::Horizontal::Center);
         }
