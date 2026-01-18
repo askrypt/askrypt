@@ -200,7 +200,7 @@ impl AskryptApp {
             show_answer0: false,
             shown_answer_index: None,
             is_modified: false,
-            show_hidden: true,
+            show_hidden: false,
             settings,
             passgen_config: PasswordGenConfig::default(),
             generated_password: String::new(),
