@@ -1108,10 +1108,10 @@ impl AskryptApp {
                 text_input("Filter items by name, username, ...", &self.entries_filter,)
                     .on_input(Message::EntriesFilterEdited)
                     .id(FILTER_INPUT_ID)
-                    .padding(7),
+                    .padding(4),
                 text_button_icon(icon::x_lg_icon(), "Clear filter")
                     .style(button::subtle)
-                    .padding(10)
+                    .padding(6)
                     .on_press(Message::EntriesFilterEdited("".to_string())),
             ]
             .spacing(3)
@@ -1123,15 +1123,17 @@ impl AskryptApp {
             .on_toggle(Message::ToggleShowHidden)
             .size(16);
 
-        let top_section = Self::controls_block(row![
+        let top_row1 = Self::controls_block(row![
             padded_button("Add New Item").on_press(Message::AddNewEntry),
             padded_button("Password Generator").on_press(Message::OpenPasswordGenerator),
             padded_button("Edit Questions").on_press(Message::EditQuestions),
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Lock Vault").on_press(Message::LockVault),
-            filter_input,
             show_hidden_checkbox,
+        ]);
+        let top_row2 = Self::controls_block(row![
+            filter_input,
         ]);
 
         // Filter entries based on search text and hidden status
@@ -1183,7 +1185,7 @@ impl AskryptApp {
         let bottom_section = self.status_bar();
 
         // Combine all three sections
-        column![top_section, middle_section, bottom_section]
+        column![top_row1, top_row2, middle_section, bottom_section]
             .width(Length::Fill)
             .height(Length::Fill)
     }
