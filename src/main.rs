@@ -21,7 +21,7 @@ use iced::widget::{
     Container, Row, Scrollable, button, checkbox, column, container, operation, row, scrollable,
     slider, text, text_input, tooltip,
 };
-use iced::window;
+use iced::{Color, window};
 use iced::{
     Element, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard, keyboard,
 };
@@ -1132,9 +1132,7 @@ impl AskryptApp {
             padded_button("Lock Vault").on_press(Message::LockVault),
             show_hidden_checkbox,
         ]);
-        let top_row2 = Self::controls_block(row![
-            filter_input,
-        ]);
+        let top_row2 = Self::controls_block(row![filter_input,]);
 
         // Filter entries based on search text and hidden status
         let mut filtered_entries: Vec<(usize, &SecretEntry)> = self
@@ -1506,11 +1504,21 @@ impl AskryptApp {
         const ENTRY_FIXED: f32 = 100.0;
         let name_row = row![
             text("Name:").width(Length::Fixed(ENTRY_FIXED)),
-            text(&entry.name).width(Length::Fill).font(Font {
+            text(&entry.name).font(Font {
                 weight: iced::font::Weight::Bold,
                 ..Default::default()
             }),
-        ];
+            if entry.hidden {
+                Some(
+                    text("hidden")
+                        .size(12)
+                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                )
+            } else {
+                None
+            },
+        ]
+        .width(Length::Fill);
         let user_name_row = row![
             text("Username:").width(Length::Fixed(ENTRY_FIXED)),
             text(&entry.user_name),
