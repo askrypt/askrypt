@@ -1615,8 +1615,8 @@ impl AskryptApp {
             url_row,
             notes_row,
             tags_row,
-            created_row,
             modified_row,
+            created_row,
             button_row,
         ]
         .spacing(8);
