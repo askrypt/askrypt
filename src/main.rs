@@ -3,14 +3,17 @@
 mod icon;
 mod passgen;
 mod settings;
+mod tray;
 mod ui;
 
 use crate::passgen::{PasswordGenConfig, generate_password};
 use crate::settings::AppSettings;
+use crate::tray::{AppTray, TrayEvent};
 use crate::ui::{
     button_link, container_border_r5, control_button, control_button_icon, padded_button,
     text_button_icon,
 };
+use std::sync::mpsc::Receiver;
 use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
 use chrono::{DateTime, Local, Utc};
 use iced::alignment::Vertical;
@@ -24,6 +27,7 @@ use iced::widget::{
 use iced::{Color, window};
 use iced::{
     Element, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard, keyboard,
+    time,
 };
 use rfd::MessageDialogResult;
 use std::cmp::PartialEq;
@@ -92,6 +96,9 @@ pub struct AskryptApp {
     // Password generator
     passgen_config: PasswordGenConfig,
     generated_password: String,
+    // System tray
+    _tray: Option<AppTray>,
+    tray_receiver: Option<Receiver<TrayEvent>>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +160,10 @@ pub enum Message {
     PassGenGenerate,
     PassGenCopy,
     PassGenCancel,
+    // Tray messages
+    TrayOpen,
+    TrayQuit,
+    CheckTrayEvents,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +215,20 @@ impl AskryptApp {
             settings,
             passgen_config: PasswordGenConfig::default(),
             generated_password: String::new(),
+            _tray: None,
+            tray_receiver: None,
         };
+
+        // Create system tray
+        match AppTray::new() {
+            Ok((tray, receiver)) => {
+                app._tray = Some(tray);
+                app.tray_receiver = Some(receiver);
+            }
+            Err(e) => {
+                eprintln!("WARNING: Failed to create system tray: {}", e);
+            }
+        }
 
         let mut task = Task::none();
         let vault_path = match vault_path {
@@ -263,14 +287,18 @@ impl AskryptApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        event::listen().map(Message::Event)
+        let event_sub = event::listen().map(Message::Event);
+
+        // Poll tray events periodically
+        let tray_sub =
+            time::every(std::time::Duration::from_millis(100)).map(|_| Message::CheckTrayEvents);
+
+        Subscription::batch([event_sub, tray_sub])
     }
 
     fn update(&mut self, event: Message) -> Task<Message> {
-        if let Message::Event(_) = event {
-            // Do nothing
-        } else {
-            // Clear previous messages if message is not Message::Event
+        // Don't clear messages for Event and CheckTrayEvents (they run frequently)
+        if !matches!(event, Message::Event(_) | Message::CheckTrayEvents) {
             self.error_message = None;
             self.success_message = None;
             self.status_message = None;
@@ -869,13 +897,31 @@ impl AskryptApp {
                 Task::none()
             }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
+                // Hide to tray instead of closing
+                window::get_oldest().and_then(|id| window::minimize(id, true))
+            }
+            Message::CheckTrayEvents => {
+                if let Some(receiver) = &self.tray_receiver {
+                    if let Ok(event) = receiver.try_recv() {
+                        return match event {
+                            TrayEvent::Open => self.update(Message::TrayOpen),
+                            TrayEvent::Quit => self.update(Message::TrayQuit),
+                        };
+                    }
+                }
+                Task::none()
+            }
+            Message::TrayOpen => {
+                // Restore window from tray
+                window::get_oldest().and_then(|id| window::minimize(id, false))
+            }
+            Message::TrayQuit => {
                 if self.ask_user_about_changes() {
                     // Save settings before exiting
-                    // TODO: handle potential error
                     let _ = self.settings.save();
                     iced::exit()
                 } else {
-                    Task::none() // Cancel - don't close
+                    Task::none()
                 }
             }
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
