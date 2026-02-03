@@ -11,7 +11,10 @@ use crate::ui::{
     button_link, container_border_r5, control_button, control_button_icon, padded_button,
     text_button_icon,
 };
-use askrypt::{AskryptFile, QuestionsData, SecretEntry, encode_base64, generate_salt};
+use askrypt::{
+    AskryptFile, QuestionsData, SecretEntry, calc_pbkdf2, decrypt_with_aes, encode_base64,
+    encrypt_with_aes, generate_salt, normalize_answer, sha256,
+};
 use chrono::{DateTime, Local, Utc};
 use iced::alignment::Vertical;
 use iced::event::{self, Event};
@@ -25,10 +28,11 @@ use iced::{Color, window};
 use iced::{
     Element, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard, keyboard,
 };
+use rand::Rng;
 use rfd::MessageDialogResult;
 use std::cmp::PartialEq;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -92,6 +96,12 @@ pub struct AskryptApp {
     // Password generator
     passgen_config: PasswordGenConfig,
     generated_password: String,
+    // Short Lock state - stores encrypted answers in RAM
+    short_lock_data: Option<ShortLockData>,
+    // Short lock answer input
+    short_lock_answer: String,
+    // Track if short lock answer is shown
+    show_short_lock_answer: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +163,13 @@ pub enum Message {
     PassGenGenerate,
     PassGenCopy,
     PassGenCancel,
+    // Short Lock messages
+    ActivateShortLock,
+    ShortLockAnswerEdited(String),
+    ShortLockAnswerFinished,
+    ToggleShortLockAnswerVisibility,
+    ShortUnlockVault,
+    CancelShortLock,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,12 +181,36 @@ enum Screen {
     ShowEntries,
     EditEntry,
     PasswordGenerator,
+    ShortLocked,
 }
 
 // Default number of iterations for key derivation (OWASP recommendation for 2025)
 const DEFAULT_ITERATIONS: u32 = 600_000;
 const APP_TITLE: &str = "Askrypt 0.4.0-dev"; // TODO: get version from Cargo.toml
 const FILTER_INPUT_ID: &str = "FILTER_INPUT_ID";
+// Iterations for Short Lock encryption (2,000,000 as specified)
+const SHORT_LOCK_ITERATIONS: u32 = 2_000_000;
+// Short Lock timeout duration (8 hours)
+const SHORT_LOCK_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
+
+/// Data for Short Lock mode - stores encrypted answers in RAM
+#[derive(Debug, Clone)]
+pub struct ShortLockData {
+    /// The index of the answer used as the short lock key (not first answer)
+    pub key_answer_index: usize,
+    /// The question text for the selected answer (stored for display)
+    pub key_question: String,
+    /// Encrypted first answer (answer0) using the key answer
+    pub encrypted_answer0: Vec<u8>,
+    /// Encrypted remaining answers using the key answer
+    pub encrypted_answers: Vec<u8>,
+    /// Salt used for key derivation
+    pub salt: Vec<u8>,
+    /// IV used for encryption
+    pub iv: Vec<u8>,
+    /// Timestamp of last activity (for 8-hour timeout)
+    pub last_activity: Instant,
+}
 
 impl AskryptApp {
     fn new(vault_path: Option<PathBuf>) -> (Self, Task<Message>) {
@@ -204,6 +245,9 @@ impl AskryptApp {
             settings,
             passgen_config: PasswordGenConfig::default(),
             generated_password: String::new(),
+            short_lock_data: None,
+            short_lock_answer: String::new(),
+            show_short_lock_answer: false,
         };
 
         let mut task = Task::none();
@@ -266,7 +310,35 @@ impl AskryptApp {
         event::listen().map(Message::Event)
     }
 
+    /// Check if Short Lock has timed out and perform full lock if needed.
+    /// Returns true if timeout occurred and full lock was performed.
+    fn check_short_lock_timeout(&mut self) -> bool {
+        if let Some(short_lock_data) = &self.short_lock_data {
+            if short_lock_data.last_activity.elapsed() >= SHORT_LOCK_TIMEOUT {
+                // Full lock - clear short lock data
+                self.short_lock_data = None;
+                self.short_lock_answer.clear();
+                self.show_short_lock_answer = false;
+                self.answer0.clear();
+                self.answers.clear();
+                self.entries.clear();
+                self.unlocked = false;
+                self.questions_data = None;
+                self.screen = Screen::FirstQuestion;
+                self.status_message =
+                    Some("Short Lock expired after 8 hours. Vault fully locked.".into());
+                return true;
+            }
+        }
+        false
+    }
+
     fn update(&mut self, event: Message) -> Task<Message> {
+        // Check Short Lock timeout on every update
+        if self.check_short_lock_timeout() {
+            return operation::focus_next();
+        }
+
         if let Message::Event(_) = event {
             // Do nothing
         } else {
@@ -868,6 +940,106 @@ impl AskryptApp {
                 self.generated_password = String::new();
                 Task::none()
             }
+            Message::ActivateShortLock => {
+                // Encrypt all answers using the randomly selected answer
+                match self.create_short_lock_data() {
+                    Ok(short_lock_data) => {
+                        self.short_lock_data = Some(short_lock_data);
+                        // Clear sensitive data from memory
+                        self.answer0.clear();
+                        self.answers.clear();
+                        self.entries.clear();
+                        self.unlocked = false;
+                        self.questions_data = None;
+                        self.short_lock_answer.clear();
+                        self.show_short_lock_answer = false;
+                        self.screen = Screen::ShortLocked;
+                        self.status_message = Some("Vault is now Short Locked".into());
+                        operation::focus_next()
+                    }
+                    Err(e) => {
+                        eprintln!("ERROR: Failed to create short lock: {}", e);
+                        self.error_message = Some("Failed to create Short Lock".into());
+                        Task::none()
+                    }
+                }
+            }
+            Message::ShortLockAnswerEdited(value) => {
+                self.short_lock_answer = value;
+                Task::none()
+            }
+            Message::ShortLockAnswerFinished => self.update(Message::ShortUnlockVault),
+            Message::ToggleShortLockAnswerVisibility => {
+                self.show_short_lock_answer = !self.show_short_lock_answer;
+                Task::none()
+            }
+            Message::ShortUnlockVault => {
+                if let Some(_short_lock_data) = &self.short_lock_data {
+                    let start = Instant::now();
+                    match self.decrypt_short_lock_data(&self.short_lock_answer.clone()) {
+                        Ok((answer0, answers)) => {
+                            // Restore answers
+                            self.answer0 = answer0;
+                            self.answers = answers;
+
+                            // Now unlock the vault using the restored answers
+                            if let Some(file) = &self.file {
+                                match file.get_questions_data(self.answer0.clone()) {
+                                    Ok(questions_data) => {
+                                        match file.decrypt(&questions_data, self.answers.clone()) {
+                                            Ok(entries) => {
+                                                let duration = start.elapsed();
+                                                let millis = duration.as_millis();
+                                                self.entries = entries;
+                                                self.questions_data = Some(questions_data);
+                                                self.unlocked = true;
+                                                self.shown_password_index = None;
+                                                self.screen = Screen::ShowEntries;
+                                                self.short_lock_answer.clear();
+                                                // Update last activity time
+                                                if let Some(data) = self.short_lock_data.as_mut() {
+                                                    data.last_activity = Instant::now();
+                                                }
+                                                self.status_message = Some(format!(
+                                                    "Vault unlocked from Short Lock in {} ms",
+                                                    millis
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                eprintln!("ERROR: Failed to decrypt vault: {}", e);
+                                                self.error_message =
+                                                    Some("Failed to decrypt vault".into());
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("ERROR: Failed to get questions data: {}", e);
+                                        self.error_message = Some("Failed to unlock vault".into());
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("ERROR: Short Lock answer incorrect: {}", e);
+                            self.error_message = Some("Incorrect answer".into());
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::CancelShortLock => {
+                // Cancel short lock and go back to full lock (first question)
+                self.short_lock_data = None;
+                self.short_lock_answer.clear();
+                self.show_short_lock_answer = false;
+                self.answer0.clear();
+                self.answers.clear();
+                self.entries.clear();
+                self.unlocked = false;
+                self.questions_data = None;
+                self.screen = Screen::FirstQuestion;
+                operation::focus_next()
+            }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
                 if self.ask_user_about_changes() {
                     // Save settings before exiting
@@ -921,6 +1093,7 @@ impl AskryptApp {
             Screen::ShowEntries => self.show_entries(),
             Screen::EditEntry => self.edit_entry(),
             Screen::PasswordGenerator => self.password_generator(),
+            Screen::ShortLocked => self.short_locked(),
         };
 
         container(screen)
@@ -1129,6 +1302,7 @@ impl AskryptApp {
             padded_button("Edit Questions").on_press(Message::EditQuestions),
             padded_button("Save").on_press(Message::SaveVault),
             padded_button("Save As").on_press(Message::SaveVaultAs),
+            padded_button("Short Lock").on_press(Message::ActivateShortLock),
             padded_button("Lock Vault").on_press(Message::LockVault),
             show_hidden_checkbox,
         ]);
@@ -1366,6 +1540,56 @@ impl AskryptApp {
                 self.error_message = Some(e);
             }
         }
+    }
+
+    fn short_locked(&self) -> Column<'_, Message> {
+        let mut column = Self::title_h1("Vault is Short Locked")
+            .push("Enter the selected answer to quickly unlock")
+            .align_x(alignment::Horizontal::Center);
+
+        column = self.show_vault_path(column);
+
+        // Show which question is being asked
+        if let Some(short_lock_data) = &self.short_lock_data {
+            column = column.push(text(&short_lock_data.key_question).size(15));
+        }
+
+        let answer_input = Self::security_input_with_toggle(
+            &self.short_lock_answer,
+            self.show_short_lock_answer,
+            Some(Message::ShortLockAnswerEdited),
+            Some(Message::ShortLockAnswerFinished),
+            Message::ToggleShortLockAnswerVisibility,
+            "Type the answer...",
+            "Hide Answer",
+            "Show Answer",
+        )
+        .width(400);
+
+        column = column.push(answer_input);
+
+        // Show remaining time before full lock
+        if let Some(short_lock_data) = &self.short_lock_data {
+            let elapsed = short_lock_data.last_activity.elapsed();
+            let remaining = SHORT_LOCK_TIMEOUT.saturating_sub(elapsed);
+            let hours = remaining.as_secs() / 3600;
+            let minutes = (remaining.as_secs() % 3600) / 60;
+            column = column.push(
+                text(format!("Time until full lock: {}h {}m", hours, minutes))
+                    .size(12)
+                    .color(Color::from_rgb(0.5, 0.5, 0.5)),
+            );
+        }
+
+        let controls = row![
+            padded_button("Unlock").on_press(Message::ShortUnlockVault),
+            padded_button("Full Lock").on_press(Message::CancelShortLock),
+        ]
+        .spacing(10);
+        column = column.push(controls);
+        column = self.show_messages_in_column(column);
+
+        column
     }
 
     /// Creates a security input field with a toggle button to show/hide the input.
@@ -1660,6 +1884,106 @@ impl AskryptApp {
             }
         }
         true
+    }
+
+    /// Create Short Lock data by encrypting all answers (except the key answer) with the selected answer.
+    /// Uses 2,000,000 iterations for key derivation as specified.
+    fn create_short_lock_data(&self) -> Result<ShortLockData, Box<dyn std::error::Error>> {
+        // Randomly select an answer index (not the first one)
+        // answers vector contains answers for questions 2, 3, etc.
+        // So we pick a random index from 1 to answers.len() (inclusive)
+        if self.answers.is_empty() {
+            return Err("Need at least 2 questions for Short Lock".into());
+        }
+
+        let mut rng = rand::rng();
+        // index 1 corresponds to answers[0], index 2 to answers[1], etc.
+        let key_answer_index = rng.random_range(1..=self.answers.len());
+        let key_answer = self
+            .answers
+            .get(key_answer_index - 1)
+            .cloned()
+            .unwrap_or_default();
+
+        if key_answer.is_empty() {
+            return Err("Selected answer is empty".into());
+        }
+        // Get the question text for display on the Short Lock screen
+        let key_question = if let Some(questions_data) = &self.questions_data {
+            questions_data
+                .questions
+                .get(key_answer_index - 1)
+                .cloned()
+                .unwrap_or_else(|| format!("Question {}", key_answer_index + 1))
+        } else {
+            format!("Question {}", key_answer_index + 1)
+        };
+
+        let salt = generate_salt(16);
+        let iv = generate_salt(16);
+
+        // Derive encryption key from the selected answer using PBKDF2
+        let normalized_answer = normalize_answer(&key_answer);
+        let salt_b64 = encode_base64(&salt);
+        let hashed_answer = sha256(&normalized_answer, &salt_b64);
+        let key = calc_pbkdf2(&hashed_answer, &salt, SHORT_LOCK_ITERATIONS)?;
+        let key_array: [u8; 32] = key.try_into().map_err(|_| "Invalid key length")?;
+        let iv_array: [u8; 16] = iv.clone().try_into().map_err(|_| "Invalid IV length")?;
+
+        // Serialize answer0 and encrypt
+        let encrypted_answer0 = encrypt_with_aes(self.answer0.as_bytes(), &key_array, &iv_array)?;
+
+        // Serialize all other answers (excluding the key answer) and encrypt
+        // We store all answers but the decryption will know which one was the key
+        let answers_json = serde_json::to_string(&self.answers)?;
+        let encrypted_answers = encrypt_with_aes(answers_json.as_bytes(), &key_array, &iv_array)?;
+
+        Ok(ShortLockData {
+            key_answer_index,
+            key_question,
+            encrypted_answer0,
+            encrypted_answers,
+            salt,
+            iv,
+            last_activity: Instant::now(),
+        })
+    }
+
+    /// Decrypt Short Lock data using the provided answer.
+    /// Returns the decrypted answer0 and answers vector.
+    fn decrypt_short_lock_data(
+        &self,
+        answer: &str,
+    ) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+        let short_lock_data = self
+            .short_lock_data
+            .as_ref()
+            .ok_or("No short lock data available")?;
+
+        // Derive decryption key from the provided answer
+        let normalized_answer = normalize_answer(answer);
+        let salt_b64 = encode_base64(&short_lock_data.salt);
+        let hashed_answer = sha256(&normalized_answer, &salt_b64);
+        let key = calc_pbkdf2(&hashed_answer, &short_lock_data.salt, SHORT_LOCK_ITERATIONS)?;
+        let key_array: [u8; 32] = key.try_into().map_err(|_| "Invalid key length")?;
+        let iv_array: [u8; 16] = short_lock_data
+            .iv
+            .clone()
+            .try_into()
+            .map_err(|_| "Invalid IV length")?;
+
+        // Decrypt answer0
+        let answer0_bytes =
+            decrypt_with_aes(&short_lock_data.encrypted_answer0, &key_array, &iv_array)?;
+        let answer0 = String::from_utf8(answer0_bytes)?;
+
+        // Decrypt answers
+        let answers_bytes =
+            decrypt_with_aes(&short_lock_data.encrypted_answers, &key_array, &iv_array)?;
+        let answers_json = String::from_utf8(answers_bytes)?;
+        let answers: Vec<String> = serde_json::from_str(&answers_json)?;
+
+        Ok((answer0, answers))
     }
 }
 
