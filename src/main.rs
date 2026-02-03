@@ -24,7 +24,7 @@ use iced::widget::{
     Container, Row, Scrollable, button, checkbox, column, container, operation, row, scrollable,
     slider, text, text_input, tooltip,
 };
-use iced::{Color, window};
+use iced::{Color, time, window};
 use iced::{
     Element, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard, keyboard,
 };
@@ -102,6 +102,8 @@ pub struct AskryptApp {
     short_lock_answer: String,
     // Track if short lock answer is shown
     show_short_lock_answer: bool,
+    // Last user activity timestamp for auto Short Lock
+    last_user_activity: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +172,8 @@ pub enum Message {
     ToggleShortLockAnswerVisibility,
     ShortUnlockVault,
     CancelShortLock,
+    // Inactivity timeout tick
+    InactivityTick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +195,9 @@ const FILTER_INPUT_ID: &str = "FILTER_INPUT_ID";
 // Iterations for Short Lock encryption (2,000,000 as specified)
 const SHORT_LOCK_ITERATIONS: u32 = 2_000_000;
 // Short Lock timeout duration (8 hours)
-const SHORT_LOCK_TIMEOUT: Duration = Duration::from_secs(8 * 60 * 60);
+const SHORT_LOCK_TIMEOUT: Duration = Duration::from_hours(8);
+// Inactivity timeout for auto Short Lock (10 minutes)
+const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// Data for Short Lock mode - stores encrypted answers in RAM
 #[derive(Debug, Clone)]
@@ -248,6 +254,7 @@ impl AskryptApp {
             short_lock_data: None,
             short_lock_answer: String::new(),
             show_short_lock_answer: false,
+            last_user_activity: None,
         };
 
         let mut task = Task::none();
@@ -307,7 +314,53 @@ impl AskryptApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        event::listen().map(Message::Event)
+        let events = event::listen().map(Message::Event);
+
+        // Add timer for inactivity check when vault is unlocked
+        if self.unlocked {
+            let timer = time::every(Duration::from_secs(30)).map(|_| Message::InactivityTick);
+            Subscription::batch([events, timer])
+        } else {
+            events
+        }
+    }
+
+    /// Update user activity timestamp (for auto Short Lock after inactivity)
+    fn update_user_activity(&mut self) {
+        if self.unlocked {
+            self.last_user_activity = Some(Instant::now());
+        }
+    }
+
+    /// Check if inactivity timeout has passed and trigger auto Short Lock.
+    /// Returns true if auto Short Lock was activated.
+    fn check_inactivity_timeout(&mut self) -> bool {
+        // Only check if vault is unlocked and we have answers (can do Short Lock)
+        if self.unlocked && self.answers.len() >= 1 {
+            if let Some(last_activity) = self.last_user_activity {
+                if last_activity.elapsed() >= INACTIVITY_TIMEOUT {
+                    // Try to activate Short Lock
+                    match self.create_short_lock_data() {
+                        Ok(short_lock_data) => {
+                            self.short_lock_data = Some(short_lock_data);
+                            self.answer0.clear();
+                            self.answers.clear();
+                            self.entries.clear();
+                            self.unlocked = false;
+                            self.last_user_activity = None;
+                            self.screen = Screen::ShortLocked;
+                            self.status_message =
+                                Some("Vault auto-locked due to inactivity.".into());
+                            return true;
+                        }
+                        Err(e) => {
+                            eprintln!("ERROR: Failed to auto Short Lock: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Check if Short Lock has timed out and perform full lock if needed.
@@ -339,13 +392,17 @@ impl AskryptApp {
             return operation::focus_next();
         }
 
-        if let Message::Event(_) = event {
-            // Do nothing
-        } else {
-            // Clear previous messages if message is not Message::Event
-            self.error_message = None;
-            self.success_message = None;
-            self.status_message = None;
+        match &event {
+            Message::Event(_) | Message::InactivityTick => {
+                // Do not clear messages for events or inactivity ticks
+            }
+            _ => {
+                // Clear previous messages for other messages
+                self.error_message = None;
+                self.success_message = None;
+                self.status_message = None;
+                self.update_user_activity();
+            }
         }
 
         match event {
@@ -993,6 +1050,7 @@ impl AskryptApp {
                                                 self.entries = entries;
                                                 self.questions_data = Some(questions_data);
                                                 self.unlocked = true;
+                                                self.last_user_activity = Some(Instant::now());
                                                 self.shown_password_index = None;
                                                 self.screen = Screen::ShowEntries;
                                                 self.short_lock_answer.clear();
@@ -1039,6 +1097,13 @@ impl AskryptApp {
                 self.questions_data = None;
                 self.screen = Screen::FirstQuestion;
                 operation::focus_next()
+            }
+            Message::InactivityTick => {
+                // Check for inactivity timeout and auto Short Lock
+                if self.check_inactivity_timeout() {
+                    return operation::focus_next();
+                }
+                Task::none()
             }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
                 if self.ask_user_about_changes() {
