@@ -49,6 +49,10 @@ pub fn main() {
     )
     .title(AskryptApp::title)
     .subscription(AskryptApp::subscription)
+    .window(window::Settings {
+        icon: Some(load_icon().expect("Failed to load icon")),
+        ..Default::default()
+    })
     .centered()
     .theme(Theme::Light)
     .exit_on_close_request(false)
@@ -2088,4 +2092,8 @@ fn format_timestamp_local(timestamp: i64) -> String {
     let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now);
     let local_datetime = datetime.with_timezone(&Local);
     local_datetime.format("%b. %d, %Y - %T").to_string()
+}
+
+fn load_icon() -> Result<window::Icon, window::icon::Error> {
+    window::icon::from_file_data(include_bytes!("../static/logo-128.png"), None)
 }

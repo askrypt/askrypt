@@ -206,6 +206,7 @@ dependencies = [
  "cipher",
  "hex",
  "iced",
+ "image",
  "open",
  "pbkdf2",
  "rand",
