@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Askrypt
+Comment=Password manager without master password
+Exec=askrypt
+Icon=askrypt
+Terminal=false
+Type=Application
+Categories=Utility;Security;
