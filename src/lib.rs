@@ -71,6 +71,7 @@ use cbc::{Decryptor, Encryptor};
 use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::Write;
 use zip::write::SimpleFileOptions;
 
@@ -119,7 +120,7 @@ pub struct MasterData {
 }
 
 /// Main Askrypt file structure in JSON format
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AskryptFile {
     pub version: String,
     pub question0: String,
@@ -127,6 +128,19 @@ pub struct AskryptFile {
     pub qs: String,
     pub master: String,
     pub data: String,
+    #[serde(skip)]
+    pub debug_map: HashMap<String, String>,
+}
+
+impl PartialEq for AskryptFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.question0 == other.question0
+            && self.params == other.params
+            && self.qs == other.qs
+            && self.master == other.master
+            && self.data == other.data
+    }
 }
 
 const DEFAULT_KDF: &str = "pbkdf2";
@@ -229,9 +243,11 @@ impl AskryptFile {
         let salt1_iv: [u8; 16] = salt1.clone().try_into().map_err(|_| "Invalid IV length")?;
 
         // Step 5: Encrypt master key and IV using second-key and salt1 as IV
+        let master_key_b64 = encode_base64(&master_key_bytes);
+        let iv_data_b64 = encode_base64(&iv_bytes);
         let master_data = MasterData {
-            master_key: encode_base64(&master_key_bytes),
-            iv: encode_base64(&iv_bytes),
+            master_key: master_key_b64.clone(),
+            iv: iv_data_b64.clone(),
         };
         let master = encrypt_to_base64(&master_data, &second_key_array, &salt1_iv)?;
 
@@ -242,7 +258,32 @@ impl AskryptFile {
         let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
         let data = encrypt_to_base64(&secret_data, &master_key_array, &iv_array)?;
 
-        // Step 7: Create and return AskryptFile
+        // Step 7: Build debug map with all cryptographic material used during creation
+        let salt1_b64 = encode_base64(&salt1);
+        let mut debug_map: HashMap<String, String> = HashMap::new();
+        for (i, q) in questions.iter().enumerate() {
+            debug_map.insert(format!("question_{}", i), q.clone());
+        }
+        for (i, a) in answers.iter().enumerate() {
+            debug_map.insert(format!("answer_{}", i), sha256(a, &salt0_b64));
+        }
+        debug_map.insert("salt0".to_string(), salt0_b64.clone());
+        debug_map.insert("salt1".to_string(), salt1_b64.clone());
+        debug_map.insert("iv_qs".to_string(), salt0_b64.clone());
+        debug_map.insert("iv_master".to_string(), salt1_b64);
+        debug_map.insert("iv_data".to_string(), iv_data_b64);
+
+        // Save debug map to home directory
+        let home_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let timestamp = chrono::Utc::now().timestamp();
+        let debug_file_path = format!("{}/askrypt_{}.json", home_dir, timestamp);
+        if let Ok(json) = serde_json::to_string_pretty(&debug_map) {
+            let _ = std::fs::write(&debug_file_path, json);
+        }
+
+        // Step 8: Create and return AskryptFile
         Ok(AskryptFile {
             version: "0.9".to_string(),
             question0: questions[0].clone(),
@@ -254,6 +295,7 @@ impl AskryptFile {
             qs,
             master,
             data,
+            debug_map,
         })
     }
 
@@ -905,6 +947,7 @@ mod tests {
             qs: "base64-encrypted-questions".to_string(),
             master: "base64-encrypted-master".to_string(),
             data: "base64-encrypted-data".to_string(),
+            debug_map: HashMap::new(),
         };
 
         let json = serde_json::to_string(&file).unwrap();
