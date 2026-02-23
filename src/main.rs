@@ -691,6 +691,14 @@ impl AskryptApp {
                     ) {
                         Ok(new_file) => match new_file.save_to_file(path) {
                             Ok(_) => {
+                                if let Err(e) = new_file.get_questions_data(self.answer0.clone()) {
+                                    eprintln!("ERROR: Integrity check failed after save: {}", e);
+                                    rfd::MessageDialog::new()
+                                        .set_title("Integrity Check Failed")
+                                        .set_description("The vault was saved but integrity verification failed.")
+                                        .set_buttons(rfd::MessageButtons::Ok)
+                                        .show();
+                                }
                                 self.file = Some(new_file);
                                 self.is_modified = false;
                                 self.success_message = Some("Vault saved successfully".into());
@@ -739,6 +747,14 @@ impl AskryptApp {
                     ) {
                         Ok(new_file) => match new_file.save_to_file(&new_path) {
                             Ok(_) => {
+                                if let Err(e) = new_file.get_questions_data(self.answer0.clone()) {
+                                    eprintln!("ERROR: Integrity check failed after save: {}", e);
+                                    rfd::MessageDialog::new()
+                                        .set_title("Integrity Check Failed")
+                                        .set_description("The vault was saved but integrity verification failed.")
+                                        .set_buttons(rfd::MessageButtons::Ok)
+                                        .show();
+                                }
                                 self.path = Some(new_path.clone());
                                 self.file = Some(new_file);
                                 self.is_modified = false;
@@ -859,6 +875,14 @@ impl AskryptApp {
                     Some(iterations),
                 ) {
                     Ok(file) => {
+                        if let Err(e) = file.get_questions_data(self.answer0.clone()) {
+                            eprintln!("ERROR: Integrity check failed after save: {}", e);
+                            rfd::MessageDialog::new()
+                                .set_title("Integrity Check Failed")
+                                .set_description("The vault was saved but integrity verification failed.")
+                                .set_buttons(rfd::MessageButtons::Ok)
+                                .show();
+                        }
                         self.file = Some(file);
                     }
                     Err(_) => {
