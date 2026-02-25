@@ -3,10 +3,12 @@
 mod icon;
 mod passgen;
 mod settings;
+mod tray;
 mod ui;
 
 use crate::passgen::{PasswordGenConfig, generate_password};
 use crate::settings::AppSettings;
+use crate::tray::{AppTray, TrayEvent};
 use crate::ui::{
     button_link, container_border_r5, control_button, control_button_icon, padded_button,
     text_button_icon,
@@ -108,6 +110,8 @@ pub struct AskryptApp {
     show_short_lock_answer: bool,
     // Last user activity timestamp for auto Short Lock
     last_user_activity: Option<Instant>,
+    // System tray
+    tray: Option<AppTray>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,6 +182,9 @@ pub enum Message {
     CancelShortLock,
     // Inactivity timeout tick
     InactivityTick,
+    CheckTrayEvents,
+    TrayQuit,
+    TrayOpen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,7 +266,17 @@ impl AskryptApp {
             short_lock_answer: String::new(),
             show_short_lock_answer: false,
             last_user_activity: None,
+            tray: None,
         };
+
+        match AppTray::new() {
+            Ok(tray) => {
+                app.tray = Some(tray);
+            }
+            Err(e) => {
+                eprintln!("WARNING: Failed to create system tray: {}", e);
+            }
+        }
 
         let mut task = Task::none();
         let vault_path = match vault_path {
@@ -319,13 +336,14 @@ impl AskryptApp {
 
     fn subscription(&self) -> Subscription<Message> {
         let events = event::listen().map(Message::Event);
+        let tray_sub = time::every(Duration::from_millis(200)).map(|_| Message::CheckTrayEvents);
 
         // Add timer for inactivity check when vault is unlocked
         if self.unlocked {
             let timer = time::every(Duration::from_secs(30)).map(|_| Message::InactivityTick);
-            Subscription::batch([events, timer])
+            Subscription::batch([events, timer, tray_sub])
         } else {
-            events
+            Subscription::batch([events, tray_sub])
         }
     }
 
@@ -397,7 +415,7 @@ impl AskryptApp {
         }
 
         match &event {
-            Message::Event(_) | Message::InactivityTick => {
+            Message::Event(_) | Message::InactivityTick | Message::CheckTrayEvents => {
                 // Do not clear messages for events or inactivity ticks
             }
             _ => {
@@ -1109,7 +1127,22 @@ impl AskryptApp {
                 }
                 Task::none()
             }
+            Message::CheckTrayEvents => {
+                if let Some(tray) = &self.tray {
+                    if let Ok(event) = tray.receiver.try_recv() {
+                        return match event {
+                            TrayEvent::Open => self.update(Message::TrayOpen),
+                            TrayEvent::Quit => self.update(Message::TrayQuit),
+                        };
+                    }
+                }
+                Task::none()
+            }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
+                // Hide to tray instead of closing
+                window::oldest().and_then(|id| window::minimize(id, true))
+            }
+            Message::TrayQuit => {
                 if self.ask_user_about_changes() {
                     // Save settings before exiting
                     // TODO: handle potential error
@@ -1118,6 +1151,10 @@ impl AskryptApp {
                 } else {
                     Task::none() // Cancel - don't close
                 }
+            }
+            Message::TrayOpen => {
+                // Restore window from tray
+                window::oldest().and_then(|id| window::minimize(id, false))
             }
             Message::Event(Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(key::Named::Tab),
