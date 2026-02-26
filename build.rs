@@ -6,8 +6,6 @@ fn main() {
         return;
     }
     let mut res = WindowsResource::new();
-    let icon_path = "static/logo-128.ico";
-
-    res.set_icon(icon_path);
+    res.set_resource_file("res.rc");
     res.compile().expect("failed to build executable logo");
 }

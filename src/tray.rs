@@ -37,7 +37,7 @@ impl AppTray {
         };
 
         #[cfg(target_os = "windows")]
-        let icon = IconSource::Resource("icon");
+        let icon = IconSource::Resource("main-exe-icon");
 
         let mut tray = TrayItem::new("Askrypt", icon)?;
         let tx_quit = tx.clone();
