@@ -52,7 +52,8 @@ pub fn main() {
     .title(AskryptApp::title)
     .subscription(AskryptApp::subscription)
     .window({
-        let settings = window::Settings {
+        #[allow(unused_mut)]
+        let mut settings = window::Settings {
             icon: Some(load_icon().expect("Failed to load icon")),
             exit_on_close_request: false,
             ..Default::default()
