@@ -124,10 +124,35 @@ jobs:
           echo "ARCHIVE=askrypt-$version-${{ matrix.target }}" >> $GITHUB_ENV
 
       - name: Creating directory for archive
+        if: matrix.build != 'macos'
         shell: bash
         run: |
           mkdir -p "$ARCHIVE"/
           cp "$BIN" "$ARCHIVE"/
+
+      - name: Bundle macOS app
+        if: matrix.build == 'macos'
+        shell: bash
+        run: |
+          APP="Askrypt.app"
+          version="${{ needs.create-release.outputs.version }}"
+          mkdir -p "$ARCHIVE/$APP/Contents/MacOS"
+          mkdir -p "$ARCHIVE/$APP/Contents/Resources"
+          cp "$BIN" "$ARCHIVE/$APP/Contents/MacOS/askrypt"
+          sed "s/{{VERSION}}/$version/g" static/Info.plist > "$ARCHIVE/$APP/Contents/Info.plist"
+          ICONSET_DIR="$(mktemp -d)/askrypt.iconset"
+          mkdir -p "$ICONSET_DIR"
+          sips -z 16   16   static/logo-128.png --out "$ICONSET_DIR/icon_16x16.png"      >/dev/null
+          sips -z 32   32   static/logo-128.png --out "$ICONSET_DIR/icon_16x16@2x.png"   >/dev/null
+          sips -z 32   32   static/logo-128.png --out "$ICONSET_DIR/icon_32x32.png"      >/dev/null
+          sips -z 64   64   static/logo-128.png --out "$ICONSET_DIR/icon_32x32@2x.png"   >/dev/null
+          sips -z 128  128  static/logo-128.png --out "$ICONSET_DIR/icon_128x128.png"    >/dev/null
+          sips -z 256  256  static/logo-128.png --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null
+          sips -z 256  256  static/logo-128.png --out "$ICONSET_DIR/icon_256x256.png"    >/dev/null
+          sips -z 512  512  static/logo-128.png --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
+          sips -z 512  512  static/logo-128.png --out "$ICONSET_DIR/icon_512x512.png"    >/dev/null
+          sips -z 1024 1024 static/logo-128.png --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET_DIR" -o "$ARCHIVE/$APP/Contents/Resources/askrypt.icns"
 
       - name: Build archive (Windows)
         shell: bash
