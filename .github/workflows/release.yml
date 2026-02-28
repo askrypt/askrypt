@@ -34,7 +34,7 @@ jobs:
 
   build-release:
     name: build-release
-    needs: ['create-release']
+    needs: ["create-release"]
     runs-on: ${{ matrix.os }}
     env:
       CARGO: cargo
@@ -71,7 +71,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
-          sudo apt update && sudo apt install -y musl-tools musl-dev
+          sudo apt update && sudo apt install -y musl-tools musl-dev libdbus-1-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -182,7 +182,7 @@ jobs:
 
   build-release-deb:
     name: build-release-deb
-    needs: ['create-release']
+    needs: ["create-release"]
     runs-on: ubuntu-latest
     env:
       TARGET: x86_64-unknown-linux-gnu
