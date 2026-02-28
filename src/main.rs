@@ -51,20 +51,20 @@ pub fn main() {
     )
     .title(AskryptApp::title)
     .subscription(AskryptApp::subscription)
-    .window(window::Settings {
-        icon: Some(load_icon().expect("Failed to load icon")),
-        ..Default::default()
+    .window({
+        let settings = window::Settings {
+            icon: Some(load_icon().expect("Failed to load icon")),
+            exit_on_close_request: false,
+            ..Default::default()
+        };
+        #[cfg(target_os = "linux")]
+        {
+            settings.platform_specific.application_id = String::from("askrypt");
+        }
+        settings
     })
     .centered()
     .theme(Theme::Light)
-    .window(window::Settings {
-        platform_specific: window::settings::PlatformSpecific {
-            application_id: String::from("askrypt"),
-            ..Default::default()
-        },
-        exit_on_close_request: false,
-        ..Default::default()
-    })
     .font(include_bytes!("../static/bootstrap-icons.ttf"))
     .run();
 }
