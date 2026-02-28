@@ -6,3 +6,5 @@ Icon=askrypt
 Terminal=false
 Type=Application
 Categories=Utility;Security;
+StartupNotify=true
+StartupWMClass=askrypt

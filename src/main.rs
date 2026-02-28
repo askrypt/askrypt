@@ -57,7 +57,14 @@ pub fn main() {
     })
     .centered()
     .theme(Theme::Light)
-    .exit_on_close_request(false)
+    .window(window::Settings {
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: String::from("askrypt"),
+            ..Default::default()
+        },
+        exit_on_close_request: false,
+        ..Default::default()
+    })
     .font(include_bytes!("../static/bootstrap-icons.ttf"))
     .run();
 }
