@@ -71,7 +71,8 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
-          sudo apt update && sudo apt install -y musl-tools musl-dev libdbus-1-dev pkg-config
+          sudo apt update && sudo apt install -y musl-tools musl-dev
+          sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -80,7 +81,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Use Cross
-        if: matrix.os == 'ubuntu-latest' && matrix.target != ''
+        if: matrix.os == 'ubuntu-latest' && matrix.target != '' && matrix.target != 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           # Cross has over 100 dependencies and takes a bit to compile.
@@ -196,7 +197,7 @@ jobs:
       - name: Install packages (Ubuntu)
         shell: bash
         run: |
-          echo "TODO! Ensure required packages for building .deb are installed."
+          sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master

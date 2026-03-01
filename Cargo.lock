@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "askrypt"
-version = "0.4.1"
+version = "0.4.5"
 dependencies = [
  "aes",
  "base64",
