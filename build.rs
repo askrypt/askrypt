@@ -7,6 +7,9 @@ fn main() {
     }
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let mut res = WindowsResource::new();
-    res.set_icon(&format!("{manifest_dir}/static/logo-128.ico"));
+    res.set_icon_with_id(
+        &format!("{manifest_dir}/static/logo-128.ico"),
+        "main-exe-icon",
+    );
     res.compile().expect("failed to build executable logo");
 }
