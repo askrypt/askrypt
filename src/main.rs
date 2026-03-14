@@ -346,8 +346,8 @@ impl AskryptApp {
         let events = event::listen().map(Message::Event);
         let tray_sub = time::every(Duration::from_millis(200)).map(|_| Message::CheckTrayEvents);
 
-        // Add timer for inactivity check when vault is unlocked
-        if self.unlocked {
+        // Add timer for inactivity check when vault is unlocked or smart locked
+        if self.unlocked || self.smart_lock_data.is_some() {
             let timer = time::every(Duration::from_secs(30)).map(|_| Message::InactivityTick);
             Subscription::batch([events, timer, tray_sub])
         } else {
@@ -363,9 +363,9 @@ impl AskryptApp {
     }
 
     /// Check if inactivity timeout has passed and trigger auto Smart Lock.
-    /// Returns true if auto Smart Lock was activated.
+    /// Check if Smart Lock has timed out and perform full lock if needed.
     fn check_inactivity_timeout(&mut self) -> Task<Message> {
-        // Only check if vault is unlocked and we have answers (can do Smart Lock)
+        // Only check if vault is unlocked, and we have answers (can do Smart Lock)
         if self.unlocked && self.answers.len() >= 1 {
             if let Some(last_activity) = self.last_user_activity {
                 if last_activity.elapsed() >= INACTIVITY_TIMEOUT {
@@ -374,38 +374,16 @@ impl AskryptApp {
                 }
             }
         }
+        if let Some(smart_lock_data) = &self.smart_lock_data {
+            if smart_lock_data.last_activity.elapsed() >= SMART_LOCK_TIMEOUT {
+                // Deactivate Smart Lock
+                return self.update(Message::CancelSmartLock);
+            }
+        }
         Task::none()
     }
 
-    /// Check if Smart Lock has timed out and perform full lock if needed.
-    /// Returns true if timeout occurred and full lock was performed.
-    fn check_smart_lock_timeout(&mut self) -> bool {
-        if let Some(smart_lock_data) = &self.smart_lock_data {
-            if smart_lock_data.last_activity.elapsed() >= SMART_LOCK_TIMEOUT {
-                // Full lock - clear smart lock data
-                self.smart_lock_data = None;
-                self.smart_lock_answer.clear();
-                self.show_smart_lock_answer = false;
-                self.answer0.clear();
-                self.answers.clear();
-                self.entries.clear();
-                self.unlocked = false;
-                self.questions_data = None;
-                self.screen = Screen::FirstQuestion;
-                self.status_message =
-                    Some("Smart Lock expired after 8 hours. Vault fully locked.".into());
-                return true;
-            }
-        }
-        false
-    }
-
     fn update(&mut self, event: Message) -> Task<Message> {
-        // Check Smart Lock timeout on every update
-        if self.check_smart_lock_timeout() {
-            return operation::focus_next();
-        }
-
         match &event {
             Message::Event(_) | Message::InactivityTick | Message::CheckTrayEvents => {
                 // Do not clear messages for events or inactivity ticks
@@ -521,6 +499,7 @@ impl AskryptApp {
                             self.shown_password_index = None;
                             self.screen = Screen::ShowEntries;
                             self.unlocked = true;
+                            self.last_user_activity = Some(Instant::now());
                             self.settings.last_opened_file = self.path.clone();
                             self.status_message =
                                 Some(format!("The Vault unlocked in {} ms", millis));
