@@ -364,33 +364,17 @@ impl AskryptApp {
 
     /// Check if inactivity timeout has passed and trigger auto Smart Lock.
     /// Returns true if auto Smart Lock was activated.
-    fn check_inactivity_timeout(&mut self) -> bool {
+    fn check_inactivity_timeout(&mut self) -> Task<Message> {
         // Only check if vault is unlocked and we have answers (can do Smart Lock)
         if self.unlocked && self.answers.len() >= 1 {
             if let Some(last_activity) = self.last_user_activity {
                 if last_activity.elapsed() >= INACTIVITY_TIMEOUT {
-                    // Try to activate Smart Lock
-                    match self.create_smart_lock_data() {
-                        Ok(smart_lock_data) => {
-                            self.smart_lock_data = Some(smart_lock_data);
-                            self.answer0.clear();
-                            self.answers.clear();
-                            self.entries.clear();
-                            self.unlocked = false;
-                            self.last_user_activity = None;
-                            self.screen = Screen::SmartLocked;
-                            self.status_message =
-                                Some("Vault auto-locked due to inactivity.".into());
-                            return true;
-                        }
-                        Err(e) => {
-                            eprintln!("ERROR: Failed to auto Smart Lock: {}", e);
-                        }
-                    }
+                    // Activate Smart Lock
+                    return self.update(Message::ActivateSmartLock);
                 }
             }
         }
-        false
+        Task::none()
     }
 
     /// Check if Smart Lock has timed out and perform full lock if needed.
@@ -1130,10 +1114,7 @@ impl AskryptApp {
             }
             Message::InactivityTick => {
                 // Check for inactivity timeout and auto Smart Lock
-                if self.check_inactivity_timeout() {
-                    return operation::focus_next();
-                }
-                Task::none()
+                self.check_inactivity_timeout()
             }
             Message::CheckTrayEvents => {
                 if let Some(tray) = &self.tray {
