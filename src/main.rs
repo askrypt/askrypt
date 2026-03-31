@@ -366,20 +366,17 @@ impl AskryptApp {
     /// Check if Smart Lock has timed out and perform full lock if needed.
     fn check_inactivity_timeout(&mut self) -> Task<Message> {
         // Only check if vault is unlocked, and we have answers (can do Smart Lock)
-        if self.unlocked && self.answers.len() >= 1 {
-            if let Some(last_activity) = self.last_user_activity {
-                if last_activity.elapsed() >= INACTIVITY_TIMEOUT {
+        if self.unlocked && !self.answers.is_empty()
+            && let Some(last_activity) = self.last_user_activity
+                && last_activity.elapsed() >= INACTIVITY_TIMEOUT {
                     // Activate Smart Lock
                     return self.update(Message::ActivateSmartLock);
                 }
-            }
-        }
-        if let Some(smart_lock_data) = &self.smart_lock_data {
-            if smart_lock_data.last_activity.elapsed() >= SMART_LOCK_TIMEOUT {
+        if let Some(smart_lock_data) = &self.smart_lock_data
+            && smart_lock_data.last_activity.elapsed() >= SMART_LOCK_TIMEOUT {
                 // Deactivate Smart Lock
                 return self.update(Message::CancelSmartLock);
             }
-        }
         Task::none()
     }
 
@@ -1096,14 +1093,13 @@ impl AskryptApp {
                 self.check_inactivity_timeout()
             }
             Message::CheckTrayEvents => {
-                if let Some(tray) = &self.tray {
-                    if let Ok(event) = tray.receiver.try_recv() {
+                if let Some(tray) = &self.tray
+                    && let Ok(event) = tray.receiver.try_recv() {
                         return match event {
                             TrayEvent::Open => self.update(Message::TrayOpen),
                             TrayEvent::Quit => self.update(Message::TrayQuit),
                         };
                     }
-                }
                 Task::none()
             }
             Message::Event(Event::Window(window::Event::CloseRequested)) => {
