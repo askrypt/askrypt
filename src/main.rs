@@ -91,6 +91,7 @@ pub struct AskryptApp {
     // Questions editing
     editing_questions: Vec<String>,
     editing_answers: Vec<String>,
+    editing_translit: bool,
     // Track which entry's password is being shown
     shown_password_index: Option<usize>,
     // Track which question answer is being shown in edit questions screen
@@ -156,6 +157,7 @@ pub enum Message {
     AddQuestion,
     DeleteQuestion(usize),
     SaveQuestions,
+    ToggleEditingTranslit(bool),
     BackFromQuestionEditor,
     // Password management messages
     ShowPassword(usize),
@@ -260,6 +262,7 @@ impl AskryptApp {
             editing_tags: String::new(),
             editing_questions: Vec::new(),
             editing_answers: Vec::new(),
+            editing_translit: false,
             shown_password_index: None,
             shown_question_answer_index: None,
             show_secret_in_edit: false,
@@ -402,6 +405,7 @@ impl AskryptApp {
                 // Initialize editing state for new vault
                 self.editing_questions = vec![String::new()];
                 self.editing_answers = vec![String::new()];
+                self.editing_translit = false;
                 self.path = None;
                 self.file = None;
                 self.screen = Screen::EditQuestions;
@@ -651,6 +655,7 @@ impl AskryptApp {
                         all_answers,
                         self.entries.clone(),
                         Some(file.params.iterations),
+                        file.params.translit,
                     ) {
                         Ok(new_file) => match new_file.save_to_file(path) {
                             Ok(_) => {
@@ -699,6 +704,7 @@ impl AskryptApp {
                         all_answers,
                         self.entries.clone(),
                         Some(DEFAULT_ITERATIONS), // TODO: allow user to set this iterations
+                        self.file.as_ref().is_some_and(|f| f.params.translit),
                     ) {
                         Ok(new_file) => match new_file.save_to_file(&new_path) {
                             Ok(_) => {
@@ -729,6 +735,7 @@ impl AskryptApp {
                         if let Some(qs_data) = &self.questions_data {
                             self.editing_questions.extend(qs_data.questions.clone());
                         }
+                        self.editing_translit = file.params.translit;
                     }
                     // TODO: Load existing answers for editing
                     self.editing_answers = vec![self.answer0.clone()];
@@ -741,6 +748,7 @@ impl AskryptApp {
                     if self.editing_answers.is_empty() {
                         self.editing_answers = vec![String::new()];
                     }
+                    self.editing_translit = false;
                 }
                 self.screen = Screen::EditQuestions;
                 Task::none()
@@ -820,6 +828,7 @@ impl AskryptApp {
                     self.editing_answers.clone(),
                     self.entries.clone(),
                     Some(iterations),
+                    self.editing_translit,
                 ) {
                     Ok(file) => {
                         self.file = Some(file);
@@ -833,7 +842,13 @@ impl AskryptApp {
                 self.is_modified = true;
                 self.shown_password_index = None;
                 self.screen = Screen::ShowEntries;
+                self.editing_translit = false;
 
+                Task::none()
+            }
+            Message::ToggleEditingTranslit(value) => {
+                self.editing_translit = value;
+                self.is_modified = true;
                 Task::none()
             }
             Message::BackFromQuestionEditor => {
@@ -1193,10 +1208,16 @@ impl AskryptApp {
             .align_x(alignment::Horizontal::Center)
             .width(Length::Fill);
         // Top section: Fixed control buttons
+        let translit_checkbox = checkbox(self.editing_translit)
+            .label("Use transliteration")
+            .on_toggle(Message::ToggleEditingTranslit)
+            .size(16);
+
         let top_section = Self::controls_block(row![
             padded_button("Add Question").on_press(Message::AddQuestion),
             padded_button("Save").on_press(Message::SaveQuestions),
             padded_button("Cancel").on_press(Message::BackFromQuestionEditor),
+            translit_checkbox,
         ]);
 
         // Middle section: Scrollable questions
@@ -1997,7 +2018,8 @@ impl AskryptApp {
         let iv = generate_salt(16);
 
         // Derive encryption key from the selected answer using PBKDF2
-        let normalized_answer = normalize_answer(&key_answer);
+        let translit = self.file.as_ref().is_some_and(|f| f.params.translit);
+        let normalized_answer = normalize_answer(&key_answer, translit);
         let salt_b64 = encode_base64(&salt);
         let hashed_answer = sha256(&normalized_answer, &salt_b64);
         let key = calc_pbkdf2(&hashed_answer, &salt, SMART_LOCK_ITERATIONS)?;
@@ -2035,7 +2057,8 @@ impl AskryptApp {
             .ok_or("No smart lock data available")?;
 
         // Derive decryption key from the provided answer
-        let normalized_answer = normalize_answer(answer);
+        let translit = self.file.as_ref().is_some_and(|f| f.params.translit);
+        let normalized_answer = normalize_answer(answer, translit);
         let salt_b64 = encode_base64(&smart_lock_data.salt);
         let hashed_answer = sha256(&normalized_answer, &salt_b64);
         let key = calc_pbkdf2(&hashed_answer, &smart_lock_data.salt, SMART_LOCK_ITERATIONS)?;

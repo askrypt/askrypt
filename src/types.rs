@@ -20,9 +20,15 @@ pub struct SecretEntry {
 /// Represents open parameters for [AskryptFile]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Params {
+    /// Key derivation function name (e.g. "pbkdf2-sha256")
     pub kdf: String,
+    /// Number of KDF iterations
     pub iterations: u32,
+    /// Base64-encoded salt
     pub salt: String,
+    /// Whether to apply Russian/Ukrainian transliteration to answers
+    #[serde(default)]
+    pub translit: bool,
 }
 
 /// Represents the encrypted questions and second-level KDF parameters

@@ -51,6 +51,7 @@
 //!     answers.clone(),
 //!     secrets.clone(),
 //!     Some(5000),
+//!     false,
 //! ).unwrap();
 //!
 //! // Save to disk
@@ -128,13 +129,14 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000)).unwrap();
+    /// let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000), false).unwrap();
     /// ```
     pub fn create(
         questions: Vec<String>,
         answers: Vec<String>,
         secret_data: Vec<SecretEntry>,
         iterations: Option<u32>,
+        translit: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Validate inputs
         if questions.len() < 2 {
@@ -149,7 +151,10 @@ impl AskryptFile {
             }
         }
 
-        let answers: Vec<String> = answers.into_iter().map(|a| normalize_answer(&a)).collect();
+        let answers: Vec<String> = answers
+            .into_iter()
+            .map(|a| normalize_answer(&a, translit))
+            .collect();
 
         let iterations = iterations.unwrap_or(600000);
 
@@ -203,6 +208,7 @@ impl AskryptFile {
                 kdf: DEFAULT_KDF.to_string(),
                 iterations,
                 salt: salt0_b64,
+                translit,
             },
             qs,
             master,
@@ -250,7 +256,7 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000)).unwrap();
+    /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), false).unwrap();
     /// let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
     /// let decrypted_data = askrypt_file.decrypt(&questions_data, answers[1..].into()).unwrap();
     /// assert_eq!(decrypted_data, data);
@@ -273,7 +279,10 @@ impl AskryptFile {
         let salt1 = decode_base64(&questions_data.salt)?;
         let salt1_iv: [u8; 16] = salt1.try_into().map_err(|_| "Invalid salt1 length")?;
 
-        let answers: Vec<String> = answers.into_iter().map(|a| normalize_answer(&a)).collect();
+        let answers: Vec<String> = answers
+            .into_iter()
+            .map(|a| normalize_answer(&a, self.params.translit))
+            .collect();
         // Derive second-key from combined remaining answers and salt1
         let combined_answers: String = answers.iter().cloned().collect();
         // combined_answers is hashed with salt0 before PBKDF2
@@ -321,7 +330,10 @@ impl AskryptFile {
         let salt0_iv: [u8; 16] = salt0.try_into().map_err(|_| "Invalid salt0 length")?;
 
         // Hash first answer with salt0
-        let first_answer = sha256(&normalize_answer(&first_answer), &self.params.salt);
+        let first_answer = sha256(
+            &normalize_answer(&first_answer, self.params.translit),
+            &self.params.salt,
+        );
         // Derive first-key from first answer and salt0
         let first_key = calc_pbkdf2(&first_answer, &salt0_iv, self.params.iterations)?;
         let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
@@ -512,15 +524,20 @@ pub fn calc_pbkdf2(
 /// use askrypt::normalize_answer;
 ///
 /// let answer = "Hello World";
-/// let normalized = normalize_answer(answer);
+/// let normalized = normalize_answer(answer, false);
 /// assert_eq!(normalized, "helloworld");
 /// ```
-pub fn normalize_answer(answer: &str) -> String {
-    answer
+pub fn normalize_answer(answer: &str, translit: bool) -> String {
+    let s: String = answer
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '-' && *c != '–' && *c != '—') // remove all types of dashes
         .collect::<String>()
-        .to_lowercase()
+        .to_lowercase();
+    if translit {
+        translit::transliterate(&s)
+    } else {
+        s
+    }
 }
 
 /// Hash a str using SHA256 + salt
@@ -762,17 +779,25 @@ mod tests {
 
     #[test]
     fn test_normalize_answer() {
-        assert_eq!(normalize_answer("Hello World?"), "helloworld?");
-        assert_eq!(normalize_answer("Test-Answer !?"), "testanswer!?");
-        assert_eq!(normalize_answer("Test–Answer"), "testanswer");
-        assert_eq!(normalize_answer("Test—Answer"), "testanswer");
-        assert_eq!(normalize_answer("Test--—––Ans–wer "), "testanswer");
-        assert_eq!(normalize_answer("  Spaces  "), "spaces");
-        assert_eq!(normalize_answer("Mixed-Case Test"), "mixedcasetest");
+        assert_eq!(normalize_answer("Hello World?", false), "helloworld?");
+        assert_eq!(normalize_answer("Test-Answer !?", false), "testanswer!?");
+        assert_eq!(normalize_answer("Test–Answer", false), "testanswer");
+        assert_eq!(normalize_answer("Test—Answer", false), "testanswer");
+        assert_eq!(normalize_answer("Test--—––Ans–wer ", false), "testanswer");
+        assert_eq!(normalize_answer("  Spaces  ", false), "spaces");
+        assert_eq!(normalize_answer("Mixed-Case Test", false), "mixedcasetest");
         assert_eq!(
-            normalize_answer("\t\nTabs\nAnd\tNewlines\n"),
+            normalize_answer("\t\nTabs\nAnd\tNewlines\n", false),
             "tabsandnewlines"
         );
+
+        // translit = true
+        assert_eq!(normalize_answer("Москва", true), "moskva");
+        assert_eq!(normalize_answer("Привет Мир", true), "privetmir");
+        assert_eq!(normalize_answer("Ёжик-ёжик", true), "yozhikyozhik");
+        assert_eq!(normalize_answer("Київ", true), "kiyiv");
+        assert_eq!(normalize_answer("Hello World", true), "helloworld");
+        assert_eq!(normalize_answer("Объект", true), "obekt");
     }
 
     #[test]
@@ -854,6 +879,7 @@ mod tests {
                 kdf: DEFAULT_KDF.to_string(),
                 iterations: 600000,
                 salt: "base64-salt".to_string(),
+                translit: false,
             },
             qs: "base64-encrypted-questions".to_string(),
             master: "base64-encrypted-master".to_string(),
@@ -890,9 +916,14 @@ mod tests {
             hidden: false,
         }];
 
-        let askrypt_file =
-            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), Some(6000))
-                .unwrap();
+        let askrypt_file = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+        )
+        .unwrap();
 
         // Verify basic structure
         assert_eq!(askrypt_file.version, "0.9");
@@ -912,7 +943,7 @@ mod tests {
         let answers = vec![];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None);
+        let result = AskryptFile::create(questions, answers, data, None, false);
         assert!(result.is_err());
         assert!(
             result
@@ -925,7 +956,7 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None);
+        let result = AskryptFile::create(questions, answers, data2, None, false);
         assert!(result.is_err());
         assert!(
             result
@@ -938,7 +969,7 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None);
+        let result = AskryptFile::create(questions, answers, data2, None, false);
         assert!(result.is_err());
         assert!(
             result
@@ -963,7 +994,7 @@ mod tests {
         ];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None);
+        let result = AskryptFile::create(questions, answers, data, None, false);
         assert!(result.is_err());
         assert!(
             result
@@ -1018,6 +1049,7 @@ mod tests {
             answers.clone(),
             original_data.clone(),
             Some(6000),
+            false,
         )
         .unwrap();
 
@@ -1054,9 +1086,14 @@ mod tests {
             hidden: false,
         }];
 
-        let askrypt_file =
-            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), Some(6000))
-                .unwrap();
+        let askrypt_file = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+        )
+        .unwrap();
 
         // Try to decrypt with wrong answer
         let wrong_answers = vec!["Fluffy".to_string(), "New York2".to_string()];
@@ -1100,9 +1137,14 @@ mod tests {
             hidden: false,
         }];
 
-        let askrypt_file =
-            AskryptFile::create(questions.clone(), answers.clone(), data.clone(), Some(6000))
-                .unwrap();
+        let askrypt_file = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+        )
+        .unwrap();
 
         let temp_file = "test_askrypt_file.askrypt";
 
@@ -1150,7 +1192,8 @@ mod tests {
             hidden: false,
         }];
 
-        let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000)).unwrap();
+        let askrypt_file =
+            AskryptFile::create(questions, answers, data, Some(6000), false).unwrap();
 
         let temp_file = "test_vault_content.askrypt";
 
