@@ -65,6 +65,7 @@
 //! # std::fs::remove_file("my_vault.askrypt").ok();
 //! ```
 
+pub mod translit;
 pub mod types;
 
 pub use types::*;

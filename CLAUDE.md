@@ -19,6 +19,7 @@ Askrypt is a cross-platform desktop password manager written in Rust. It authent
 - **`src/icon.rs`** — Bootstrap icon glyph constants for use in the UI.
 - **`src/passgen.rs`** — Password generator with configurable character sets and length.
 - **`src/settings.rs`** — Persistent user settings stored as JSON in platform config directories: `%APPDATA%\askrypt\` (Windows), `~/Library/Application Support/askrypt/` (macOS), `~/.config/askrypt/` (Linux).
+- **`src/translit.rs`** — Russian/Ukrainian-to-English transliteration using BGN/PCGN romanization, QWERTY-only output. ё→yo, е→e, ъ/ь dropped, тс and ц both→ts. Ukrainian: ґ→g, є→ye, і→i, ї→yi.
 
 ### Security / Encryption Model
 
