@@ -17,9 +17,9 @@ pub struct SecretEntry {
     pub hidden: bool,
 }
 
-/// Represents KDF parameters for the first level (key derivation function, iterations, and salt)
+/// Represents open parameters for [AskryptFile]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KdfParams {
+pub struct Params {
     pub kdf: String,
     pub iterations: u32,
     pub salt: String,
@@ -46,7 +46,7 @@ pub struct MasterData {
 pub struct AskryptFile {
     pub version: String,
     pub question0: String,
-    pub params: KdfParams,
+    pub params: Params,
     pub qs: String,
     pub master: String,
     pub data: String,

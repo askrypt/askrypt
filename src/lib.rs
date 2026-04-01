@@ -199,7 +199,7 @@ impl AskryptFile {
         Ok(AskryptFile {
             version: "0.9".to_string(),
             question0: questions[0].clone(),
-            params: KdfParams {
+            params: Params {
                 kdf: DEFAULT_KDF.to_string(),
                 iterations,
                 salt: salt0_b64,
@@ -850,7 +850,7 @@ mod tests {
         let file = AskryptFile {
             version: "0.9".to_string(),
             question0: "What is your mother's maiden name?".to_string(),
-            params: KdfParams {
+            params: Params {
                 kdf: DEFAULT_KDF.to_string(),
                 iterations: 600000,
                 salt: "base64-salt".to_string(),

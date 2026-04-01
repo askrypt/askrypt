@@ -12,7 +12,7 @@ Askrypt is a cross-platform desktop password manager written in Rust. It authent
 
 ### Source Files
 
-- **`src/types.rs`** — Core data types: `SecretEntry`, `KdfParams`, `QuestionsData`, `MasterData`, `AskryptFile`. Re-exported from `lib.rs`.
+- **`src/types.rs`** — Core data types: `SecretEntry`, `Params`, `QuestionsData`, `MasterData`, `AskryptFile`. Re-exported from `lib.rs`.
 - **`src/lib.rs`** — Core library: encryption (AES-256-CBC), key derivation (PBKDF2/SHA-256), ZIP archive handling, and serialization. Contains 25+ unit tests. This is the heart of the security model.
 - **`src/main.rs`** — Desktop GUI using the [Iced](https://github.com/iced-rs/iced) framework. Follows Iced's Elm-like architecture: `Message` enum for events, `update()` for state transitions, `view()` for rendering. Also handles auto-lock and Smart Lock logic.
 - **`src/ui.rs`** — Reusable styled UI components and theming helpers.
