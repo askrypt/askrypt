@@ -18,7 +18,8 @@ crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
 askrypt-core = { path = "../../core" }
-flutter_rust_bridge = "2"
+# Pinned exactly: the flutter_rust_bridge_codegen CLI must match this version.
+flutter_rust_bridge = "=2.12.0"
 zeroize = "1"
 
 [lints.rust]
