@@ -214,24 +214,34 @@ dependencies = [
 name = "askrypt"
 version = "0.6.0-dev"
 dependencies = [
- "aes",
- "base64",
- "cbc",
+ "askrypt-core",
  "chrono",
- "cipher",
- "hex",
  "iced",
  "image",
  "open",
- "pbkdf2",
  "png 0.16.8",
  "rand",
  "rfd",
  "serde",
  "serde_json",
- "sha2",
  "tray-item",
  "winresource",
+]
+
+[[package]]
+name = "askrypt-core"
+version = "0.6.0-dev"
+dependencies = [
+ "aes",
+ "base64",
+ "cbc",
+ "cipher",
+ "hex",
+ "pbkdf2",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
  "zip",
 ]
 

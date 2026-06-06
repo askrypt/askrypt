@@ -66,6 +66,7 @@
 //! # std::fs::remove_file("my_vault.askrypt").ok();
 //! ```
 
+pub mod passgen;
 pub mod translit;
 pub mod types;
 
@@ -345,6 +346,61 @@ impl AskryptFile {
         Ok(questions_data)
     }
 
+    /// Serialize the AskryptFile to an in-memory ZIP archive with internal file
+    /// name "askrypt.json".
+    ///
+    /// This is the I/O-agnostic counterpart to [`save_to_file`](Self::save_to_file)
+    /// and is the entry point used by non-filesystem platforms (e.g. mobile,
+    /// where storage is mediated by the OS rather than raw paths).
+    ///
+    /// # Returns
+    ///
+    /// Returns a Result containing the ZIP archive bytes or an error
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = SimpleFileOptions::default();
+
+            zip.start_file("askrypt.json", options)?;
+            zip.write_all(json.as_bytes())?;
+
+            zip.finish()?;
+        }
+        Ok(buf)
+    }
+
+    /// Deserialize an AskryptFile from an in-memory ZIP archive containing
+    /// "askrypt.json".
+    ///
+    /// This is the I/O-agnostic counterpart to [`load_from_file`](Self::load_from_file).
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - The ZIP archive bytes to parse
+    ///
+    /// # Returns
+    ///
+    /// Returns a Result containing the loaded AskryptFile or an error
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+
+        let mut askrypt_json = zip.by_name("askrypt.json")?;
+        let mut json = String::new();
+        // TODO: Handle large files more efficiently in future
+        std::io::Read::read_to_string(&mut askrypt_json, &mut json)?;
+
+        let askrypt_file: AskryptFile = serde_json::from_str(&json)?;
+        // TODO: Support multiple versions in future
+        if askrypt_file.version != "0.9" {
+            return Err(
+                format!("Unsupported Askrypt file version: {}", askrypt_file.version).into(),
+            );
+        }
+        Ok(askrypt_file)
+    }
+
     /// Save the AskryptFile to a ZIP file with internal file name "askrypt.json"
     ///
     /// # Arguments
@@ -358,15 +414,7 @@ impl AskryptFile {
         &self,
         path: P,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let json = serde_json::to_string_pretty(self)?;
-        let file = std::fs::File::create(path)?;
-        let mut zip = zip::ZipWriter::new(file);
-        let options = SimpleFileOptions::default();
-
-        zip.start_file("askrypt.json", options)?;
-        zip.write_all(json.as_bytes())?;
-
-        zip.finish()?;
+        std::fs::write(path, self.to_bytes()?)?;
         Ok(())
     }
 
@@ -382,22 +430,7 @@ impl AskryptFile {
     pub fn load_from_file<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = std::fs::File::open(path)?;
-        let mut zip = zip::ZipArchive::new(file)?;
-
-        let mut askrypt_json = zip.by_name("askrypt.json")?;
-        let mut json = String::new();
-        // TODO: Handle large files more efficiently in future
-        std::io::Read::read_to_string(&mut askrypt_json, &mut json)?;
-
-        let askrypt_file: AskryptFile = serde_json::from_str(&json)?;
-        // TODO: Support multiple versions in future
-        if askrypt_file.version != "0.9" {
-            return Err(
-                format!("Unsupported Askrypt file version: {}", askrypt_file.version).into(),
-            );
-        }
-        Ok(askrypt_file)
+        Self::from_bytes(&std::fs::read(path)?)
     }
 }
 
@@ -685,7 +718,7 @@ mod tests {
 
         let ciphertext = result.unwrap();
         // Even empty messages get padded
-        assert!(ciphertext.len() > 0);
+        assert!(!ciphertext.is_empty());
     }
 
     #[test]
@@ -1210,5 +1243,59 @@ mod tests {
 
         // Cleanup
         fs::remove_file(temp_file).ok();
+    }
+
+    #[test]
+    fn test_askrypt_file_to_from_bytes_roundtrip() {
+        let questions = vec![
+            "What is your mother's maiden name?".to_string(),
+            "What was your first pet's name?".to_string(),
+            "What city were you born in?".to_string(),
+        ];
+        let answers = vec![
+            "Smith".to_string(),
+            "Fluffy".to_string(),
+            "New York".to_string(),
+        ];
+        let data = vec![SecretEntry {
+            name: "example".to_string(),
+            user_name: "user5".to_string(),
+            secret: "password123".to_string(),
+            url: "https://example.com".to_string(),
+            notes: "My account".to_string(),
+            entry_type: "password".to_string(),
+            tags: vec!["work".to_string()],
+            created: 1704067200,
+            modified: 1704067200,
+            hidden: false,
+        }];
+
+        let askrypt_file = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+        )
+        .unwrap();
+
+        // Round-trip through the in-memory ZIP buffer
+        let bytes = askrypt_file.to_bytes().unwrap();
+        let loaded = AskryptFile::from_bytes(&bytes).unwrap();
+        assert_eq!(askrypt_file, loaded);
+
+        // The buffer is a valid ZIP archive containing askrypt.json
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+        assert!(archive.by_name("askrypt.json").is_ok());
+
+        // Decryption still works on the buffer-loaded file
+        let questions_data = loaded.get_questions_data(answers[0].clone()).unwrap();
+        let decrypted = loaded.decrypt(&questions_data, answers[1..].into()).unwrap();
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_askrypt_file_from_bytes_rejects_garbage() {
+        assert!(AskryptFile::from_bytes(b"not a zip archive").is_err());
     }
 }

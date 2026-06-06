@@ -1,12 +1,11 @@
 #![windows_subsystem = "windows"]
 
 mod icon;
-mod passgen;
 mod settings;
 mod tray;
 mod ui;
 
-use crate::passgen::{PasswordGenConfig, generate_password};
+use askrypt::passgen::{PasswordGenConfig, generate_password};
 use crate::settings::AppSettings;
 use crate::tray::{AppTray, TrayEvent};
 use crate::ui::{
