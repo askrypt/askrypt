@@ -16,7 +16,7 @@ categories = [
 ]
 
 [workspace]
-members = ["core"]
+members = ["core", "app/rust"]
 
 [[bin]]
 name = "askrypt"
