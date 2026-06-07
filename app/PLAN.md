@@ -178,9 +178,21 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
     `vaultIoProvider`, `vaultFileNameProvider`; `StateProvider` now comes from
     `flutter_riverpod/legacy.dart` under Riverpod 3).
   - Gate met locally: `flutter analyze` clean; `flutter test` green (parity +
-    session + passgen + widget tests). **Remaining:** the real-device
-    interop gate (create on mobile → open on desktop & vice-versa) needs the
-    Android SDK + hardware, not available in this environment.
+    session + passgen + widget tests); **Android debug APK builds**
+    (`flutter build apk --debug` → `app-debug.apk`) against the Android SDK at
+    `~/Android/Sdk`. **Remaining:** the real-device interop gate (create on
+    mobile → open on desktop & vice-versa) needs a device/emulator (no AVD or
+    system image installed yet).
+  - **Android toolchain pin** (`android/settings.gradle.kts` + `gradle-wrapper`):
+    the `flutter create` template defaulted to AGP 9.0.1 / Gradle 9.1.0 /
+    Kotlin 2.3.20, but **file_picker 11.x skips applying the Kotlin Gradle
+    plugin on AGP ≥ 9**, so its `FilePickerPlugin.kt` never compiles
+    ("cannot find symbol FilePickerPlugin"). Pinned to **AGP 8.11.1 / Gradle
+    8.14 / Kotlin 2.2.20** (AGP < 9 so file_picker applies KGP; ≥ 8.9.1 +
+    compileSdk 36 as required by `androidx.core 1.17.0` that Flutter 3.44.1
+    pulls). A residual non-fatal warning remains: file_picker applies KGP,
+    which a future Flutter will reject — revisit when file_picker ships
+    Built-in-Kotlin support.
 
 - **Phase 4 — Mobile-native security.** Biometric unlock (`local_auth`) backed by
   Keychain/Keystore (successor to Smart Lock); auto-clearing clipboard (mark
