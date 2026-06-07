@@ -1,0 +1,23 @@
+name: askrypt
+description: "Askrypt mobile — pure-Dart password manager (no native bridge)."
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Crypto core (PLAN Phase 1): pure Dart, no Rust/FFI.
+  pointycastle: ^3.9.1 # PBKDF2-HMAC-SHA256, AES-256-CBC, SHA-256
+  archive: ^3.6.1 # ZIP container for vault.askrypt
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

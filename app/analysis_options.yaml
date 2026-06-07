@@ -1,0 +1,3 @@
+include: package:flutter_lints/flutter.yaml
+
+# Add project-specific analyzer/linter overrides here as the app grows.

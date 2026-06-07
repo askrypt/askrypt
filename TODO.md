@@ -1,72 +1,55 @@
-# TODO — Prerequisites before Phase 2 (Flutter mobile app)
+# TODO — Mobile prerequisites (pure-Dart Flutter app)
 
-See `app/PLAN.md` for the full plan and phase status. Phase 0 and Phase 1 are
-done and committed. This file lists what must be set up **before starting Phase 2**.
+See `app/PLAN.md` for the full plan and phase status. The mobile app is a
+**pure Flutter/Dart** application — **no Rust on device, no flutter_rust_bridge,
+no NDK, no cargo-ndk, no Rust mobile targets**. The Rust core stays the desktop
+engine and the spec/test-vector source of truth only.
 
-## Environment status (checked 2026-06-06)
-- `rustup` ✅, Java 21 ✅
-- Missing: Flutter SDK, Android SDK/NDK, `cargo-ndk`, `flutter_rust_bridge_codegen`, Rust Android targets
-- **This machine is Linux → build/run Android here. iOS needs macOS + Xcode (do on a Mac or macOS CI runner).**
+## Phase 1 status (crypto core + parity vectors) — ✅ DONE
+- ✅ Rust golden-vector generator: `core/examples/gen_vectors.rs`
+      → `app/test/fixtures/vectors.json` (regenerate with
+      `cargo run -p askrypt-core --example gen_vectors`).
+- ✅ Dart crypto core: `app/lib/crypto/{translit,normalize,kdf,aes,
+      secret_entry,vault}.dart`.
+- ✅ Dart parity tests: `app/test/crypto_parity_test.dart` — **7/7 green**,
+      `flutter analyze` clean.
+- ✅ Interop verified both ways (`core/examples/open_vault.rs` +
+      `app/tool/make_vault.dart`).
 
-## 0. Decide a few values first
-- [ ] **App ID / package**: e.g. `com.askrypt.app` (Android `applicationId` + iOS bundle id). Hard to change later.
-- [ ] **Display name**: e.g. "Askrypt".
-- [ ] **Min Android SDK**: API 26 (Android 8) recommended — required by the Autofill Framework in Phase 5.
-- [ ] **Platform scope**: Android on this Linux box; iOS deferred to a Mac/CI.
+## Environment status (checked 2026-06-07)
+- `rustup` ✅, Java 21 ✅, **Flutter 3.44.1 ✅ at `/home/ruslan/Apps/flutter`**
+  (`fish_add_path /home/ruslan/Apps/flutter/bin` to make it permanent).
+- Still missing (only needed from Phase 2 for on-device Android builds, NOT for
+  tests): Android SDK/platform-tools/emulator. No NDK or Rust targets required.
+- This machine is Linux → develop/run Android here. iOS needs macOS + Xcode.
 
-## 1. Install Flutter SDK
+## Run the Phase 1 gate again
 ```
-git clone https://github.com/flutter/flutter.git -b stable ~/flutter
-fish_add_path ~/flutter/bin        # fish; persists the PATH entry
-flutter --version
+cd app
+flutter pub get
+flutter test            # 7/7 expected
 ```
-(Or `snap install flutter --classic`.)
 
-## 2. Install the Android toolchain
+## Android toolchain (needed from Phase 2 for on-device builds, NOT for tests)
 Easiest: **Android Studio** (bundles SDK + platform-tools + emulator).
-Then in *Settings → SDK Manager → SDK Tools* tick **NDK (Side by side)** and **CMake**.
-Set env vars (fish):
+No NDK/CMake needed (pure Dart — no native compilation). Then:
 ```
 set -Ux ANDROID_HOME $HOME/Android/Sdk
-set -Ux ANDROID_NDK_HOME $HOME/Android/Sdk/ndk/(ls $HOME/Android/Sdk/ndk | tail -1)
 fish_add_path $ANDROID_HOME/platform-tools
-```
-CLI-only alternative: install `cmdline-tools`, then
-`sdkmanager "platform-tools" "platforms;android-34" "ndk;27.1.12297006" "cmake;3.22.1"`.
-
-## 3. Accept licenses & verify (interactive — run with `!` prefix in the prompt)
-```
-! flutter doctor --android-licenses
+! flutter doctor --android-licenses   # interactive: run with `!` prefix
 ! flutter doctor
 ```
-Resolve anything `flutter doctor` flags before continuing.
 
-## 4. Add Rust Android targets
-```
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
-```
+## 3. Decide a few values (before Phase 2 `flutter create`)
+- [ ] **App ID / package**: e.g. `com.askrypt.app` (hard to change later).
+- [ ] **Display name**: e.g. "Askrypt".
+- [ ] **Min Android SDK**: API 26 (Android 8) — required by the Autofill
+      Framework in Phase 5.
 
-## 5. Install build/codegen tools (version-matched!)
-```
-cargo install cargo-ndk
-cargo install flutter_rust_bridge_codegen --version 2.12.0   # MUST match the pinned runtime in app/rust/Cargo.toml
-```
-
-## 6. Set up a target to run on
-- Create an emulator (Android Studio → Device Manager), **or** plug in a phone with USB debugging.
-- Verify: `flutter devices`.
-
-## Done when
-- [ ] `flutter doctor` is green
-- [ ] `flutter devices` lists a device/emulator
-- [ ] `cargo-ndk` and `flutter_rust_bridge_codegen 2.12.0` installed
-- [ ] Android Rust targets added
-
-## Then Phase 2
-`flutter create` into `app/` → wire `flutter_rust_bridge_codegen` to generate Dart bindings →
-uncomment `mod frb_generated;` in `app/rust/src/lib.rs` → build core with `cargo-ndk` into `jniLibs`
-→ smoke-test `generate_password` from Dart on the device.
+## Phase 2 entry
+`flutter create --platforms=android,ios .` inside `app/` (preserves existing
+`lib/` and `test/`), `flutter pub get`, then build the session/state layer on top
+of `lib/crypto`. No codegen, no native build step.
 
 ## iOS (later, on macOS only)
-Xcode + CocoaPods, `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios`,
-build an xcframework. Not possible on this Linux machine.
+Xcode + CocoaPods. No Rust targets / xcframework needed (pure Dart).
