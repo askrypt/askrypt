@@ -40,16 +40,21 @@ fish_add_path $ANDROID_HOME/platform-tools
 ! flutter doctor
 ```
 
-## 3. Decide a few values (before Phase 2 `flutter create`)
-- [ ] **App ID / package**: e.g. `com.askrypt.app` (hard to change later).
-- [ ] **Display name**: e.g. "Askrypt".
-- [ ] **Min Android SDK**: API 26 (Android 8) — required by the Autofill
-      Framework in Phase 5.
+## 3. Decide a few values (before Phase 2 `flutter create`) — ✅ DECIDED
+- [x] **App ID / package**: `com.askrypt.app` (Android applicationId + iOS
+      bundle id). Dart package name stays `askrypt`.
+- [x] **Display name**: "Askrypt".
+- [x] **Min Android SDK**: API 26 (Android 8) — required by the Autofill
+      Framework in Phase 5. Set in `android/app/build.gradle.kts`.
 
-## Phase 2 entry
-`flutter create --platforms=android,ios .` inside `app/` (preserves existing
-`lib/` and `test/`), `flutter pub get`, then build the session/state layer on top
-of `lib/crypto`. No codegen, no native build step.
+## Phase 2 entry — ✅ DONE
+- ✅ `flutter create --platforms=android,ios --org com.askrypt .` (preserved
+      `lib/crypto` + `test/`); `android/`+`ios/` now tracked in git.
+- ✅ Deps: `flutter_riverpod`, `file_picker`.
+- ✅ Session/state layer: `lib/session/{unlocked_vault,vault_session}.dart`
+      on top of `lib/crypto`; `lib/main.dart` ProviderScope shell.
+- ✅ Gate: `flutter test` → **14/14**, `flutter analyze` clean.
+      (Screens are Phase 3; on-device Android build still needs the SDK below.)
 
 ## iOS (later, on macOS only)
 Xcode + CocoaPods. No Rust targets / xcframework needed (pure Dart).

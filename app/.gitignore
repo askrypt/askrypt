@@ -7,9 +7,10 @@ build/
 pubspec.lock
 *.iml
 
-# Generated platform folders (created by `flutter create` in Phase 2)
-/android/
-/ios/
+# android/ and ios/ ARE tracked: they carry customized native config
+# (app ID com.askrypt.app, minSdk 26, app name) and will hold hand-written
+# autofill code in Phase 5. Their own .gitignore files exclude build output.
+# Desktop/web targets are not built for this app; ignore if ever generated.
 /linux/
 /macos/
 /windows/

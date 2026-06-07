@@ -133,11 +133,27 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
   - Gate met: `cd app && flutter test` → 7/7 green; `flutter analyze` clean.
     (Flutter SDK installed at `/home/ruslan/Apps/flutter`.)
 
-- **Phase 2 — Flutter skeleton.** `flutter create app`; add `pointycastle`,
-  `archive`, `riverpod`, file-picker deps; wire the Phase 1 crypto into a
-  session/state layer (`UnlockedVault` equivalent: list entries without secrets,
-  reveal-on-demand, CRUD, to-bytes). No native code, no codegen.
-  Gate: unit-tested create→unlock→edit→save cycle entirely in Dart.
+- **Phase 2 — Flutter skeleton. ✅ DONE.**
+  - `flutter create --platforms=android,ios --org com.askrypt .` scaffolded the
+    Android + iOS shells (preserving `lib/crypto` + `test/`). App ID set to
+    **`com.askrypt.app`**, display name **"Askrypt"**, **`minSdk 26`** (Autofill
+    Framework floor for Phase 5). The `android/`+`ios/` folders are now tracked
+    in git (they carry that native config; Phase 5 adds native code there).
+  - Deps added: `flutter_riverpod`, `file_picker` (alongside Phase 1
+    `pointycastle` + `archive`).
+  - Session/state layer wired on top of `lib/crypto`:
+    - `lib/session/unlocked_vault.dart` — `UnlockedVault`: open/create, secret-
+      free `EntrySummary` list, reveal-on-demand, CRUD, `toBytes()`. Mirrors the
+      desktop save model exactly (every save re-creates the whole file via
+      `AskryptFile.create`, rotating salts + master key).
+    - `lib/session/vault_session.dart` — Riverpod `NotifierProvider` exposing a
+      sealed `VaultSession` (`VaultLocked` / `VaultUnlocked`); the rest of the
+      app watches this instead of touching crypto directly.
+    - `lib/main.dart` — `ProviderScope` shell that reflects session state
+      (real screens are Phase 3).
+  - No native code, no codegen.
+  - Gate met: `flutter test` → **14/14** (7 parity + 7 session: create→unlock
+    →edit→save cycle entirely in Dart), `flutter analyze` clean.
 
 - **Phase 3 — Feature-parity screens (MVP).** Welcome/open/create (file picker:
   SAF / document picker), layered unlock, entries list + search/tags/hidden,
