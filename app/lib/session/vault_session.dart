@@ -107,6 +107,22 @@ class VaultSessionNotifier extends Notifier<VaultSession> {
     _reemit();
   }
 
+  /// Replace the questions/answers/translit of the open vault, keeping entries
+  /// (desktop "Edit questions"). Throws [VaultException] on invalid input;
+  /// state is left untouched on throw.
+  void updateQuestions({
+    required List<String> questions,
+    required List<String> answers,
+    required bool translit,
+  }) {
+    final next = _vault.withQuestions(
+      questions: questions,
+      answers: answers,
+      translit: translit,
+    );
+    state = VaultUnlocked(next);
+  }
+
   /// Serialize the current vault to byte-compatible `vault.askrypt` bytes and
   /// re-emit so the cleared `isModified` flag propagates.
   Uint8List toBytes() {

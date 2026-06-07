@@ -155,12 +155,32 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
   - Gate met: `flutter test` → **14/14** (7 parity + 7 session: create→unlock
     →edit→save cycle entirely in Dart), `flutter analyze` clean.
 
-- **Phase 3 — Feature-parity screens (MVP).** Welcome/open/create (file picker:
-  SAF / document picker), layered unlock, entries list + search/tags/hidden,
-  entry view/edit CRUD, show/copy secret & username, open URL, edit questions
-  (+ translit checkbox), password generator (port `passgen` logic to Dart),
-  auto-lock on inactivity/background. State via Riverpod.
-  Gate: vault created on mobile opens on desktop & vice-versa (real devices).
+- **Phase 3 — Feature-parity screens (MVP). ✅ Screens built (on-device gate
+  pending hardware).** Implemented in `lib/screens/` + `lib/passgen.dart` +
+  `lib/platform/vault_io.dart`, wired through `lib/app.dart`:
+  - Welcome (open / create / standalone generator); open uses `file_picker`
+    (`withData: true` — content-URIs have no path) via the `VaultIo` seam.
+  - Layered unlock (`unlock_screen.dart`): first answer decrypts the remaining
+    questions for display, then all answers open the vault via the session.
+  - Entries list (`entries_screen.dart`): search, tag filter chips, show-hidden
+    toggle, save (`file_picker.saveFile`), lock (with unsaved-changes guard).
+  - Entry editor (`entry_edit_screen.dart`): reveal-on-demand secret, show/hide,
+    copy username/secret/URL, open URL (`url_launcher`), generate into secret,
+    tags, hidden toggle, delete. Add/update mutate the in-memory session;
+    persistence is the separate "Save".
+  - Questions editor (`questions_editor_screen.dart`): create + re-key existing
+    (`updateQuestions` keeps entries), with the translit toggle.
+  - Password generator (`password_generator_screen.dart`) + auto-lock
+    (`auto_lock.dart`: lock on background/inactivity).
+  - Navigation: `_SessionGate` swaps a nested `Navigator` per session state, so
+    lock/unlock tears down the whole route stack cleanly.
+  - Deps added: `url_launcher`. State via Riverpod (`vaultSessionProvider`,
+    `vaultIoProvider`, `vaultFileNameProvider`; `StateProvider` now comes from
+    `flutter_riverpod/legacy.dart` under Riverpod 3).
+  - Gate met locally: `flutter analyze` clean; `flutter test` green (parity +
+    session + passgen + widget tests). **Remaining:** the real-device
+    interop gate (create on mobile → open on desktop & vice-versa) needs the
+    Android SDK + hardware, not available in this environment.
 
 - **Phase 4 — Mobile-native security.** Biometric unlock (`local_auth`) backed by
   Keychain/Keystore (successor to Smart Lock); auto-clearing clipboard (mark

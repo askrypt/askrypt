@@ -4,22 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Askrypt is a cross-platform desktop password manager written in Rust. It authenticates users via security question answers (normalized and hashed with PBKDF2) rather than a master password, using AES-256-CBC encryption for vault data.
+Askrypt is a cross-platform password manager. It authenticates users via security question answers (normalized and hashed with PBKDF2) rather than a master password, using AES-256-CBC encryption for vault data. The repository is a Cargo workspace holding a **desktop Rust app** plus a **pure-Dart Flutter mobile app** (`app/`) that re-implements the same vault format — see [Mobile app](#mobile-app-app) below.
 
 **Warning**: The project is under active development and has not undergone extensive security testing.
 
+> **Rule — keep this file current.** At the end of any change that alters the
+> repository layout, architecture, build/test commands, dependencies, or the
+> vault format, update `CLAUDE.md` (and, for mobile work, `app/PLAN.md`) in the
+> same change so the docs never drift from the code.
+
 ## Architecture
 
-### Source Files
+The crypto/format engine lives in the **`core/`** crate (`askrypt-core`, lib name `askrypt`) and is the source of truth for the vault format. The desktop Iced app in **`src/`** depends on it, and the Dart mobile core in **`app/lib/crypto/`** re-implements it (kept in lock-step by golden test vectors). Phase 0 extracted the engine into `core/`; older docs may still say it lives in `src/`.
 
-- **`src/types.rs`** — Core data types: `SecretEntry`, `Params`, `QuestionsData`, `MasterData`, `AskryptFile`. Re-exported from `lib.rs`.
-- **`src/lib.rs`** — Core library: encryption (AES-256-CBC), key derivation (PBKDF2/SHA-256), ZIP archive handling, and serialization. Contains 25+ unit tests. This is the heart of the security model.
+### Core crate — `core/src/` (the security model)
+
+- **`core/src/types.rs`** — Core data types: `SecretEntry`, `Params`, `QuestionsData`, `MasterData`, `AskryptFile`. Re-exported from `lib.rs`.
+- **`core/src/lib.rs`** — Crypto core: encryption (AES-256-CBC), key derivation (PBKDF2/SHA-256), ZIP archive handling, serialization, and `to_bytes`/`from_bytes` (in-memory ZIP). Contains 25+ unit tests. This is the heart of the security model.
+- **`core/src/passgen.rs`** — Password generator with configurable character sets and length.
+- **`core/src/translit.rs`** — Russian/Ukrainian-to-English transliteration using BGN/PCGN romanization, QWERTY-only output. ё→yo, е→e, ъ/ь dropped, тс and ц both→ts. Ukrainian: ґ→g, є→ye, і→i, ї→yi.
+- **`core/examples/gen_vectors.rs`** — Emits golden test vectors to `app/test/fixtures/vectors.json` for the Dart parity tests. Regenerate whenever the format or normalization changes.
+
+### Desktop app — `src/` (Iced GUI)
+
 - **`src/main.rs`** — Desktop GUI using the [Iced](https://github.com/iced-rs/iced) framework. Follows Iced's Elm-like architecture: `Message` enum for events, `update()` for state transitions, `view()` for rendering. Also handles auto-lock and Smart Lock logic. The Edit Questions screen includes a "Use transliteration" checkbox that enables Russian/Ukrainian transliteration for answer normalization.
 - **`src/ui.rs`** — Reusable styled UI components and theming helpers.
 - **`src/icon.rs`** — Bootstrap icon glyph constants for use in the UI.
-- **`src/passgen.rs`** — Password generator with configurable character sets and length.
+- **`src/tray.rs`** — System-tray integration.
 - **`src/settings.rs`** — Persistent user settings stored as JSON in platform config directories: `%APPDATA%\askrypt\` (Windows), `~/Library/Application Support/askrypt/` (macOS), `~/.config/askrypt/` (Linux).
-- **`src/translit.rs`** — Russian/Ukrainian-to-English transliteration using BGN/PCGN romanization, QWERTY-only output. ё→yo, е→e, ъ/ь dropped, тс and ц both→ts. Ukrainian: ґ→g, є→ye, і→i, ї→yi.
 
 ### Security / Encryption Model
 
@@ -28,6 +40,19 @@ Askrypt is a cross-platform desktop password manager written in Rust. It authent
 3. Each answer is used with PBKDF2 (600,000 iterations by default) to derive a key.
 4. A layered encryption scheme: first answer unlocks subsequent questions, all answers together unlock the master key, the master key encrypts the actual secrets.
 5. Vault files are ZIP archives containing JSON metadata and encrypted blobs. See `SPEC.md` for the full format specification.
+
+### Mobile app — `app/`
+
+A **pure-Dart Flutter** app for Android + iOS (no Rust on device, no FFI/bridge). It re-implements the vault format in Dart and must stay byte-compatible with `core/`; parity is guaranteed by golden test vectors, not shared code. Full plan and phase status live in **`app/PLAN.md`**.
+
+- **`app/lib/crypto/`** — Dart port of the crypto core (`vault`, `kdf`, `aes`, `normalize`, `translit`, `secret_entry`), mirroring `core/src/*.rs`.
+- **`app/lib/session/`** — Riverpod session layer: `UnlockedVault` (in-memory state, secret-free `EntrySummary`, reveal-on-demand CRUD, `toBytes()`) and a sealed `VaultSession` (`VaultLocked`/`VaultUnlocked`) behind `vaultSessionProvider`.
+- **`app/lib/screens/`** — Feature-parity screens (welcome, layered unlock, entries list + search/tags/hidden, entry editor, questions editor, password generator) plus `auto_lock.dart` (lock on background / inactivity).
+- **`app/lib/passgen.dart`** — Dart port of `core/src/passgen.rs`.
+- **`app/lib/platform/`** — Platform seams (e.g. `vault_io.dart` over `file_picker`, faked in tests).
+- **`app/test/`** — Crypto parity tests against `app/test/fixtures/vectors.json`, session tests, passgen tests, and widget tests.
+
+App ID `com.askrypt.app`, display name "Askrypt", `minSdk 26`. The `android/` and `ios/` shells are tracked in git.
 
 ### Key Dependencies
 
@@ -40,6 +65,21 @@ Askrypt is a cross-platform desktop password manager written in Rust. It authent
 | `zip` | Vault file format (ZIP archive) |
 | `rfd` | Native file open/save dialogs |
 | `rand` | Random number generation |
+
+### Build & Test
+
+```
+# Desktop / core (Rust) — core is the spec source of truth
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo build -p askrypt
+# Regenerate Dart parity vectors after any format/normalization change:
+cargo run -p askrypt-core --example gen_vectors
+
+# Mobile (Flutter) — SDK at /home/ruslan/Apps/flutter (add bin to PATH)
+cd app && flutter test       # crypto parity + session + passgen + widget tests
+cd app && flutter analyze
+```
 
 ### CI / Release
 

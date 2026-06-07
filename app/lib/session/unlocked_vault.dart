@@ -129,6 +129,10 @@ class UnlockedVault {
 
   int get entryCount => _entries.length;
 
+  /// The answer list, aligned with [questions]. Sensitive — only used by the
+  /// questions editor to prefill existing answers; never shown in list UI.
+  List<String> get answers => List.unmodifiable(_answers);
+
   /// Secret-free projections for list/search rendering. Order matches the
   /// underlying entry order (the index in each summary is the stable handle).
   List<EntrySummary> get summaries => List.unmodifiable(
@@ -166,6 +170,26 @@ class UnlockedVault {
     _checkIndex(index);
     _entries.removeAt(index);
     isModified = true;
+  }
+
+  /// Replace the questions/answers (and the transliteration setting), keeping
+  /// the existing entries. Mirrors the desktop "Edit questions" flow, which
+  /// re-keys the whole vault: the next [toBytes] re-derives every layer from
+  /// the new answers. Returns a fresh [UnlockedVault] carrying the same
+  /// entries; the caller swaps it into the session.
+  UnlockedVault withQuestions({
+    required List<String> questions,
+    required List<String> answers,
+    required bool translit,
+  }) {
+    _validateQa(questions, answers);
+    return UnlockedVault._(
+      questions: List.of(questions),
+      answers: List.of(answers),
+      entries: _entries,
+      translit: translit,
+      iterations: iterations,
+    )..isModified = true;
   }
 
   // --- persistence ---------------------------------------------------------

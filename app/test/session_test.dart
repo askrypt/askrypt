@@ -143,6 +143,40 @@ void main() {
     expect(c2.read(vaultSessionProvider), isA<VaultLocked>());
   });
 
+  test('updateQuestions re-keys the vault, keeps entries, re-opens with new answers',
+      () {
+    final c1 = _container();
+    final n1 = _notifier(c1);
+    n1.createNew(questions: _questions, answers: _answers);
+    n1.addEntry(_entry('keep', 'sekret'));
+
+    // Re-key with a different question/answer set + translit on.
+    const newQuestions = ['New Q1?', 'New Q2?'];
+    const newAnswers = ['alpha', 'beta'];
+    n1.updateQuestions(
+        questions: newQuestions, answers: newAnswers, translit: true);
+
+    final v = (c1.read(vaultSessionProvider) as VaultUnlocked).vault;
+    expect(v.questions, newQuestions);
+    expect(v.translit, isTrue);
+    expect(v.isModified, isTrue);
+    // Entry survived the re-key.
+    expect(v.summaries.single.name, 'keep');
+
+    final bytes = n1.toBytes();
+
+    // Old answers no longer open it; the new ones do.
+    final c2 = _container();
+    expect(() => _notifier(c2).open(Uint8List.fromList(bytes), _answers),
+        throwsA(isA<Object>()));
+
+    final c3 = _container();
+    final n3 = _notifier(c3);
+    n3.open(Uint8List.fromList(bytes), newAnswers);
+    final v3 = (c3.read(vaultSessionProvider) as VaultUnlocked).vault;
+    expect(v3.reveal(0).secret, 'sekret');
+  });
+
   test('UnlockedVault.create rejects fewer than 2 questions', () {
     expect(
       () => UnlockedVault.create(
