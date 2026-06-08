@@ -37,6 +37,10 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   bool _obscure = true;
   String? _error;
 
+  /// True while a key derivation is running on a background isolate. Drives the
+  /// progress indicator and disables the action buttons.
+  bool _busy = false;
+
   /// True once we know biometric answers are stored for this vault.
   bool _hasBiometric = false;
 
@@ -78,13 +82,19 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     super.dispose();
   }
 
-  /// Step 1 → 2: decrypt the remaining questions with the first answer.
-  void _revealQuestions() {
+  /// Step 1 → 2: decrypt the remaining questions with the first answer. The
+  /// PBKDF2 derivation runs on a background isolate so the UI stays responsive
+  /// (a synchronous derivation here would trip Android's ANR dialog).
+  Future<void> _revealQuestions() async {
     final file = _file;
-    if (file == null) return;
-    setState(() => _error = null);
+    if (file == null || _busy) return;
+    setState(() {
+      _error = null;
+      _busy = true;
+    });
     try {
-      final qd = file.getQuestionsData(_answer0.text);
+      final qd = await file.getQuestionsDataAsync(_answer0.text);
+      if (!mounted) return;
       setState(() {
         _qd = qd;
         _answers
@@ -92,7 +102,10 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
           ..addAll(List.generate(qd.questions.length, (_) => TextEditingController()));
       });
     } catch (_) {
+      if (!mounted) return;
       setState(() => _error = 'Wrong answer to the first question.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -100,15 +113,26 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   /// we can offer biometric enrollment before the session swap tears this route
   /// down, then hand the decrypted vault to the session via [adopt].
   Future<void> _unlock() async {
-    setState(() => _error = null);
+    if (_busy) return;
+    setState(() {
+      _error = null;
+      _busy = true;
+    });
     final all = [_answer0.text, ..._answers.map((c) => c.text)];
     final UnlockedVault vault;
     try {
-      vault = UnlockedVault.open(widget.bytes, all);
+      vault = await UnlockedVault.openAsync(widget.bytes, all);
     } catch (_) {
-      setState(() => _error = 'Could not unlock — check your answers.');
+      if (mounted) {
+        setState(() {
+          _error = 'Could not unlock — check your answers.';
+          _busy = false;
+        });
+      }
       return;
     }
+    if (!mounted) return;
+    setState(() => _busy = false);
     await _maybeOfferEnroll(all);
     _commit(vault);
   }
@@ -117,21 +141,26 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   /// credential (e.g. the questions were re-keyed elsewhere) forget it and fall
   /// back to manual entry.
   Future<void> _quickUnlock() async {
+    if (_busy) return;
     final store = ref.read(biometricStoreProvider);
     final answers = await store.reveal(_file!.question0);
     if (answers == null || !mounted) return;
+    setState(() => _busy = true);
     final UnlockedVault vault;
     try {
-      vault = UnlockedVault.open(widget.bytes, answers);
+      vault = await UnlockedVault.openAsync(widget.bytes, answers);
     } catch (_) {
       await store.forget(_file!.question0);
       if (!mounted) return;
       setState(() {
+        _busy = false;
         _hasBiometric = false;
         _error = 'Saved answers no longer open this vault — enter them manually.';
       });
       return;
     }
+    if (!mounted) return;
+    setState(() => _busy = false);
     _commit(vault);
   }
 
@@ -185,7 +214,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
               children: [
                 if (_hasBiometric) ...[
                   FilledButton.icon(
-                    onPressed: _quickUnlock,
+                    onPressed: _busy ? null : _quickUnlock,
                     icon: const Icon(Icons.fingerprint),
                     label: const Text('Unlock with biometrics'),
                   ),
@@ -224,14 +253,22 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
                           color: Theme.of(context).colorScheme.error)),
                 ],
                 const SizedBox(height: 16),
+                if (_busy) ...[
+                  const Center(child: CircularProgressIndicator()),
+                  const SizedBox(height: 8),
+                  Text('Decrypting…',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(height: 16),
+                ],
                 if (qd == null)
                   FilledButton(
-                    onPressed: _revealQuestions,
+                    onPressed: _busy ? null : _revealQuestions,
                     child: const Text('Next'),
                   )
                 else
                   FilledButton.icon(
-                    onPressed: _unlock,
+                    onPressed: _busy ? null : _unlock,
                     icon: const Icon(Icons.lock_open),
                     label: const Text('Unlock'),
                   ),

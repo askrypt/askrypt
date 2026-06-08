@@ -74,7 +74,7 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
     final notifier = ref.read(vaultSessionProvider.notifier);
     final io = ref.read(vaultIoProvider);
     final name = ref.read(vaultFileNameProvider);
-    final bytes = notifier.toBytes();
+    final bytes = await notifier.toBytes();
     final saved = await io.saveVault(bytes, suggestedName: name);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(

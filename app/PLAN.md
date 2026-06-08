@@ -243,9 +243,12 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
 - Bump vault `version` when the format must diverge (core currently hard-rejects
   anything `!= "0.9"`). Any change must land in **both** Rust and Dart + vectors.
 - Cloud sync model (iCloud/Drive vs OS document providers vs explicit sync).
-- PBKDF2 600k iterations may be slow on low-end phones — measure the Dart
-  (`pointycastle`) implementation specifically, which is slower than Rust;
-  consider progress UI, isolate-based derivation, or adaptive count at creation.
+- PBKDF2 600k iterations are slow in pure Dart (`pointycastle`, slower than
+  Rust). **Done:** the heavy derivations now run on a background isolate via
+  `Isolate.run` — `AskryptFile.getQuestionsDataAsync`, `UnlockedVault.openAsync`
+  / `toBytesAsync` — with a progress indicator on the unlock screen, so the UI
+  thread never blocks (this previously tripped Android's ANR dialog mid-unlock).
+  Still open: an adaptive iteration count at creation for low-end phones.
 - Autofill crypto strategy (Dart platform channel vs minimal native port) — see
   Phase 5.
 

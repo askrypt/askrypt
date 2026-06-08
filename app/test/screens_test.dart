@@ -72,8 +72,15 @@ void main() {
 
     expect(find.text('GitHub'), findsOneWidget);
 
-    // Save → fake captures bytes that open with the answers we set.
-    await tester.tap(find.byIcon(Icons.save));
+    // Save → fake captures bytes that open with the answers we set. The save
+    // re-encrypts on a real background isolate, so let real async complete
+    // (widget tests otherwise run in a fake-async zone that never advances it).
+    await tester.runAsync(() async {
+      await tester.tap(find.byIcon(Icons.save));
+      while (io.saved == null) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    });
     await tester.pumpAndSettle();
 
     expect(io.saved, isNotNull);

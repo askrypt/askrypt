@@ -71,6 +71,28 @@ class FakeVaultIo implements VaultIo {
       '/tmp/$suggestedName';
 }
 
+/// Pumps real *and* fake async until [condition] holds (or times out). Unlock
+/// now derives keys on a real background isolate (`Isolate.run`), which the
+/// default fake-async `pumpAndSettle` never advances; alternating `runAsync`
+/// (lets the isolate result land) with `pump` (renders the resulting frame)
+/// drives these flows to completion.
+Future<void> pumpUntil(
+  WidgetTester tester,
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 20),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('pumpUntil timed out waiting for condition');
+    }
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester.pump();
+  }
+  await tester.pumpAndSettle();
+}
+
 void main() {
   // A known 2-question vault with no entries, cheap to derive.
   Uint8List makeVault(List<String> questions, List<String> answers) =>
@@ -114,13 +136,16 @@ void main() {
     // No biometric button (nothing enrolled yet).
     expect(find.text('Unlock with biometrics'), findsNothing);
 
-    // Answer the first question, reveal the rest, answer them, unlock.
+    // Answer the first question, reveal the rest, answer them, unlock. The
+    // derivations run on a background isolate, so wait with pumpUntil.
     await tester.enterText(find.byType(TextField).first, 'Rex');
     await tester.tap(find.text('Next'));
-    await tester.pumpAndSettle();
+    await pumpUntil(
+        tester, () => find.byType(TextField).evaluate().length >= 2);
     await tester.enterText(find.byType(TextField).at(1), 'Kazan');
     await tester.tap(find.text('Unlock'));
-    await tester.pumpAndSettle();
+    await pumpUntil(tester,
+        () => find.text('Enable biometric unlock?').evaluate().isNotEmpty);
 
     // Enrollment dialog appears; accept it.
     expect(find.text('Enable biometric unlock?'), findsOneWidget);
@@ -141,7 +166,8 @@ void main() {
     await pumpApp(tester, io: io, bio: bio);
 
     await tester.tap(find.text('Open vault'));
-    await tester.pumpAndSettle();
+    // Auto-triggered biometric unlock decrypts on a background isolate.
+    await pumpUntil(tester, () => find.text('No entries').evaluate().isNotEmpty);
 
     // Auto-triggered biometric unlock landed us on the entries screen with no
     // typed answers.
@@ -159,7 +185,9 @@ void main() {
     await pumpApp(tester, io: io, bio: bio);
 
     await tester.tap(find.text('Open vault'));
-    await tester.pumpAndSettle();
+    // The stale credential's answers are tried on a background isolate, fail,
+    // and the credential is forgotten.
+    await pumpUntil(tester, () => bio.forgotten == 1);
 
     // Stayed on the unlock screen, credential dropped, error shown.
     expect(bio.forgotten, 1);

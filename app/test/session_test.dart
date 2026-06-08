@@ -15,6 +15,10 @@ import 'package:flutter_test/flutter_test.dart';
 const _questions = ['First pet?', 'Birth city?', 'Favorite teacher?'];
 const _answers = ['Rex', 'Kazan', 'Mrs Smith'];
 
+/// Cheap KDF cost so the save/open round-trips (which now derive on a real
+/// background isolate) stay fast and don't flake under full-suite contention.
+const _iters = 1000;
+
 SecretEntry _entry(String name, String secret) => SecretEntry(
       name: name,
       userName: '$name-user',
@@ -43,11 +47,12 @@ void main() {
     expect(c.read(vaultSessionProvider), isA<VaultLocked>());
   });
 
-  test('create -> add -> save -> unlock round-trips through the session', () {
+  test('create -> add -> save -> unlock round-trips through the session',
+      () async {
     // Create + populate.
     final c1 = _container();
     final n1 = _notifier(c1);
-    n1.createNew(questions: _questions, answers: _answers);
+    n1.createNew(questions: _questions, answers: _answers, iterations: _iters);
     n1.addEntry(_entry('github', 's3cr3t-gh'));
     n1.addEntry(_entry('email', 's3cr3t-mail'));
 
@@ -55,7 +60,7 @@ void main() {
     expect(unlocked.vault.entryCount, 2);
     expect(unlocked.vault.isModified, isTrue);
 
-    final bytes = n1.toBytes();
+    final bytes = await n1.toBytes();
     // toBytes() clears the dirty flag and re-emits.
     expect((c1.read(vaultSessionProvider) as VaultUnlocked).vault.isModified,
         isFalse);
@@ -63,7 +68,7 @@ void main() {
     // Unlock the saved bytes in a brand-new session.
     final c2 = _container();
     final n2 = _notifier(c2);
-    n2.open(Uint8List.fromList(bytes), _answers);
+    await n2.open(Uint8List.fromList(bytes), _answers);
     final reopened = c2.read(vaultSessionProvider) as VaultUnlocked;
     expect(reopened.vault.entryCount, 2);
 
@@ -74,10 +79,10 @@ void main() {
     expect(reopened.vault.reveal(1).secret, 's3cr3t-mail');
   });
 
-  test('edit (update + delete) then save persists the changes', () {
+  test('edit (update + delete) then save persists the changes', () async {
     final c1 = _container();
     final n1 = _notifier(c1);
-    n1.createNew(questions: _questions, answers: _answers);
+    n1.createNew(questions: _questions, answers: _answers, iterations: _iters);
     n1.addEntry(_entry('alpha', 'a'));
     n1.addEntry(_entry('beta', 'b'));
     n1.addEntry(_entry('gamma', 'c'));
@@ -88,11 +93,11 @@ void main() {
     n1.updateEntry(1, updated);
     n1.removeEntry(2);
 
-    final bytes = n1.toBytes();
+    final bytes = await n1.toBytes();
 
     final c2 = _container();
     final n2 = _notifier(c2);
-    n2.open(Uint8List.fromList(bytes), _answers);
+    await n2.open(Uint8List.fromList(bytes), _answers);
     final v2 = (c2.read(vaultSessionProvider) as VaultUnlocked).vault;
 
     expect(v2.summaries.map((s) => s.name).toList(), ['alpha', 'beta']);
@@ -110,12 +115,17 @@ void main() {
     expect(c.read(vaultSessionProvider), isA<VaultLocked>());
   });
 
-  test('saved bytes open with the low-level AskryptFile (format parity)', () {
+  test('saved bytes open with the low-level AskryptFile (format parity)',
+      () async {
     final c = _container();
     final n = _notifier(c);
-    n.createNew(questions: _questions, answers: _answers, translit: true);
+    n.createNew(
+        questions: _questions,
+        answers: _answers,
+        translit: true,
+        iterations: _iters);
     n.addEntry(_entry('site', 'pw'));
-    final bytes = n.toBytes();
+    final bytes = await n.toBytes();
 
     // Open via the raw crypto API the same way desktop/parity tests do.
     final file = AskryptFile.fromBytes(Uint8List.fromList(bytes));
@@ -126,17 +136,17 @@ void main() {
     expect(entries.single.secret, 'pw');
   });
 
-  test('wrong answers fail to unlock', () {
+  test('wrong answers fail to unlock', () async {
     final c1 = _container();
     final n1 = _notifier(c1);
-    n1.createNew(questions: _questions, answers: _answers);
+    n1.createNew(questions: _questions, answers: _answers, iterations: _iters);
     n1.addEntry(_entry('x', 'y'));
-    final bytes = Uint8List.fromList(n1.toBytes());
+    final bytes = Uint8List.fromList(await n1.toBytes());
 
     final c2 = _container();
     final n2 = _notifier(c2);
-    expect(
-      () => n2.open(bytes, const ['Rex', 'WRONG', 'WRONG']),
+    await expectLater(
+      n2.open(bytes, const ['Rex', 'WRONG', 'WRONG']),
       throwsA(isA<Object>()),
     );
     // State is unchanged (still locked) after a failed unlock.
@@ -144,10 +154,10 @@ void main() {
   });
 
   test('updateQuestions re-keys the vault, keeps entries, re-opens with new answers',
-      () {
+      () async {
     final c1 = _container();
     final n1 = _notifier(c1);
-    n1.createNew(questions: _questions, answers: _answers);
+    n1.createNew(questions: _questions, answers: _answers, iterations: _iters);
     n1.addEntry(_entry('keep', 'sekret'));
 
     // Re-key with a different question/answer set + translit on.
@@ -163,16 +173,16 @@ void main() {
     // Entry survived the re-key.
     expect(v.summaries.single.name, 'keep');
 
-    final bytes = n1.toBytes();
+    final bytes = await n1.toBytes();
 
     // Old answers no longer open it; the new ones do.
     final c2 = _container();
-    expect(() => _notifier(c2).open(Uint8List.fromList(bytes), _answers),
+    await expectLater(_notifier(c2).open(Uint8List.fromList(bytes), _answers),
         throwsA(isA<Object>()));
 
     final c3 = _container();
     final n3 = _notifier(c3);
-    n3.open(Uint8List.fromList(bytes), newAnswers);
+    await n3.open(Uint8List.fromList(bytes), newAnswers);
     final v3 = (c3.read(vaultSessionProvider) as VaultUnlocked).vault;
     expect(v3.reveal(0).secret, 'sekret');
   });

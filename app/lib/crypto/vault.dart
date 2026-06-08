@@ -9,6 +9,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -131,6 +132,12 @@ class AskryptFile {
     return QuestionsData.fromJson(
         jsonDecode(utf8.decode(plain)) as Map<String, dynamic>);
   }
+
+  /// [getQuestionsData] run on a background isolate. The PBKDF2 derivation
+  /// (600k iterations) is CPU-bound and freezes the UI thread for seconds,
+  /// tripping Android's ANR dialog — so keep it off the main isolate.
+  Future<QuestionsData> getQuestionsDataAsync(String firstAnswer) =>
+      Isolate.run(() => getQuestionsData(firstAnswer));
 
   /// Decrypt the entry list given the remaining answers (questions 2..n).
   List<SecretEntry> decrypt(QuestionsData qd, List<String> answers) {

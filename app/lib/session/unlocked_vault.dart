@@ -13,6 +13,7 @@
 /// zeroize the managed heap. Call [lock]/drop the reference to clear state.
 library;
 
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import '../crypto/secret_entry.dart';
@@ -125,6 +126,14 @@ class UnlockedVault {
     );
   }
 
+  /// [open] run on a background isolate. The layered decrypt performs two
+  /// PBKDF2 derivations (600k iterations each); on the UI isolate that freezes
+  /// the app long enough to trip Android's ANR dialog, so offload it. The
+  /// returned [UnlockedVault] is plain data and copies cleanly across isolates.
+  static Future<UnlockedVault> openAsync(
+          Uint8List bytes, List<String> answers) =>
+      Isolate.run(() => UnlockedVault.open(bytes, answers));
+
   // --- read (no secrets) ---------------------------------------------------
 
   int get entryCount => _entries.length;
@@ -207,6 +216,26 @@ class UnlockedVault {
       iterations: iterations,
       translit: translit,
     ).toBytes();
+    isModified = false;
+    return bytes;
+  }
+
+  /// [toBytes] run on a background isolate. [AskryptFile.create] performs two
+  /// PBKDF2 derivations (600k iterations each); doing that on the UI isolate
+  /// freezes a save long enough to trip Android's ANR dialog, so offload it.
+  Future<Uint8List> toBytesAsync() async {
+    final qs = questions;
+    final ans = _answers;
+    final ent = _entries;
+    final it = iterations;
+    final tr = translit;
+    final bytes = await Isolate.run(() => AskryptFile.create(
+          questions: qs,
+          answers: ans,
+          entries: ent,
+          iterations: it,
+          translit: tr,
+        ).toBytes());
     isModified = false;
     return bytes;
   }
