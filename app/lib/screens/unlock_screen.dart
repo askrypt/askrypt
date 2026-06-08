@@ -34,7 +34,6 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
 
   final _answer0 = TextEditingController();
   final List<TextEditingController> _answers = [];
-  bool _obscure = true;
   String? _error;
 
   /// True while a key derivation is running on a background isolate. Drives the
@@ -227,9 +226,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
                 _QuestionField(
                   question: file.question0,
                   controller: _answer0,
-                  obscure: _obscure,
                   enabled: qd == null,
-                  onToggleObscure: () => setState(() => _obscure = !_obscure),
                   onSubmitted: qd == null ? (_) => _revealQuestions() : null,
                 ),
                 if (qd != null) ...[
@@ -237,10 +234,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
                     _QuestionField(
                       question: qd.questions[i],
                       controller: _answers[i],
-                      obscure: _obscure,
                       enabled: true,
-                      onToggleObscure: () =>
-                          setState(() => _obscure = !_obscure),
                       onSubmitted: i == qd.questions.length - 1
                           ? (_) => _unlock()
                           : null,
@@ -286,42 +280,47 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
       );
 }
 
-class _QuestionField extends StatelessWidget {
+/// Owns its own show/hide state so each answer field toggles independently.
+class _QuestionField extends StatefulWidget {
   const _QuestionField({
     required this.question,
     required this.controller,
-    required this.obscure,
     required this.enabled,
-    required this.onToggleObscure,
     this.onSubmitted,
   });
 
   final String question;
   final TextEditingController controller;
-  final bool obscure;
   final bool enabled;
-  final VoidCallback onToggleObscure;
   final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<_QuestionField> createState() => _QuestionFieldState();
+}
+
+class _QuestionFieldState extends State<_QuestionField> {
+  bool _obscure = true;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: TextField(
-        controller: controller,
-        enabled: enabled,
-        obscureText: obscure,
-        autofocus: enabled,
-        textInputAction:
-            onSubmitted != null ? TextInputAction.done : TextInputAction.next,
-        onSubmitted: onSubmitted,
+        controller: widget.controller,
+        enabled: widget.enabled,
+        obscureText: _obscure,
+        autofocus: widget.enabled,
+        textInputAction: widget.onSubmitted != null
+            ? TextInputAction.done
+            : TextInputAction.next,
+        onSubmitted: widget.onSubmitted,
         decoration: InputDecoration(
-          labelText: question,
+          labelText: widget.question,
           border: const OutlineInputBorder(),
           suffixIcon: IconButton(
-            tooltip: obscure ? 'Show' : 'Hide',
-            icon: Icon(obscure ? Icons.visibility : Icons.visibility_off),
-            onPressed: onToggleObscure,
+            tooltip: _obscure ? 'Show' : 'Hide',
+            icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
+            onPressed: () => setState(() => _obscure = !_obscure),
           ),
         ),
       ),
