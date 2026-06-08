@@ -13,7 +13,9 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app.dart';
 import '../crypto/vault.dart';
+import '../session/unlocked_vault.dart';
 import '../session/vault_session.dart';
 
 class UnlockScreen extends ConsumerStatefulWidget {
@@ -35,6 +37,12 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   bool _obscure = true;
   String? _error;
 
+  /// True once we know biometric answers are stored for this vault.
+  bool _hasBiometric = false;
+
+  /// Guards the one-shot auto-prompt so we don't re-trigger on rebuilds.
+  bool _biometricTried = false;
+
   @override
   void initState() {
     super.initState();
@@ -42,6 +50,22 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
       _file = AskryptFile.fromBytes(widget.bytes);
     } catch (e) {
       _error = 'Not a valid vault file.';
+    }
+    if (_file != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _initBiometric());
+    }
+  }
+
+  /// Check for stored biometric credentials for this vault and, if present,
+  /// auto-trigger the biometric prompt once.
+  Future<void> _initBiometric() async {
+    final has =
+        await ref.read(biometricStoreProvider).hasCredentialFor(_file!.question0);
+    if (!mounted) return;
+    setState(() => _hasBiometric = has);
+    if (has && !_biometricTried) {
+      _biometricTried = true;
+      _quickUnlock();
     }
   }
 
@@ -72,17 +96,80 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     }
   }
 
-  /// Step 2: full decrypt via the session notifier.
-  void _unlock() {
+  /// Step 2: full decrypt from the typed answers. We decrypt *locally* first so
+  /// we can offer biometric enrollment before the session swap tears this route
+  /// down, then hand the decrypted vault to the session via [adopt].
+  Future<void> _unlock() async {
     setState(() => _error = null);
     final all = [_answer0.text, ..._answers.map((c) => c.text)];
+    final UnlockedVault vault;
     try {
-      ref.read(vaultSessionProvider.notifier).open(widget.bytes, all);
-      // Session is now unlocked; the app shell swaps to the entries tree and
-      // tears this route down — no explicit pop needed.
+      vault = UnlockedVault.open(widget.bytes, all);
     } catch (_) {
       setState(() => _error = 'Could not unlock — check your answers.');
+      return;
     }
+    await _maybeOfferEnroll(all);
+    _commit(vault);
+  }
+
+  /// Biometric path: reveal stored answers, decrypt, and open. On a stale
+  /// credential (e.g. the questions were re-keyed elsewhere) forget it and fall
+  /// back to manual entry.
+  Future<void> _quickUnlock() async {
+    final store = ref.read(biometricStoreProvider);
+    final answers = await store.reveal(_file!.question0);
+    if (answers == null || !mounted) return;
+    final UnlockedVault vault;
+    try {
+      vault = UnlockedVault.open(widget.bytes, answers);
+    } catch (_) {
+      await store.forget(_file!.question0);
+      if (!mounted) return;
+      setState(() {
+        _hasBiometric = false;
+        _error = 'Saved answers no longer open this vault — enter them manually.';
+      });
+      return;
+    }
+    _commit(vault);
+  }
+
+  /// Record the vault's identity (for the disable-biometric menu) and adopt the
+  /// decrypted vault. This swaps the app to the entries tree and tears this
+  /// route down, so it must be the last thing we do with [context].
+  void _commit(UnlockedVault vault) {
+    if (!mounted) return;
+    ref.read(currentQuestion0Provider.notifier).state = _file!.question0;
+    ref.read(vaultSessionProvider.notifier).adopt(vault);
+  }
+
+  /// If biometrics are available and not yet enrolled for this vault, ask
+  /// whether to remember the answers behind a biometric prompt.
+  Future<void> _maybeOfferEnroll(List<String> answers) async {
+    if (_hasBiometric) return;
+    final store = ref.read(biometricStoreProvider);
+    if (!await store.canUse() || !mounted) return;
+    final wants = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enable biometric unlock?'),
+        content: const Text(
+          'Unlock this vault with your fingerprint or face next time, instead '
+          'of typing your answers. Answers are stored in the device keystore.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Not now')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Enable')),
+        ],
+      ),
+    );
+    if (wants != true) return;
+    await store.save(_file!.question0, answers); // prompts for biometrics
   }
 
   @override
@@ -96,6 +183,18 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (_hasBiometric) ...[
+                  FilledButton.icon(
+                    onPressed: _quickUnlock,
+                    icon: const Icon(Icons.fingerprint),
+                    label: const Text('Unlock with biometrics'),
+                  ),
+                  const SizedBox(height: 8),
+                  Text('or enter your answers',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(height: 16),
+                ],
                 _QuestionField(
                   question: file.question0,
                   controller: _answer0,

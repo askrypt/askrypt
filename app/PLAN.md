@@ -194,10 +194,37 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
     which a future Flutter will reject — revisit when file_picker ships
     Built-in-Kotlin support.
 
-- **Phase 4 — Mobile-native security.** Biometric unlock (`local_auth`) backed by
-  Keychain/Keystore (successor to Smart Lock); auto-clearing clipboard (mark
-  sensitive on Android 13+); `flutter_secure_storage` for any cached unlock
-  material. Minimize plaintext lifetime in the Dart heap; clear on lock/background.
+- **Phase 4 — Mobile-native security. ✅ DONE (on-device gate pending hardware).**
+  - **Biometric quick-unlock — "answers-only" model.** After a successful manual
+    unlock the user is offered enrollment; we store the *security answers* (not a
+    derived key — every save rotates salts + master key) in Keystore/Keychain via
+    `flutter_secure_storage`, keyed by `sha256(question0)`. On re-open the user
+    still picks the file (always fresh bytes, no stored vault copy, never stale);
+    a fingerprint/Face ID reveals the answers and opens it. A stale credential
+    (questions re-keyed elsewhere) fails the open, is `forget()`-ten, and falls
+    back to manual entry. Disable via the entries-screen overflow menu.
+  - **Auto-clearing clipboard** (`secure_clipboard.dart`): copies route through a
+    native sensitive-copy and a 30 s Dart fallback timer that only wipes if our
+    value is still present; also cleared on lock.
+  - **Hardening**: `FLAG_SECURE` is set while a vault is unlocked (blocks
+    screenshots + the recents thumbnail) and cleared on lock, driven from
+    `auto_lock.dart`'s session listener.
+  - New Dart platform seams (fakeable, overridden in tests like `VaultIo`):
+    `lib/platform/biometric_store.dart` (`local_auth` + `flutter_secure_storage`),
+    `lib/platform/secure_clipboard.dart`, `lib/platform/platform_security.dart`
+    (a `MethodChannel('askrypt/secure')`). Providers in `lib/app.dart`.
+    `VaultSessionNotifier.adopt()` lets the unlock screen decrypt+enroll before
+    the route is torn down without a second key derivation.
+  - **Native**: `MainActivity.kt` now extends **`FlutterFragmentActivity`**
+    (required by `local_auth`) and hosts the `askrypt/secure` channel
+    (FLAG_SECURE + `ClipDescription.EXTRA_IS_SENSITIVE` on Android 13+); iOS
+    `AppDelegate.swift` registers the same channel (expiring/local `UIPasteboard`
+    item; FLAG_SECURE is a no-op) and `Info.plist` gained `NSFaceIDUsageDescription`.
+  - Gate met locally: `flutter analyze` clean; `flutter test` green (adds
+    `biometric_test.dart` + `secure_clipboard_test.dart`); `flutter build apk
+    --debug` builds against the SDK at `~/Android/Sdk`. **Remaining**: on-device
+    manual check (enroll → reopen → fingerprint unlock; clipboard auto-clear;
+    blank recents thumbnail) on AVD `askrypt_api36`.
 
 - **Phase 5 — Autofill (largest native piece, last).** Android Autofill Service
   (Kotlin) + iOS AutoFill Credential Provider extension (Swift). These run in

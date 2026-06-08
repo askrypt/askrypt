@@ -12,6 +12,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 // StateProvider lives in the legacy export as of Riverpod 3.
 import 'package:flutter_riverpod/legacy.dart';
 
+import 'platform/biometric_store.dart';
+import 'platform/platform_security.dart';
+import 'platform/secure_clipboard.dart';
 import 'platform/vault_io.dart';
 import 'screens/auto_lock.dart';
 import 'screens/entries_screen.dart';
@@ -21,8 +24,25 @@ import 'session/vault_session.dart';
 /// Storage backend for picking/saving vault files. Overridden in tests.
 final vaultIoProvider = Provider<VaultIo>((ref) => const FilePickerVaultIo());
 
+/// Native security affordances (FLAG_SECURE, sensitive clipboard). Overridden
+/// in tests.
+final platformSecurityProvider =
+    Provider<PlatformSecurity>((ref) => const MethodChannelPlatformSecurity());
+
+/// Auto-clearing clipboard for secrets. Overridden in tests.
+final secureClipboardProvider = Provider<SecureClipboard>(
+    (ref) => TimedSecureClipboard(ref.watch(platformSecurityProvider)));
+
+/// Biometric quick-unlock store (answers-only). Overridden in tests.
+final biometricStoreProvider =
+    Provider<BiometricStore>((ref) => LocalAuthBiometricStore());
+
 /// Suggested file name for the next save, set when a vault is opened/created.
 final vaultFileNameProvider = StateProvider<String>((ref) => 'vault.askrypt');
+
+/// The first question (plaintext) of the currently-open vault, used as the
+/// biometric-credential key. Set on unlock; null when no vault tracked.
+final currentQuestion0Provider = StateProvider<String?>((ref) => null);
 
 class AskryptApp extends StatelessWidget {
   const AskryptApp({super.key});

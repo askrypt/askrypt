@@ -7,10 +7,10 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../app.dart';
 import '../crypto/secret_entry.dart';
 import '../session/vault_session.dart';
 import 'password_generator_screen.dart';
@@ -117,10 +117,10 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
 
   Future<void> _copy(String value, String label) async {
     if (value.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: value));
+    await ref.read(secureClipboardProvider).copy(value);
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('$label copied')));
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$label copied — clears in 30s')));
   }
 
   Future<void> _openUrl() async {

@@ -13,6 +13,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app.dart';
 import '../session/vault_session.dart';
 
 /// How long without interaction before the vault auto-locks while in the
@@ -76,10 +77,21 @@ class _AutoLockState extends ConsumerState<AutoLock>
 
   @override
   Widget build(BuildContext context) {
-    // When the vault locks (manually or via background), drop the idle timer so
-    // it can't fire a stray no-op while the app sits on the welcome screen.
-    ref.listen(vaultSessionProvider, (_, next) {
-      if (next is VaultLocked) _idleTimer?.cancel();
+    // React to lock/unlock *transitions* (not CRUD re-emits): on lock, drop the
+    // idle timer, wipe any secret left on the clipboard, and clear FLAG_SECURE;
+    // on unlock, set FLAG_SECURE so secrets don't leak into screenshots or the
+    // recents thumbnail.
+    ref.listen<VaultSession>(vaultSessionProvider, (prev, next) {
+      final wasUnlocked = prev is VaultUnlocked;
+      final isUnlocked = next is VaultUnlocked;
+      if (wasUnlocked == isUnlocked) return;
+      if (isUnlocked) {
+        ref.read(platformSecurityProvider).setSecureFlag(true);
+      } else {
+        _idleTimer?.cancel();
+        ref.read(secureClipboardProvider).clearNow();
+        ref.read(platformSecurityProvider).setSecureFlag(false);
+      }
     });
     // Reset the idle timer on any pointer activity anywhere in the app.
     return Listener(

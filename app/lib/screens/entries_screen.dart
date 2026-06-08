@@ -16,7 +16,7 @@ import 'entry_edit_screen.dart';
 import 'password_generator_screen.dart';
 import 'questions_editor_screen.dart';
 
-enum _Menu { editQuestions, passwordGenerator }
+enum _Menu { editQuestions, passwordGenerator, disableBiometric }
 
 class EntriesScreen extends ConsumerStatefulWidget {
   const EntriesScreen({super.key});
@@ -29,6 +29,35 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
   String _query = '';
   String? _tagFilter;
   bool _showHidden = false;
+
+  /// Whether biometric answers are stored for this vault (drives the
+  /// "Disable biometric unlock" menu item).
+  bool _hasBiometric = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkBiometric());
+  }
+
+  Future<void> _checkBiometric() async {
+    final q0 = ref.read(currentQuestion0Provider);
+    if (q0 == null) return;
+    final has = await ref.read(biometricStoreProvider).hasCredentialFor(q0);
+    if (mounted) setState(() => _hasBiometric = has);
+  }
+
+  Future<void> _disableBiometric() async {
+    final q0 = ref.read(currentQuestion0Provider);
+    if (q0 != null) {
+      await ref.read(biometricStoreProvider).forget(q0);
+    }
+    if (!mounted) return;
+    setState(() => _hasBiometric = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Biometric unlock disabled')),
+    );
+  }
 
   bool _matches(EntrySummary s) {
     if (s.hidden && !_showHidden) return false;
@@ -83,6 +112,8 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
       case _Menu.passwordGenerator:
         Navigator.of(context).push(MaterialPageRoute<void>(
             builder: (_) => const PasswordGeneratorScreen()));
+      case _Menu.disableBiometric:
+        _disableBiometric();
     }
   }
 
@@ -122,12 +153,16 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
           ),
           PopupMenuButton<_Menu>(
             onSelected: _onMenu,
-            itemBuilder: (_) => const [
-              PopupMenuItem(
+            itemBuilder: (_) => [
+              const PopupMenuItem(
                   value: _Menu.editQuestions, child: Text('Edit questions')),
-              PopupMenuItem(
+              const PopupMenuItem(
                   value: _Menu.passwordGenerator,
                   child: Text('Password generator')),
+              if (_hasBiometric)
+                const PopupMenuItem(
+                    value: _Menu.disableBiometric,
+                    child: Text('Disable biometric unlock')),
             ],
           ),
         ],

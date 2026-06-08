@@ -71,6 +71,12 @@ class VaultSessionNotifier extends Notifier<VaultSession> {
     state = VaultUnlocked(UnlockedVault.open(bytes, answers));
   }
 
+  /// Adopt an already-decrypted [UnlockedVault] as the live session. Used by
+  /// the unlock screen, which decrypts locally first (to validate answers and
+  /// offer biometric enrollment *before* the route is torn down) and avoids a
+  /// second expensive key derivation.
+  void adopt(UnlockedVault vault) => state = VaultUnlocked(vault);
+
   /// Start a brand-new, empty vault.
   void createNew({
     required List<String> questions,
