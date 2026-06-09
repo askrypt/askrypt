@@ -9,7 +9,6 @@
 library;
 
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -124,23 +123,21 @@ class AskryptFile {
   // --- decryption (layered unlock) ---
 
   /// Decrypt the remaining questions using the first answer.
-  QuestionsData getQuestionsData(String firstAnswer) {
+  ///
+  /// Async because the PBKDF2 derivation is delegated to native platform
+  /// crypto (see [pbkdf2]); awaiting it on the UI isolate is fine since the
+  /// native work doesn't block the Dart event loop.
+  Future<QuestionsData> getQuestionsData(String firstAnswer) async {
     final salt0 = base64.decode(salt0B64);
     final hashed = sha256Hex(normalizeAnswer(firstAnswer, translit), salt0B64);
-    final firstKey = pbkdf2(hashed, salt0, iterations);
+    final firstKey = await pbkdf2(hashed, salt0, iterations);
     final plain = aesCbcDecrypt(base64.decode(qs), firstKey, salt0);
     return QuestionsData.fromJson(
         jsonDecode(utf8.decode(plain)) as Map<String, dynamic>);
   }
 
-  /// [getQuestionsData] run on a background isolate. The PBKDF2 derivation
-  /// (600k iterations) is CPU-bound and freezes the UI thread for seconds,
-  /// tripping Android's ANR dialog — so keep it off the main isolate.
-  Future<QuestionsData> getQuestionsDataAsync(String firstAnswer) =>
-      Isolate.run(() => getQuestionsData(firstAnswer));
-
   /// Decrypt the entry list given the remaining answers (questions 2..n).
-  List<SecretEntry> decrypt(QuestionsData qd, List<String> answers) {
+  Future<List<SecretEntry>> decrypt(QuestionsData qd, List<String> answers) async {
     if (answers.isEmpty) {
       throw VaultException('at least 1 answer required');
     }
@@ -150,7 +147,7 @@ class AskryptFile {
     final salt1 = base64.decode(qd.saltB64);
     final combined =
         answers.map((a) => normalizeAnswer(a, translit)).join();
-    final secondKey = pbkdf2(sha256Hex(combined, salt0B64), salt1, iterations);
+    final secondKey = await pbkdf2(sha256Hex(combined, salt0B64), salt1, iterations);
 
     final masterJson = utf8.decode(aesCbcDecrypt(base64.decode(master), secondKey, salt1));
     final md = jsonDecode(masterJson) as Map<String, dynamic>;
@@ -166,14 +163,14 @@ class AskryptFile {
 
   // --- creation (mirror of AskryptFile::create) ---
 
-  static AskryptFile create({
+  static Future<AskryptFile> create({
     required List<String> questions,
     required List<String> answers,
     required List<SecretEntry> entries,
     int iterations = defaultIterations,
     bool translit = false,
     Random? rng,
-  }) {
+  }) async {
     if (questions.length < 2) {
       throw VaultException('at least 2 questions required');
     }
@@ -195,14 +192,14 @@ class AskryptFile {
     final salt0B64 = base64.encode(salt0);
 
     // Layer 1: first answer -> first-key -> encrypt remaining questions.
-    final firstKey = pbkdf2(sha256Hex(norm[0], salt0B64), salt0, iterations);
+    final firstKey = await pbkdf2(sha256Hex(norm[0], salt0B64), salt0, iterations);
     final qd = QuestionsData(questions.sublist(1), base64.encode(salt1));
     final qs = base64.encode(
         aesCbcEncrypt(_jsonBytes(qd.toJson()), firstKey, salt0));
 
     // Layer 2: all remaining answers -> second-key -> encrypt master key+iv.
     final combined = norm.sublist(1).join();
-    final secondKey = pbkdf2(sha256Hex(combined, salt0B64), salt1, iterations);
+    final secondKey = await pbkdf2(sha256Hex(combined, salt0B64), salt1, iterations);
     final masterData = {'masterKey': base64.encode(masterKey), 'iv': base64.encode(iv)};
     final master =
         base64.encode(aesCbcEncrypt(_jsonBytes(masterData), secondKey, salt1));

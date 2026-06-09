@@ -6,9 +6,9 @@ import 'dart:io';
 import 'package:askrypt/crypto/secret_entry.dart';
 import 'package:askrypt/crypto/vault.dart';
 
-void main(List<String> args) {
+Future<void> main(List<String> args) async {
   final out = args.isNotEmpty ? args[0] : '/tmp/dart_vault.askrypt';
-  final file = AskryptFile.create(
+  final file = await AskryptFile.create(
     questions: const ['Mother maiden name?', 'First pet?', 'Born city?'],
     answers: const ['Smith', 'Fluffy', 'New York'],
     entries: [

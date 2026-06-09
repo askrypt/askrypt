@@ -6,6 +6,7 @@ library;
 import 'dart:typed_data';
 
 import 'package:askrypt/app.dart';
+import 'package:askrypt/crypto/secret_entry.dart';
 import 'package:askrypt/crypto/vault.dart';
 import 'package:askrypt/platform/vault_io.dart';
 import 'package:flutter/material.dart';
@@ -73,20 +74,22 @@ void main() {
     expect(find.text('GitHub'), findsOneWidget);
 
     // Save → fake captures bytes that open with the answers we set. The save
-    // re-encrypts on a real background isolate, so let real async complete
-    // (widget tests otherwise run in a fake-async zone that never advances it).
+    // (and the round-trip decrypt below) run the real, awaited PBKDF2, so they
+    // must execute inside `tester.runAsync` — widget tests otherwise run in a
+    // fake-async zone that never advances the derivation to completion.
+    late List<SecretEntry> entries;
     await tester.runAsync(() async {
       await tester.tap(find.byIcon(Icons.save));
       while (io.saved == null) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
+      final file = AskryptFile.fromBytes(io.saved!);
+      final qd = await file.getQuestionsData('Rex');
+      entries = await file.decrypt(qd, const ['Kazan']);
     });
     await tester.pumpAndSettle();
 
     expect(io.saved, isNotNull);
-    final file = AskryptFile.fromBytes(io.saved!);
-    final qd = file.getQuestionsData('Rex');
-    final entries = file.decrypt(qd, const ['Kazan']);
     expect(entries.single.name, 'GitHub');
     expect(entries.single.secret, 'hunter2');
   });

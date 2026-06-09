@@ -10,4 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
 
+// PBKDF2 is routed to native, hardware-accelerated platform crypto: merely
+// depending on `cryptography_flutter` auto-registers it as `Cryptography.instance`
+// (see `lib/crypto/kdf.dart`), so no explicit enable call is needed here.
 void main() => runApp(const ProviderScope(child: AskryptApp()));

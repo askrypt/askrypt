@@ -68,7 +68,7 @@ class VaultSessionNotifier extends Notifier<VaultSession> {
   /// Decrypt and open an existing vault. Throws [VaultException] on failure
   /// (caller shows the error); state is left untouched on throw.
   Future<void> open(Uint8List bytes, List<String> answers) async {
-    state = VaultUnlocked(await UnlockedVault.openAsync(bytes, answers));
+    state = VaultUnlocked(await UnlockedVault.open(bytes, answers));
   }
 
   /// Adopt an already-decrypted [UnlockedVault] as the live session. Used by
@@ -132,7 +132,7 @@ class VaultSessionNotifier extends Notifier<VaultSession> {
   /// Serialize the current vault to byte-compatible `vault.askrypt` bytes and
   /// re-emit so the cleared `isModified` flag propagates.
   Future<Uint8List> toBytes() async {
-    final bytes = await _vault.toBytesAsync();
+    final bytes = await _vault.toBytes();
     _reemit();
     return bytes;
   }

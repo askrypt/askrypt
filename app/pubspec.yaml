@@ -11,7 +11,13 @@ dependencies:
   flutter:
     sdk: flutter
   # Crypto core (PLAN Phase 1): pure Dart, no Rust/FFI.
-  pointycastle: ^3.9.1 # PBKDF2-HMAC-SHA256, AES-256-CBC, SHA-256
+  pointycastle: ^3.9.1 # AES-256-CBC, SHA-256
+  # PBKDF2 (600k iters) via native platform crypto on device — Android
+  # javax.crypto / iOS CommonCrypto, hardware-accelerated — falling back to the
+  # `cryptography` Dart impl off-device (tests). Standard PBKDF2-HMAC-SHA256, so
+  # output is byte-identical to pointycastle (verified by the golden vectors).
+  cryptography: ^2.7.0
+  cryptography_flutter: ^2.3.0
   archive: ^3.6.1 # ZIP container for vault.askrypt
   flutter_riverpod: ^3.3.1
   file_picker: ^11.0.2

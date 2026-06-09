@@ -54,11 +54,11 @@ void main() {
     }
   });
 
-  test('pbkdf2 matches Rust', () {
+  test('pbkdf2 matches Rust', () async {
     for (final c in vectors['pbkdf2'] as List) {
       final m = c as Map<String, dynamic>;
       final salt = base64.decode(m['salt_b64'] as String);
-      final key = pbkdf2(m['secret'] as String, salt, m['iterations'] as int);
+      final key = await pbkdf2(m['secret'] as String, salt, m['iterations'] as int);
       expect(_hex(key), m['key_hex'],
           reason: 'pbkdf2 ${m['secret']} x${m['iterations']}');
     }
@@ -77,14 +77,14 @@ void main() {
     }
   });
 
-  test('opens a Rust-produced vault', () {
+  test('opens a Rust-produced vault', () async {
     final v = vectors['vault'] as Map<String, dynamic>;
     final bytes = base64.decode(v['vault_b64'] as String);
     final file = AskryptFile.fromBytes(Uint8List.fromList(bytes));
     final answers = (v['answers'] as List).cast<String>();
 
-    final qd = file.getQuestionsData(answers[0]);
-    final entries = file.decrypt(qd, answers.sublist(1));
+    final qd = await file.getQuestionsData(answers[0]);
+    final entries = await file.decrypt(qd, answers.sublist(1));
 
     final expected = (v['expected_entries'] as List)
         .map((e) => SecretEntry.fromJson(e as Map<String, dynamic>))
@@ -95,7 +95,7 @@ void main() {
     }
   });
 
-  test('Dart-created vault round-trips through Dart', () {
+  test('Dart-created vault round-trips through Dart', () async {
     final questions = ['Q one?', 'Q two?', 'Q three?'];
     final answers = ['Ответ Один', 'answer-two', 'Answer Three'];
     final entries = [
@@ -112,7 +112,7 @@ void main() {
         hidden: false,
       ),
     ];
-    final file = AskryptFile.create(
+    final file = await AskryptFile.create(
       questions: questions,
       answers: answers,
       entries: entries,
@@ -120,9 +120,9 @@ void main() {
       translit: true,
     );
     final reopened = AskryptFile.fromBytes(file.toBytes());
-    final qd = reopened.getQuestionsData(answers[0]);
+    final qd = await reopened.getQuestionsData(answers[0]);
     expect(qd.questions, questions.sublist(1));
-    final out = reopened.decrypt(qd, answers.sublist(1));
+    final out = await reopened.decrypt(qd, answers.sublist(1));
     expect(out.single.toJson(), entries.single.toJson());
   });
 }

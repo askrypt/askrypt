@@ -131,8 +131,8 @@ void main() {
     final file = AskryptFile.fromBytes(Uint8List.fromList(bytes));
     expect(file.question0, _questions.first);
     expect(file.translit, isTrue);
-    final qd = file.getQuestionsData(_answers.first);
-    final entries = file.decrypt(qd, _answers.sublist(1));
+    final qd = await file.getQuestionsData(_answers.first);
+    final entries = await file.decrypt(qd, _answers.sublist(1));
     expect(entries.single.secret, 'pw');
   });
 

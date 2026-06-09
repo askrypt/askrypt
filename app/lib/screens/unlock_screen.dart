@@ -82,8 +82,8 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   }
 
   /// Step 1 → 2: decrypt the remaining questions with the first answer. The
-  /// PBKDF2 derivation runs on a background isolate so the UI stays responsive
-  /// (a synchronous derivation here would trip Android's ANR dialog).
+  /// The PBKDF2 derivation runs on native platform crypto (off the Dart event
+  /// loop), so awaiting it here keeps the UI responsive without an ANR.
   Future<void> _revealQuestions() async {
     final file = _file;
     if (file == null || _busy) return;
@@ -92,7 +92,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
       _busy = true;
     });
     try {
-      final qd = await file.getQuestionsDataAsync(_answer0.text);
+      final qd = await file.getQuestionsData(_answer0.text);
       if (!mounted) return;
       setState(() {
         _qd = qd;
@@ -120,7 +120,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     final all = [_answer0.text, ..._answers.map((c) => c.text)];
     final UnlockedVault vault;
     try {
-      vault = await UnlockedVault.openAsync(widget.bytes, all);
+      vault = await UnlockedVault.open(widget.bytes, all);
     } catch (_) {
       if (mounted) {
         setState(() {
@@ -147,7 +147,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     setState(() => _busy = true);
     final UnlockedVault vault;
     try {
-      vault = await UnlockedVault.openAsync(widget.bytes, answers);
+      vault = await UnlockedVault.open(widget.bytes, answers);
     } catch (_) {
       await store.forget(_file!.question0);
       if (!mounted) return;

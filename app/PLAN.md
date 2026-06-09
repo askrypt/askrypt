@@ -50,7 +50,7 @@ askrypt/
 │   │   ├── main.dart
 │   │   ├── crypto/            # PURE-DART CORE (mirrors core/src/*.rs)
 │   │   │   ├── vault.dart         # AskryptFile: load/create/to-bytes (ZIP+JSON)
-│   │   │   ├── kdf.dart           # PBKDF2-HMAC-SHA256, sha256-hex helper
+│   │   │   ├── kdf.dart           # PBKDF2 (native via cryptography_flutter), sha256-hex helper
 │   │   │   ├── aes.dart           # AES-256-CBC + PKCS7 encrypt/decrypt
 │   │   │   ├── normalize.dart     # answer normalization
 │   │   │   └── translit.dart      # BGN/PCGN Russian/Ukrainian -> ASCII
@@ -82,7 +82,8 @@ Derivation chain per layer (must match exactly):
 6. **Container**: `vault.askrypt` is a ZIP holding `askrypt.json` (+ future
    attachments). JSON fields per `SPEC.md` File Structure.
 
-Suggested Dart packages: **`pointycastle`** (PBKDF2 + AES-CBC + SHA256),
+Dart packages: **`cryptography`** + **`cryptography_flutter`** (PBKDF2 — native
+on device, Dart fallback in tests), **`pointycastle`** (AES-CBC + SHA256),
 **`archive`** (ZIP), `dart:convert` (base64/JSON), `dart:math`
 `Random.secure()` (salt/IV/masterKey generation).
 
@@ -122,9 +123,15 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
     `app/test/fixtures/vectors.json` (normalize, transliterate, sha256, pbkdf2,
     aes-cbc, + a full known-good `vault.askrypt`).
   - Dart crypto core `app/lib/crypto/{translit,normalize,kdf,aes,
-    secret_entry,vault}.dart` (pointycastle + archive). Mirrors `core/src`.
+    secret_entry,vault}.dart` (PBKDF2 via `cryptography`/`cryptography_flutter`;
+    AES + SHA256 via pointycastle; `archive` for ZIP). Mirrors `core/src`.
     Note: `aes.dart` avoids pointycastle's `process()` (broken for empty input)
-    with an explicit block loop.
+    with an explicit block loop. `app/test/flutter_test_config.dart` forces the
+    pure-Dart PBKDF2 (`Cryptography.instance = DartCryptography.defaultInstance`)
+    for all tests — under `flutter_tester` the native `cryptography_flutter`
+    path has no platform handler and would stall. Widget tests must run the
+    awaited PBKDF2 inside `tester.runAsync` (the fake-async zone never advances
+    a real derivation), as `screens_test.dart` does for save + round-trip.
   - Dart parity tests `app/test/crypto_parity_test.dart` assert byte/value
     equality per stage, open the Rust-produced vault, and round-trip a
     Dart-created vault.
@@ -244,11 +251,17 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
   anything `!= "0.9"`). Any change must land in **both** Rust and Dart + vectors.
 - Cloud sync model (iCloud/Drive vs OS document providers vs explicit sync).
 - PBKDF2 600k iterations are slow in pure Dart (`pointycastle`, slower than
-  Rust). **Done:** the heavy derivations now run on a background isolate via
-  `Isolate.run` — `AskryptFile.getQuestionsDataAsync`, `UnlockedVault.openAsync`
-  / `toBytesAsync` — with a progress indicator on the unlock screen, so the UI
-  thread never blocks (this previously tripped Android's ANR dialog mid-unlock).
-  Still open: an adaptive iteration count at creation for low-end phones.
+  Rust). **Done:** `pbkdf2` (`crypto/kdf.dart`) now delegates to native,
+  hardware-accelerated platform crypto via `cryptography_flutter` (Android
+  `javax.crypto` / iOS CommonCrypto), falling back to the `cryptography` Dart
+  impl off-device (tests) — byte-identical output (golden vectors verify). This
+  is ~10–30× faster and doesn't block the Dart event loop, so the crypto entry
+  points (`getQuestionsData`/`create`/`open`/`toBytes`) are plain `async`
+  `await`ed on the main isolate; the earlier `Isolate.run` workaround
+  (`*Async` variants) was removed. `pointycastle` now only does AES-256-CBC +
+  SHA-256. The unlock screen still shows a progress indicator during a
+  derivation. Still open: an adaptive iteration count at creation for low-end
+  phones.
 - Autofill crypto strategy (Dart platform channel vs minimal native port) — see
   Phase 5.
 

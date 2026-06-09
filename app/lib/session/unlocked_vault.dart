@@ -13,7 +13,6 @@
 /// zeroize the managed heap. Call [lock]/drop the reference to clear state.
 library;
 
-import 'dart:isolate';
 import 'dart:typed_data';
 
 import '../crypto/secret_entry.dart';
@@ -110,13 +109,17 @@ class UnlockedVault {
   /// [answers] is the full list: `answers[0]` unlocks the remaining questions,
   /// `answers[1..]` unlock the master key. This is the only path that performs
   /// the layered decryption; it throws [VaultException] on bad input/answers.
-  factory UnlockedVault.open(Uint8List bytes, List<String> answers) {
+  ///
+  /// Async because the two PBKDF2 derivations run on native platform crypto
+  /// (see [pbkdf2]); awaiting them keeps the UI responsive without an isolate.
+  static Future<UnlockedVault> open(
+      Uint8List bytes, List<String> answers) async {
     if (answers.isEmpty) {
       throw VaultException('at least 1 answer required');
     }
     final file = AskryptFile.fromBytes(bytes);
-    final qd = file.getQuestionsData(answers[0]);
-    final entries = file.decrypt(qd, answers.sublist(1));
+    final qd = await file.getQuestionsData(answers[0]);
+    final entries = await file.decrypt(qd, answers.sublist(1));
     return UnlockedVault._(
       questions: [file.question0, ...qd.questions],
       answers: List.of(answers),
@@ -125,14 +128,6 @@ class UnlockedVault {
       iterations: file.iterations,
     );
   }
-
-  /// [open] run on a background isolate. The layered decrypt performs two
-  /// PBKDF2 derivations (600k iterations each); on the UI isolate that freezes
-  /// the app long enough to trip Android's ANR dialog, so offload it. The
-  /// returned [UnlockedVault] is plain data and copies cleanly across isolates.
-  static Future<UnlockedVault> openAsync(
-          Uint8List bytes, List<String> answers) =>
-      Isolate.run(() => UnlockedVault.open(bytes, answers));
 
   // --- read (no secrets) ---------------------------------------------------
 
@@ -208,36 +203,20 @@ class UnlockedVault {
   /// Re-creates the whole file (fresh salts + master key) like the desktop
   /// save path, then clears [isModified]. The bytes are ready to write to a
   /// file/SAF document.
-  Uint8List toBytes() {
-    final bytes = AskryptFile.create(
+  ///
+  /// Async because [AskryptFile.create] performs two PBKDF2 derivations on
+  /// native platform crypto (see [pbkdf2]); awaiting keeps a save responsive
+  /// without an isolate.
+  Future<Uint8List> toBytes() async {
+    final file = await AskryptFile.create(
       questions: questions,
       answers: _answers,
       entries: _entries,
       iterations: iterations,
       translit: translit,
-    ).toBytes();
+    );
     isModified = false;
-    return bytes;
-  }
-
-  /// [toBytes] run on a background isolate. [AskryptFile.create] performs two
-  /// PBKDF2 derivations (600k iterations each); doing that on the UI isolate
-  /// freezes a save long enough to trip Android's ANR dialog, so offload it.
-  Future<Uint8List> toBytesAsync() async {
-    final qs = questions;
-    final ans = _answers;
-    final ent = _entries;
-    final it = iterations;
-    final tr = translit;
-    final bytes = await Isolate.run(() => AskryptFile.create(
-          questions: qs,
-          answers: ans,
-          entries: ent,
-          iterations: it,
-          translit: tr,
-        ).toBytes());
-    isModified = false;
-    return bytes;
+    return file.toBytes();
   }
 
   // --- helpers -------------------------------------------------------------

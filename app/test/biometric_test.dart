@@ -95,13 +95,15 @@ Future<void> pumpUntil(
 
 void main() {
   // A known 2-question vault with no entries, cheap to derive.
-  Uint8List makeVault(List<String> questions, List<String> answers) =>
-      AskryptFile.create(
+  Future<Uint8List> makeVault(
+          List<String> questions, List<String> answers) async =>
+      (await AskryptFile.create(
         questions: questions,
         answers: answers,
         entries: const [],
         iterations: 1000,
-      ).toBytes();
+      ))
+          .toBytes();
 
   Future<void> pumpApp(
     WidgetTester tester, {
@@ -123,7 +125,7 @@ void main() {
 
   testWidgets('manual unlock offers enrollment, which stores the answers',
       (tester) async {
-    final bytes = makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
+    final bytes = await makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
     final io = FakeVaultIo()
       ..toPick = PickedVault(bytes: bytes, name: 'vault.askrypt');
     final bio = FakeBiometricStore(); // available, nothing stored
@@ -158,7 +160,7 @@ void main() {
   });
 
   testWidgets('stored credentials auto-unlock without typing', (tester) async {
-    final bytes = makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
+    final bytes = await makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
     final io = FakeVaultIo()
       ..toPick = PickedVault(bytes: bytes, name: 'vault.askrypt');
     final bio = FakeBiometricStore()..seed('First pet?', ['Rex', 'Kazan']);
@@ -176,7 +178,7 @@ void main() {
 
   testWidgets('stale stored credentials are forgotten and fall back to manual',
       (tester) async {
-    final bytes = makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
+    final bytes = await makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
     final io = FakeVaultIo()
       ..toPick = PickedVault(bytes: bytes, name: 'vault.askrypt');
     // Wrong answers for this vault (e.g. questions were re-keyed elsewhere).
