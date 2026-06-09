@@ -128,7 +128,8 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
     if (session is! VaultUnlocked) return const SizedBox.shrink();
     final vault = session.vault;
 
-    final summaries = vault.summaries.where(_matches).toList();
+    final summaries = vault.summaries.where(_matches).toList()
+      ..sort((a, b) => b.modified.compareTo(a.modified));
     final allTags =
         (vault.summaries.expand((s) => s.tags).toSet().toList()..sort());
 
