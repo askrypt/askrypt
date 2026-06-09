@@ -13,6 +13,11 @@ Askrypt is a cross-platform password manager. It authenticates users via securit
 > vault format, update `CLAUDE.md` (and, for mobile work, `app/PLAN.md`) in the
 > same change so the docs never drift from the code.
 
+> **Rule — print a short commit when changes are done.** After completing a
+> code change, print a short, conventional commit message (a single
+> `type: subject` line, ≤ 72 chars) for the change so it's ready to copy. This
+> only prints the message — do not run `git commit` unless asked.
+
 ## Architecture
 
 The crypto/format engine lives in the **`core/`** crate (`askrypt-core`, lib name `askrypt`) and is the source of truth for the vault format. The desktop Iced app in **`src/`** depends on it, and the Dart mobile core in **`app/lib/crypto/`** re-implements it (kept in lock-step by golden test vectors). Phase 0 extracted the engine into `core/`; older docs may still say it lives in `src/`.
