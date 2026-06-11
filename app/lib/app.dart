@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/legacy.dart';
 
 import 'platform/biometric_store.dart';
 import 'platform/platform_security.dart';
+import 'platform/recent_vault_store.dart';
 import 'platform/secure_clipboard.dart';
 import 'platform/vault_io.dart';
 import 'screens/auto_lock.dart';
@@ -39,6 +40,18 @@ final biometricStoreProvider =
 
 /// Suggested file name for the next save, set when a vault is opened/created.
 final vaultFileNameProvider = StateProvider<String>((ref) => 'vault.askrypt');
+
+/// Cache of the last successfully unlocked vault (encrypted bytes + display
+/// name), behind the welcome screen's "open last vault" button. Overridden in
+/// tests.
+final recentVaultStoreProvider =
+    Provider<RecentVaultStore>((ref) => const FileRecentVaultStore());
+
+/// The remembered vault, if any. `autoDispose` so it is re-read each time the
+/// locked tree remounts — the cache may have been refreshed by an unlock or a
+/// save since the welcome screen last looked.
+final recentVaultProvider = FutureProvider.autoDispose<PickedVault?>(
+    (ref) => ref.watch(recentVaultStoreProvider).load());
 
 /// The first question (plaintext) of the currently-open vault, used as the
 /// biometric-credential key. Set on unlock; null when no vault tracked.

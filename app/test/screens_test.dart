@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'package:askrypt/app.dart';
 import 'package:askrypt/crypto/secret_entry.dart';
 import 'package:askrypt/crypto/vault.dart';
+import 'package:askrypt/platform/recent_vault_store.dart';
 import 'package:askrypt/platform/vault_io.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,11 +30,31 @@ class FakeVaultIo implements VaultIo {
   }
 }
 
+/// In-memory recent-vault cache.
+class FakeRecentVaultStore implements RecentVaultStore {
+  PickedVault? stored;
+
+  @override
+  Future<PickedVault?> load() async => stored;
+
+  @override
+  Future<void> remember(Uint8List bytes, String name) async =>
+      stored = PickedVault(bytes: bytes, name: name);
+
+  @override
+  Future<void> forget() async => stored = null;
+}
+
 void main() {
-  Future<void> pumpApp(WidgetTester tester, FakeVaultIo io) async {
+  Future<void> pumpApp(WidgetTester tester, FakeVaultIo io,
+      {FakeRecentVaultStore? recent}) async {
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [vaultIoProvider.overrideWithValue(io)],
+        overrides: [
+          vaultIoProvider.overrideWithValue(io),
+          recentVaultStoreProvider
+              .overrideWithValue(recent ?? FakeRecentVaultStore()),
+        ],
         child: const AskryptApp(),
       ),
     );
@@ -43,7 +64,8 @@ void main() {
   testWidgets('create → add entry → save round-trips through the UI',
       (tester) async {
     final io = FakeVaultIo();
-    await pumpApp(tester, io);
+    final recent = FakeRecentVaultStore();
+    await pumpApp(tester, io, recent: recent);
 
     // Welcome → create.
     expect(find.text('Open vault'), findsOneWidget);
@@ -92,6 +114,37 @@ void main() {
     expect(io.saved, isNotNull);
     expect(entries.single.name, 'GitHub');
     expect(entries.single.secret, 'hunter2');
+
+    // A successful save refreshes the recent-vault cache with the same bytes.
+    expect(recent.stored, isNotNull);
+    expect(recent.stored!.bytes, io.saved);
+  });
+
+  testWidgets('welcome offers to reopen the remembered vault', (tester) async {
+    final bytes = await tester.runAsync(() async => (await AskryptFile.create(
+          questions: ['First pet?', 'Birth city?'],
+          answers: ['Rex', 'Kazan'],
+          entries: const [],
+          iterations: 1000,
+        ))
+            .toBytes());
+    final recent = FakeRecentVaultStore()
+      ..stored = PickedVault(bytes: bytes!, name: 'my.askrypt');
+    await pumpApp(tester, FakeVaultIo(), recent: recent);
+
+    // The cached vault gets its own button; tapping it goes straight to the
+    // unlock screen for that file, no picker involved.
+    await tester.tap(find.text('Open my.askrypt'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('my.askrypt'), findsOneWidget); // unlock app bar title
+    expect(find.text('First pet?'), findsOneWidget); // first question shown
+  });
+
+  testWidgets('welcome shows no reopen button when nothing is remembered',
+      (tester) async {
+    await pumpApp(tester, FakeVaultIo());
+    expect(find.byIcon(Icons.history), findsNothing);
   });
 
   testWidgets('lock returns to the welcome screen', (tester) async {

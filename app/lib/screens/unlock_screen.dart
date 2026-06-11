@@ -8,6 +8,7 @@
 /// the full answer list to the session notifier to perform the real open.
 library;
 
+import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -242,6 +243,13 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   void _commit(UnlockedVault vault) {
     if (!mounted) return;
     ref.read(currentQuestion0Provider.notifier).state = _file!.question0;
+    // Cache this vault for the welcome screen's "open last vault" button.
+    // Best-effort and fire-and-forget: adopting tears this route down, and a
+    // cache failure must never block the unlock.
+    unawaited(ref
+        .read(recentVaultStoreProvider)
+        .remember(widget.bytes, widget.fileName)
+        .catchError((Object _) {}));
     ref.read(vaultSessionProvider.notifier).adopt(vault);
   }
 

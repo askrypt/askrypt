@@ -21,6 +21,7 @@ dependencies:
   archive: ^3.6.1 # ZIP container for vault.askrypt
   flutter_riverpod: ^3.3.1
   file_picker: ^11.0.2
+  path_provider: ^2.1.4 # app-private cache of the last-opened vault
   url_launcher: ^6.3.2
   # Phase 4 — mobile-native security.
   local_auth: ^2.3.0 # biometric gate (Keystore/Keychain backed)

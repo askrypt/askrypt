@@ -56,7 +56,7 @@ askrypt/
 │   │   │   └── translit.dart      # BGN/PCGN Russian/Ukrainian -> ASCII
 │   │   ├── session/          # in-memory unlocked-vault state (Riverpod)
 │   │   ├── screens/          # welcome, unlock, list, entry, questions, passgen
-│   │   └── platform/         # biometrics, clipboard, file picker, autofill bridge
+│   │   └── platform/         # biometrics, clipboard, file picker, recent-vault cache, autofill bridge
 │   ├── test/                 # Dart unit + parity (test-vector) tests
 │   ├── android/  ios/        # Flutter shells (+ autofill extensions later)
 │   └── integration_test/
@@ -206,7 +206,8 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
     unlock the user is offered enrollment; we store the *security answers* (not a
     derived key — every save rotates salts + master key) in Keystore/Keychain via
     `flutter_secure_storage`, keyed by `sha256(question0)`. On re-open the user
-    still picks the file (always fresh bytes, no stored vault copy, never stale);
+    picks the file (or taps the remembered-vault button — see the recent-vault
+    cache below);
     a fingerprint/Face ID reveals the answers, then a **knowledge check** asks
     one randomly chosen question (any of them — hidden question texts are
     decrypted with the stored first answer) before the open; the typed answer is
@@ -236,6 +237,17 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
     --debug` builds against the SDK at `~/Android/Sdk`. **Remaining**: on-device
     manual check (enroll → reopen → fingerprint unlock; clipboard auto-clear;
     blank recents thumbnail) on AVD `askrypt_api36`.
+
+- **Post-Phase-4 UX — remembered last vault.** The welcome screen offers an
+  "Open <name>" button for the most recently used vault. SAF content-URIs have
+  no persistable path, so `lib/platform/recent_vault_store.dart` (seam +
+  `path_provider`-backed impl, `recentVaultStoreProvider` /
+  `recentVaultProvider` in `lib/app.dart`) caches a copy of the **encrypted**
+  vault bytes + display name in the app-support dir — same at-rest security as
+  the original file, no decrypted data. The cache is refreshed (best-effort,
+  never blocking the real operation) on every successful unlock and every
+  save; if the file is edited elsewhere the cached copy is a stale snapshot
+  and the manual picker remains the fallback.
 
 - **Phase 5 — Autofill (largest native piece, last).** Android Autofill Service
   (Kotlin) + iOS AutoFill Credential Provider extension (Swift). These run in

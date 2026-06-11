@@ -77,6 +77,14 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
     final bytes = await notifier.toBytes();
     final saved = await io.saveVault(bytes, suggestedName: name);
     if (!mounted) return;
+    if (saved != null) {
+      // Refresh the welcome screen's "open last vault" cache with what we just
+      // wrote. Best-effort: a cache failure must not fail the save.
+      try {
+        await ref.read(recentVaultStoreProvider).remember(bytes, name);
+      } catch (_) {}
+      if (!mounted) return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(saved == null ? 'Save cancelled' : 'Vault saved')),
     );
