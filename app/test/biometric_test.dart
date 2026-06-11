@@ -159,7 +159,21 @@ void main() {
     expect(bio.store['First pet?'], ['Rex', 'Kazan']);
   });
 
-  testWidgets('stored credentials auto-unlock without typing', (tester) async {
+  // The inline knowledge check replaces the manual form with a single field
+  // for one randomly picked question; figure out which from the rendered
+  // label. Its "Enter all answers" fall-back button marks check mode.
+  String checkQuestion(List<String> questions) {
+    for (final q in questions) {
+      if (find.text(q).evaluate().isNotEmpty) return q;
+    }
+    fail('knowledge check shows none of the known questions');
+  }
+
+  bool checkShown() => find.text('Enter all answers').evaluate().isNotEmpty;
+
+  testWidgets('stored credentials unlock after one random answer',
+      (tester) async {
+    const answers = {'First pet?': 'Rex', 'Birth city?': 'Kazan'};
     final bytes = await makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
     final io = FakeVaultIo()
       ..toPick = PickedVault(bytes: bytes, name: 'vault.askrypt');
@@ -168,12 +182,68 @@ void main() {
     await pumpApp(tester, io: io, bio: bio);
 
     await tester.tap(find.text('Open vault'));
-    // Auto-triggered biometric unlock decrypts on a background isolate.
+    // The auto-triggered biometric reveal leads to the inline knowledge check
+    // (a hidden question first needs a derivation on a background isolate).
+    await pumpUntil(tester, checkShown);
+
+    final q = checkQuestion(answers.keys.toList());
+    await tester.enterText(find.byType(TextField), answers[q]!);
+    await tester.tap(find.text('Unlock'));
     await pumpUntil(tester, () => find.text('No entries').evaluate().isNotEmpty);
 
-    // Auto-triggered biometric unlock landed us on the entries screen with no
-    // typed answers.
     expect(find.text('No entries'), findsOneWidget);
+  });
+
+  testWidgets('wrong random answer shows an error and allows retry',
+      (tester) async {
+    const answers = {'First pet?': 'Rex', 'Birth city?': 'Kazan'};
+    final bytes = await makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
+    final io = FakeVaultIo()
+      ..toPick = PickedVault(bytes: bytes, name: 'vault.askrypt');
+    final bio = FakeBiometricStore()..seed('First pet?', ['Rex', 'Kazan']);
+
+    await pumpApp(tester, io: io, bio: bio);
+
+    await tester.tap(find.text('Open vault'));
+    await pumpUntil(tester, checkShown);
+
+    await tester.enterText(find.byType(TextField), 'nope');
+    await tester.tap(find.text('Unlock'));
+    await tester.pumpAndSettle();
+
+    // The check stays up with an inline error; retrying with the right answer
+    // unlocks.
+    expect(find.text('Incorrect answer.'), findsOneWidget);
+    expect(checkShown(), isTrue);
+    final q = checkQuestion(answers.keys.toList());
+    await tester.enterText(find.byType(TextField), answers[q]!);
+    await tester.tap(find.text('Unlock'));
+    await pumpUntil(tester, () => find.text('No entries').evaluate().isNotEmpty);
+
+    expect(find.text('No entries'), findsOneWidget);
+  });
+
+  testWidgets('random-answer check can fall back to manual entry',
+      (tester) async {
+    final bytes = await makeVault(['First pet?', 'Birth city?'], ['Rex', 'Kazan']);
+    final io = FakeVaultIo()
+      ..toPick = PickedVault(bytes: bytes, name: 'vault.askrypt');
+    final bio = FakeBiometricStore()..seed('First pet?', ['Rex', 'Kazan']);
+
+    await pumpApp(tester, io: io, bio: bio);
+
+    await tester.tap(find.text('Open vault'));
+    await pumpUntil(tester, checkShown);
+
+    await tester.tap(find.text('Enter all answers'));
+    await tester.pumpAndSettle();
+
+    // Back on the manual form, credential kept so biometrics can be retried.
+    expect(checkShown(), isFalse);
+    expect(find.text('Unlock with biometrics'), findsOneWidget);
+    expect(find.text('Next'), findsOneWidget);
+    expect(bio.store.containsKey('First pet?'), isTrue);
+    expect(bio.forgotten, 0);
   });
 
   testWidgets('stale stored credentials are forgotten and fall back to manual',
@@ -187,9 +257,16 @@ void main() {
     await pumpApp(tester, io: io, bio: bio);
 
     await tester.tap(find.text('Open vault'));
-    // The stale credential's answers are tried on a background isolate, fail,
-    // and the credential is forgotten.
-    await pumpUntil(tester, () => bio.forgotten == 1);
+    // Depending on the random pick, the stale answers fail before the check
+    // (the hidden question can't be decrypted with the stale first answer) or
+    // after it (the typed answer matches the stale stored one, but the open
+    // fails).
+    await pumpUntil(tester, () => bio.forgotten == 1 || checkShown());
+    if (bio.forgotten == 0) {
+      await tester.enterText(find.byType(TextField), 'Wrong');
+      await tester.tap(find.text('Unlock'));
+      await pumpUntil(tester, () => bio.forgotten == 1);
+    }
 
     // Stayed on the unlock screen, credential dropped, error shown.
     expect(bio.forgotten, 1);

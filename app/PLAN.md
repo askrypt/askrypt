@@ -207,7 +207,11 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
     derived key — every save rotates salts + master key) in Keystore/Keychain via
     `flutter_secure_storage`, keyed by `sha256(question0)`. On re-open the user
     still picks the file (always fresh bytes, no stored vault copy, never stale);
-    a fingerprint/Face ID reveals the answers and opens it. A stale credential
+    a fingerprint/Face ID reveals the answers, then a **knowledge check** asks
+    one randomly chosen question (any of them — hidden question texts are
+    decrypted with the stored first answer) before the open; the typed answer is
+    compared normalized against the stored one, with retry on a wrong answer and
+    an explicit "Enter all answers" fall-back to manual entry. A stale credential
     (questions re-keyed elsewhere) fails the open, is `forget()`-ten, and falls
     back to manual entry. Disable via the entries-screen overflow menu.
   - **Auto-clearing clipboard** (`secure_clipboard.dart`): copies route through a

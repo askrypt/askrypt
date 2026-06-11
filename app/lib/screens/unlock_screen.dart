@@ -8,12 +8,14 @@
 /// the full answer list to the session notifier to perform the real open.
 library;
 
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app.dart';
+import '../crypto/normalize.dart';
 import '../crypto/vault.dart';
 import '../session/unlocked_vault.dart';
 import '../session/vault_session.dart';
@@ -42,6 +44,14 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
 
   /// True once we know biometric answers are stored for this vault.
   bool _hasBiometric = false;
+
+  /// Biometric knowledge check, shown inline in place of the manual form:
+  /// the answers revealed from the store, the index of the randomly picked
+  /// question, and its text. [_checkQuestion] non-null means check mode.
+  List<String>? _revealed;
+  int _checkIndex = 0;
+  String? _checkQuestion;
+  final _checkAnswer = TextEditingController();
 
   /// Guards the one-shot auto-prompt so we don't re-trigger on rebuilds.
   bool _biometricTried = false;
@@ -75,6 +85,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   @override
   void dispose() {
     _answer0.dispose();
+    _checkAnswer.dispose();
     for (final c in _answers) {
       c.dispose();
     }
@@ -136,31 +147,93 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     _commit(vault);
   }
 
-  /// Biometric path: reveal stored answers, decrypt, and open. On a stale
-  /// credential (e.g. the questions were re-keyed elsewhere) forget it and fall
-  /// back to manual entry.
+  /// Biometric path: reveal stored answers, then switch the screen into the
+  /// inline knowledge check — one randomly chosen question — before the real
+  /// open in [_verifyAndOpen]. On a stale credential (e.g. the questions were
+  /// re-keyed elsewhere) forget it and fall back to manual entry.
   Future<void> _quickUnlock() async {
     if (_busy) return;
+    final file = _file!;
     final store = ref.read(biometricStoreProvider);
-    final answers = await store.reveal(_file!.question0);
+    final answers = await store.reveal(file.question0);
     if (answers == null || !mounted) return;
-    setState(() => _busy = true);
+
+    // Pick the question to ask. The hidden questions' texts live in the
+    // encrypted `qs` blob, so for index > 0 decrypt it with the stored first
+    // answer (one extra derivation behind the spinner).
+    final index = Random().nextInt(answers.length);
+    final String question;
+    if (index == 0) {
+      question = file.question0;
+    } else {
+      setState(() => _busy = true);
+      final QuestionsData qd;
+      try {
+        qd = await file.getQuestionsData(answers[0]);
+      } catch (_) {
+        await _forgetStale();
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _busy = false);
+      question = qd.questions[index - 1];
+    }
+
+    setState(() {
+      _error = null;
+      _revealed = answers;
+      _checkIndex = index;
+      _checkQuestion = question;
+      _checkAnswer.clear();
+    });
+  }
+
+  /// Inline knowledge check: compare the typed answer (normalized, like the
+  /// crypto layer would) against the stored one, then perform the real open.
+  Future<void> _verifyAndOpen() async {
+    final answers = _revealed;
+    final file = _file;
+    if (answers == null || file == null || _busy) return;
+    if (normalizeAnswer(_checkAnswer.text, file.translit) !=
+        normalizeAnswer(answers[_checkIndex], file.translit)) {
+      setState(() => _error = 'Incorrect answer.');
+      return;
+    }
+    setState(() {
+      _error = null;
+      _busy = true;
+    });
     final UnlockedVault vault;
     try {
       vault = await UnlockedVault.open(widget.bytes, answers);
     } catch (_) {
-      await store.forget(_file!.question0);
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _hasBiometric = false;
-        _error = 'Saved answers no longer open this vault — enter them manually.';
-      });
+      await _forgetStale();
       return;
     }
     if (!mounted) return;
     setState(() => _busy = false);
     _commit(vault);
+  }
+
+  /// Leave the knowledge check for the full manual form. The stored credential
+  /// is kept, so biometrics can still be retried from there.
+  void _enterAllAnswers() => setState(() {
+        _revealed = null;
+        _checkQuestion = null;
+        _error = null;
+      });
+
+  /// Drop a stale biometric credential and surface the manual-entry fallback.
+  Future<void> _forgetStale() async {
+    await ref.read(biometricStoreProvider).forget(_file!.question0);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _hasBiometric = false;
+      _revealed = null;
+      _checkQuestion = null;
+      _error = 'Saved answers no longer open this vault — enter them manually.';
+    });
   }
 
   /// Record the vault's identity (for the disable-biometric menu) and adopt the
@@ -184,7 +257,9 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
         title: const Text('Enable biometric unlock?'),
         content: const Text(
           'Unlock this vault with your fingerprint or face next time, instead '
-          'of typing your answers. Answers are stored in the device keystore.',
+          'of typing your answers. Answers are stored in the device keystore. '
+          'You\'ll still be asked one of your answers, chosen at random, each '
+          'time.',
         ),
         actions: [
           TextButton(
@@ -211,34 +286,47 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                if (_hasBiometric) ...[
-                  FilledButton.icon(
-                    onPressed: _busy ? null : _quickUnlock,
-                    icon: const Icon(Icons.fingerprint),
-                    label: const Text('Unlock with biometrics'),
-                  ),
-                  const SizedBox(height: 8),
-                  Text('or enter your answers',
+                if (_checkQuestion != null) ...[
+                  Text('Answer this question to finish unlocking',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall),
                   const SizedBox(height: 16),
-                ],
-                _QuestionField(
-                  question: file.question0,
-                  controller: _answer0,
-                  enabled: qd == null,
-                  onSubmitted: qd == null ? (_) => _revealQuestions() : null,
-                ),
-                if (qd != null) ...[
-                  for (var i = 0; i < qd.questions.length; i++)
-                    _QuestionField(
-                      question: qd.questions[i],
-                      controller: _answers[i],
-                      enabled: true,
-                      onSubmitted: i == qd.questions.length - 1
-                          ? (_) => _unlock()
-                          : null,
+                  _QuestionField(
+                    question: _checkQuestion!,
+                    controller: _checkAnswer,
+                    enabled: true,
+                    onSubmitted: (_) => _verifyAndOpen(),
+                  ),
+                ] else ...[
+                  if (_hasBiometric) ...[
+                    FilledButton.icon(
+                      onPressed: _busy ? null : _quickUnlock,
+                      icon: const Icon(Icons.fingerprint),
+                      label: const Text('Unlock with biometrics'),
                     ),
+                    const SizedBox(height: 8),
+                    Text('or enter your answers',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 16),
+                  ],
+                  _QuestionField(
+                    question: file.question0,
+                    controller: _answer0,
+                    enabled: qd == null,
+                    onSubmitted: qd == null ? (_) => _revealQuestions() : null,
+                  ),
+                  if (qd != null) ...[
+                    for (var i = 0; i < qd.questions.length; i++)
+                      _QuestionField(
+                        question: qd.questions[i],
+                        controller: _answers[i],
+                        enabled: true,
+                        onSubmitted: i == qd.questions.length - 1
+                            ? (_) => _unlock()
+                            : null,
+                      ),
+                  ],
                 ],
                 if (_error != null) ...[
                   const SizedBox(height: 8),
@@ -255,7 +343,18 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
                       style: Theme.of(context).textTheme.bodySmall),
                   const SizedBox(height: 16),
                 ],
-                if (qd == null)
+                if (_checkQuestion != null) ...[
+                  FilledButton.icon(
+                    onPressed: _busy ? null : _verifyAndOpen,
+                    icon: const Icon(Icons.lock_open),
+                    label: const Text('Unlock'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _busy ? null : _enterAllAnswers,
+                    child: const Text('Enter all answers'),
+                  ),
+                ] else if (qd == null)
                   FilledButton(
                     onPressed: _busy ? null : _revealQuestions,
                     child: const Text('Next'),
