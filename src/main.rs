@@ -981,22 +981,27 @@ impl AskryptApp {
             }
             Message::PassGenLengthChanged(value) => {
                 self.passgen_config.set_length(value as usize);
+                self.generate_new_password();
                 Task::none()
             }
             Message::PassGenToggleUppercase(value) => {
                 self.passgen_config.use_uppercase = value;
+                self.generate_new_password();
                 Task::none()
             }
             Message::PassGenToggleLowercase(value) => {
                 self.passgen_config.use_lowercase = value;
+                self.generate_new_password();
                 Task::none()
             }
             Message::PassGenToggleNumbers(value) => {
                 self.passgen_config.use_numbers = value;
+                self.generate_new_password();
                 Task::none()
             }
             Message::PassGenToggleSymbols(value) => {
                 self.passgen_config.use_symbols = value;
+                self.generate_new_password();
                 Task::none()
             }
             Message::PassGenGenerate => {
@@ -1688,6 +1693,7 @@ impl AskryptApp {
             }
             Err(e) => {
                 self.error_message = Some(e);
+                self.generated_password = String::new();
             }
         }
     }
