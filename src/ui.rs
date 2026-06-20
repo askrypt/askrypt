@@ -1,6 +1,10 @@
-use iced::Theme;
+use crate::icon;
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{Button, Container, Row, Text, button, container, row, text, tooltip};
+use iced::widget::{
+    Button, Column, Container, Row, Scrollable, Text, button, column, container, row, scrollable,
+    text, text_input, tooltip,
+};
+use iced::{Element, Font, Length, Theme, alignment};
 
 pub fn content<'a, T: 'a>(icon: Option<Text<'a>>, text: Text<'a>) -> Container<'a, T> {
     match icon {
@@ -86,6 +90,109 @@ pub fn spinner_row<'a, T: 'a>(frame: usize, label: &'a str) -> Row<'a, T> {
     row![text(glyph).size(20), text(label.to_owned()).size(16)]
         .spacing(10)
         .align_y(Vertical::Center)
+}
+
+/// A centered large heading column (the title shown at the top of each screen).
+pub fn title_h1<'a, M: 'a>(title: &str) -> Column<'a, M> {
+    column![text(title.to_owned()).size(40)].spacing(10)
+}
+
+/// Wrap a row of controls with the standard spacing/padding used by the
+/// fixed top-control sections of the entry/question screens.
+pub fn controls_block<'a, M: 'a>(row: Row<'a, M>) -> Element<'a, M> {
+    row.spacing(10).padding(10).width(Length::Fill).into()
+}
+
+/// A centered, scrollable caption block used for empty-state messages.
+pub fn caption_block<'a, M: 'a>(caption: &str) -> Scrollable<'a, M> {
+    scrollable(
+        container(
+            text(caption.to_owned())
+                .width(Length::Fill)
+                .size(15)
+                .font(Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Default::default()
+                }),
+        )
+        .padding(20)
+        .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+}
+
+/// Wrap content in a full-width, rounded, bordered container.
+pub fn container_with_border<'a, M: 'a>(item: Column<'a, M>) -> Container<'a, M> {
+    container(item)
+        .padding(10)
+        .width(Length::Fill)
+        .style(container_border_r5)
+}
+
+/// Creates a security input field with a toggle button to show/hide the input,
+/// plus an optional "generate password" button.
+#[allow(clippy::too_many_arguments)]
+pub fn security_input_with_toggle<'a, M: Clone + 'static>(
+    password: &str,
+    show_password: bool,
+    on_input_msg: Option<impl Fn(String) -> M + 'a>,
+    on_submit_msg: Option<M>,
+    toggle_msg: M,
+    input_placeholder: &'a str,
+    hide_tooltip: &'static str,
+    show_tooltip: &'static str,
+    on_generate_msg: Option<M>,
+) -> Row<'a, M> {
+    let button_icon = if show_password {
+        icon::eye_slash_icon()
+    } else {
+        icon::eye_icon()
+    };
+    let toggle_button = tooltip(
+        button(button_icon)
+            .padding(11)
+            .height(36)
+            .style(button::subtle)
+            .on_press(toggle_msg),
+        if show_password {
+            hide_tooltip
+        } else {
+            show_tooltip
+        },
+        tooltip::Position::Top,
+    );
+
+    let mut children: Vec<Element<'a, M>> = vec![
+        text_input(input_placeholder, password)
+            .on_input_maybe(on_input_msg)
+            .on_submit_maybe(on_submit_msg)
+            .padding(10)
+            .width(Length::Fill)
+            .secure(!show_password)
+            .size(12)
+            .into(),
+        toggle_button.into(),
+    ];
+
+    if let Some(generate_msg) = on_generate_msg {
+        children.push(
+            tooltip(
+                button(icon::magic_icon())
+                    .padding(11)
+                    .height(36)
+                    .style(button::subtle)
+                    .on_press(generate_msg),
+                "Generate password",
+                tooltip::Position::Top,
+            )
+            .into(),
+        );
+    }
+
+    Row::with_children(children)
+        .spacing(5)
+        .align_y(alignment::Vertical::Center)
 }
 
 fn disabled(style: button::Style) -> button::Style {
