@@ -36,7 +36,9 @@ re-encrypting everything:
 - **All answers together** unlock the master key.
 - The **master key** encrypts the actual secrets (AES-256-CBC).
 
-See [`SPEC.md`](SPEC.md) for the complete vault format and algorithm.
+See [`SPEC.md`](SPEC.md) for the complete vault format and algorithm. For a hands-on,
+auditable walkthrough, [`askrypt-bash.md`](askrypt-bash.md) decrypts a vault step by step
+using only standard Linux tools (see the read-only [`askrypt-bash.sh`](askrypt-bash.sh)).
 
 ## Features
 
