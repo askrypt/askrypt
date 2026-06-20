@@ -33,3 +33,7 @@ pub fn x_lg_icon() -> Text<'static> {
 pub fn box_arrow_up_right_icon() -> Text<'static> {
     bootstrap_icon('\u{F1C5}')
 }
+
+pub fn magic_icon() -> Text<'static> {
+    bootstrap_icon('\u{F675}')
+}

@@ -113,6 +113,8 @@ pub struct AskryptApp {
     // Password generator
     passgen_config: PasswordGenConfig,
     generated_password: String,
+    // Whether the generator was opened to fill an entry's password field
+    passgen_for_entry: bool,
     // Smart Lock state - stores encrypted answers in RAM
     smart_lock_data: Option<SmartLockData>,
     // Smart lock answer input
@@ -177,6 +179,7 @@ pub enum Message {
     EntryHiddenToggled(bool),
     // Password generator messages
     OpenPasswordGenerator,
+    OpenPasswordGeneratorForEntry,
     PassGenLengthChanged(f32),
     PassGenToggleUppercase(bool),
     PassGenToggleLowercase(bool),
@@ -184,6 +187,7 @@ pub enum Message {
     PassGenToggleSymbols(bool),
     PassGenGenerate,
     PassGenCopy,
+    PassGenCopyAndUse,
     PassGenCancel,
     // Smart Lock messages
     ActivateSmartLock,
@@ -276,6 +280,7 @@ impl AskryptApp {
             settings,
             passgen_config: PasswordGenConfig::default(),
             generated_password: String::new(),
+            passgen_for_entry: false,
             smart_lock_data: None,
             smart_lock_answer: String::new(),
             show_smart_lock_answer: false,
@@ -965,9 +970,13 @@ impl AskryptApp {
                 Task::none()
             }
             Message::OpenPasswordGenerator => {
-                self.passgen_config = PasswordGenConfig::default();
-                self.generate_new_password();
-                self.screen = Screen::PasswordGenerator;
+                self.passgen_for_entry = false;
+                self.open_password_generator();
+                Task::none()
+            }
+            Message::OpenPasswordGeneratorForEntry => {
+                self.passgen_for_entry = true;
+                self.open_password_generator();
                 Task::none()
             }
             Message::PassGenLengthChanged(value) => {
@@ -1003,8 +1012,30 @@ impl AskryptApp {
                     Task::none()
                 }
             }
+            Message::PassGenCopyAndUse => {
+                if self.generated_password.is_empty() {
+                    self.error_message = Some("No password to copy".to_string());
+                    Task::none()
+                } else if let Some(entry) = &mut self.editing_entry {
+                    entry.secret = self.generated_password.clone();
+                    self.success_message =
+                        Some("Generated password applied and copied to clipboard".to_string());
+                    self.screen = Screen::EditEntry;
+                    let task = clipboard::write(self.generated_password.clone());
+                    self.generated_password = String::new();
+                    task
+                } else {
+                    self.screen = Screen::ShowEntries;
+                    self.generated_password = String::new();
+                    Task::none()
+                }
+            }
             Message::PassGenCancel => {
-                self.screen = Screen::ShowEntries;
+                self.screen = if self.passgen_for_entry {
+                    Screen::EditEntry
+                } else {
+                    Screen::ShowEntries
+                };
                 self.generated_password = String::new();
                 Task::none()
             }
@@ -1249,6 +1280,7 @@ impl AskryptApp {
                     "Type the answer",
                     "Hide Answer",
                     "Show Answer",
+                    None,
                 );
 
                 let question_item = column![
@@ -1300,6 +1332,7 @@ impl AskryptApp {
             "Type the first answer...",
             "Hide Answer",
             "Show Answer",
+            None,
         )
         .width(400);
 
@@ -1336,6 +1369,7 @@ impl AskryptApp {
                 "Type the first answer...",
                 "Hide Answer",
                 "Show Answer",
+                None,
             )
             .width(400);
 
@@ -1357,6 +1391,7 @@ impl AskryptApp {
                     "Type the answer...",
                     "Hide Answer",
                     "Show Answer",
+                    None,
                 )
                 .width(400);
 
@@ -1505,6 +1540,7 @@ impl AskryptApp {
                         "Password or secret value",
                         "Hide Password",
                         "Show Password",
+                        Some(Message::OpenPasswordGeneratorForEntry),
                     )
                     .width(400),
                 )
@@ -1620,9 +1656,14 @@ impl AskryptApp {
         }
 
         // Buttons
+        let copy_button = if self.passgen_for_entry {
+            padded_button("Copy and use").on_press(Message::PassGenCopyAndUse)
+        } else {
+            padded_button("Copy").on_press(Message::PassGenCopy)
+        };
         let button_row = row![
             padded_button("Generate").on_press(Message::PassGenGenerate),
-            padded_button("Copy").on_press(Message::PassGenCopy),
+            copy_button,
             padded_button("Cancel").on_press(Message::PassGenCancel),
         ]
         .spacing(10);
@@ -1631,6 +1672,12 @@ impl AskryptApp {
         column = self.show_messages_in_column(column);
 
         column
+    }
+
+    fn open_password_generator(&mut self) {
+        self.passgen_config = PasswordGenConfig::default();
+        self.generate_new_password();
+        self.screen = Screen::PasswordGenerator;
     }
 
     fn generate_new_password(&mut self) {
@@ -1666,6 +1713,7 @@ impl AskryptApp {
             "Type the answer...",
             "Hide Answer",
             "Show Answer",
+            None,
         )
         .width(400);
 
@@ -1707,6 +1755,7 @@ impl AskryptApp {
         input_placeholder: &'a str,
         hide_tooltip: &'static str,
         show_tooltip: &'static str,
+        on_generate_msg: Option<Message>,
     ) -> Row<'a, Message> {
         let button_icon = if show_password {
             icon::eye_slash_icon()
@@ -1727,18 +1776,36 @@ impl AskryptApp {
             tooltip::Position::Top,
         );
 
-        row![
+        let mut children: Vec<Element<'a, Message>> = vec![
             text_input(input_placeholder, password)
                 .on_input_maybe(on_input_msg)
                 .on_submit_maybe(on_submit_msg)
                 .padding(10)
                 .width(Length::Fill)
                 .secure(!show_password)
-                .size(12),
-            toggle_button,
-        ]
-        .spacing(5)
-        .align_y(alignment::Vertical::Center)
+                .size(12)
+                .into(),
+            toggle_button.into(),
+        ];
+
+        if let Some(generate_msg) = on_generate_msg {
+            children.push(
+                tooltip(
+                    button(icon::magic_icon())
+                        .padding(11)
+                        .height(36)
+                        .style(button::subtle)
+                        .on_press(generate_msg),
+                    "Generate password",
+                    tooltip::Position::Top,
+                )
+                .into(),
+            );
+        }
+
+        Row::with_children(children)
+            .spacing(5)
+            .align_y(alignment::Vertical::Center)
     }
 
     fn title_h1(title: &str) -> Column<'_, Message> {
