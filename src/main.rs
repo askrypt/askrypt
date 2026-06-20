@@ -57,6 +57,7 @@ pub fn main() {
         let mut settings = window::Settings {
             icon: Some(load_icon().expect("Failed to load icon")),
             exit_on_close_request: false,
+            size: iced::Size::new(1100.0, 850.0),
             ..Default::default()
         };
         #[cfg(target_os = "linux")]
@@ -196,6 +197,7 @@ pub enum Message {
     CheckTrayEvents,
     TrayQuit,
     TrayOpen,
+    ExitApp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1126,7 +1128,8 @@ impl AskryptApp {
                 // Hide to tray instead of closing
                 window::oldest().and_then(|id| window::minimize(id, true))
             }
-            Message::TrayQuit => {
+            Message::TrayQuit => self.update(Message::ExitApp),
+            Message::ExitApp => {
                 if self.ask_user_about_changes() {
                     // Save settings before exiting
                     // TODO: handle potential error
@@ -1198,6 +1201,7 @@ impl AskryptApp {
             .push("Your secrets are protected by security questions only you know")
             .push(padded_button("Create New Vault").on_press(Message::CreateNewVault))
             .push(padded_button("Open Existing Vault").on_press(Message::OpenVault))
+            .push(padded_button("Exit").on_press(Message::ExitApp))
             .align_x(alignment::Horizontal::Center);
 
         self.show_messages_in_column(column)
@@ -1306,6 +1310,7 @@ impl AskryptApp {
         let controls = row![
             padded_button("Unlock").on_press(Message::Answer0Finished),
             padded_button("Main menu").on_press(Message::BackToWelcome),
+            padded_button("Exit").on_press(Message::ExitApp),
         ]
         .spacing(10);
         column = column.push(controls);
@@ -1361,6 +1366,7 @@ impl AskryptApp {
             let controls = row![
                 padded_button("Unlock").on_press(Message::UnlockVault),
                 padded_button("Cancel").on_press(Message::BackToWelcome),
+                padded_button("Exit").on_press(Message::ExitApp),
             ]
             .spacing(10);
             column = column.push(controls);
@@ -1400,6 +1406,7 @@ impl AskryptApp {
             padded_button("Save As").on_press(Message::SaveVaultAs),
             padded_button("Smart Lock").on_press(Message::ActivateSmartLock),
             padded_button("Lock Vault").on_press(Message::LockVault),
+            padded_button("Exit").on_press(Message::ExitApp),
             show_hidden_checkbox,
         ]);
         let top_row2 = Self::controls_block(row![filter_input,]);
@@ -1680,6 +1687,7 @@ impl AskryptApp {
         let controls = row![
             padded_button("Unlock").on_press(Message::SmartUnlockVault),
             padded_button("Full Lock").on_press(Message::CancelSmartLock),
+            padded_button("Exit").on_press(Message::ExitApp),
         ]
         .spacing(10);
         column = column.push(controls);
