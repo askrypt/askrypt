@@ -75,7 +75,7 @@ pub use types::*;
 use aes::Aes256;
 use base64::{Engine as _, engine::general_purpose};
 use cbc::{Decryptor, Encryptor};
-use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -493,7 +493,7 @@ pub fn encrypt_with_aes(
     buffer[..pos].copy_from_slice(message);
 
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, pos)
+        .encrypt_padded::<Pkcs7>(&mut buffer, pos)
         .map_err(|_| "Encryption padding error")?;
 
     Ok(ciphertext.to_vec())
@@ -535,7 +535,7 @@ pub fn decrypt_with_aes(
     // returned copy is the caller's responsibility to wipe.
     let mut buffer = Zeroizing::new(ciphertext.to_vec());
     let plaintext = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|_| "Decryption padding error")?;
 
     Ok(plaintext.to_vec())
@@ -622,7 +622,13 @@ pub fn sha256(data: &str, salt: &str) -> String {
     let data = data.to_string() + salt;
     let mut hasher = Sha256::new();
     hasher.update(data.as_bytes());
-    format!("{:x}", hasher.finalize())
+    // digest 0.11 / sha2 0.11 returns an `Array` that no longer implements
+    // `LowerHex`, so build the lowercase hex string byte by byte.
+    use std::fmt::Write;
+    hasher.finalize().iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 /// Encrypt data to base64-encoded string
@@ -680,7 +686,7 @@ pub fn decrypt_from_base64<T: for<'de> Deserialize<'de>>(
 ///
 /// A vector of random bytes
 pub fn generate_salt(length: usize) -> Vec<u8> {
-    use rand::RngCore;
+    use rand::Rng;
     let mut salt = vec![0u8; length];
     rand::rng().fill_bytes(&mut salt);
     salt

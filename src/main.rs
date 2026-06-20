@@ -29,7 +29,7 @@ use iced::{Color, time, window};
 use iced::{
     Element, Font, Function, Length, Subscription, Task, Theme, alignment, clipboard, keyboard,
 };
-use rand::Rng;
+use rand::RngExt;
 use rfd::MessageDialogResult;
 use std::cmp::PartialEq;
 use std::path::PathBuf;
