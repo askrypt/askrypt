@@ -226,6 +226,7 @@ dependencies = [
  "serde_json",
  "tray-item",
  "winresource",
+ "zeroize",
 ]
 
 [[package]]
@@ -242,6 +243,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "zeroize",
  "zip",
 ]
 

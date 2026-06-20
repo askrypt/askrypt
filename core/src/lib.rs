@@ -79,12 +79,32 @@ use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Write;
+use zeroize::Zeroizing;
 use zip::write::SimpleFileOptions;
 
 type Aes256CbcEnc = Encryptor<Aes256>;
 type Aes256CbcDec = Decryptor<Aes256>;
 
 const DEFAULT_KDF: &str = "pbkdf2";
+
+/// Derive a 32-byte key via PBKDF2 into a self-zeroizing array.
+///
+/// Both the intermediate PBKDF2 buffer and the returned array wipe themselves on
+/// drop, so no plaintext copy of the derived key lingers in freed memory (unlike
+/// `calc_pbkdf2(..)?.try_into()`, which frees the `Vec` without wiping it).
+fn derive_key(
+    secret: &str,
+    salt: &[u8],
+    iterations: u32,
+) -> Result<Zeroizing<[u8; 32]>, Box<dyn std::error::Error>> {
+    let key = Zeroizing::new(calc_pbkdf2(secret, salt, iterations)?);
+    if key.len() != 32 {
+        return Err("Invalid key length".into());
+    }
+    let mut key_array = Zeroizing::new([0u8; 32]);
+    key_array.copy_from_slice(&key);
+    Ok(key_array)
+}
 
 impl AskryptFile {
     /// Create a new AskryptFile from questions, answers, and secret data
@@ -152,24 +172,26 @@ impl AskryptFile {
             }
         }
 
-        let answers: Vec<String> = answers
-            .into_iter()
-            .map(|a| normalize_answer(&a, translit))
-            .collect();
+        let answers: Zeroizing<Vec<String>> = Zeroizing::new(
+            answers
+                .into_iter()
+                .map(|a| normalize_answer(&a, translit))
+                .collect(),
+        );
 
         let iterations = iterations.unwrap_or(600000);
 
-        // Step 1: Generate random values
+        // Step 1: Generate random values (the master key is secret)
         let salt0 = generate_salt(16);
         let salt1 = generate_salt(16);
-        let master_key_bytes = generate_salt(32);
+        let master_key_bytes = Zeroizing::new(generate_salt(32));
         let iv_bytes = generate_salt(16);
 
         // Step 2: Derive first-key from first answer and salt0
         let salt0_b64 = encode_base64(&salt0);
         // first answer is hashed with salt0 before PBKDF2
-        let first_key = calc_pbkdf2(&sha256(&answers[0], &salt0_b64), &salt0, iterations)?;
-        let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
+        let first_hash = Zeroizing::new(sha256(&answers[0], &salt0_b64));
+        let first_key_array = derive_key(&first_hash, &salt0, iterations)?;
         let salt0_iv: [u8; 16] = salt0.clone().try_into().map_err(|_| "Invalid IV length")?;
 
         // Step 3: Encrypt questions data (all questions except the first) using first-key and salt0 as IV
@@ -181,10 +203,11 @@ impl AskryptFile {
         let qs = encrypt_to_base64(&questions_data, &first_key_array, &salt0_iv)?;
 
         // Step 4: Derive second-key from combined remaining answers and salt1
-        let combined_answers: String = answers.iter().skip(1).cloned().collect();
+        let combined_answers: Zeroizing<String> =
+            Zeroizing::new(answers.iter().skip(1).cloned().collect());
         // combined_answers is hashed with salt0 before PBKDF2
-        let second_key = calc_pbkdf2(&sha256(&combined_answers, &salt0_b64), &salt1, iterations)?;
-        let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
+        let second_hash = Zeroizing::new(sha256(&combined_answers, &salt0_b64));
+        let second_key_array = derive_key(&second_hash, &salt1, iterations)?;
         let salt1_iv: [u8; 16] = salt1.clone().try_into().map_err(|_| "Invalid IV length")?;
 
         // Step 5: Encrypt master key and IV using second-key and salt1 as IV
@@ -195,9 +218,11 @@ impl AskryptFile {
         let master = encrypt_to_base64(&master_data, &second_key_array, &salt1_iv)?;
 
         // Step 6: Encrypt secret data using master key and IV
-        let master_key_array: [u8; 32] = master_key_bytes
-            .try_into()
-            .map_err(|_| "Invalid master key length")?;
+        let mut master_key_array = Zeroizing::new([0u8; 32]);
+        if master_key_bytes.len() != 32 {
+            return Err("Invalid master key length".into());
+        }
+        master_key_array.copy_from_slice(&master_key_bytes);
         let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
         let data = encrypt_to_base64(&secret_data, &master_key_array, &iv_array)?;
 
@@ -280,30 +305,30 @@ impl AskryptFile {
         let salt1 = decode_base64(&questions_data.salt)?;
         let salt1_iv: [u8; 16] = salt1.try_into().map_err(|_| "Invalid salt1 length")?;
 
-        let answers: Vec<String> = answers
-            .into_iter()
-            .map(|a| normalize_answer(&a, self.params.translit))
-            .collect();
+        let answers: Zeroizing<Vec<String>> = Zeroizing::new(
+            answers
+                .into_iter()
+                .map(|a| normalize_answer(&a, self.params.translit))
+                .collect(),
+        );
         // Derive second-key from combined remaining answers and salt1
-        let combined_answers: String = answers.iter().cloned().collect();
+        let combined_answers: Zeroizing<String> = Zeroizing::new(answers.iter().cloned().collect());
         // combined_answers is hashed with salt0 before PBKDF2
-        let second_key = calc_pbkdf2(
-            &sha256(&combined_answers, &self.params.salt),
-            &salt1_iv,
-            self.params.iterations,
-        )?;
-        let second_key_array: [u8; 32] = second_key.try_into().map_err(|_| "Invalid key length")?;
+        let second_hash = Zeroizing::new(sha256(&combined_answers, &self.params.salt));
+        let second_key_array = derive_key(&second_hash, &salt1_iv, self.params.iterations)?;
 
         // Decrypt master key and IV using second-key and salt1
         let master_data: MasterData =
             decrypt_from_base64(&self.master, &second_key_array, &salt1_iv)?;
 
         // Decode master key and IV
-        let master_key_bytes = decode_base64(&master_data.master_key)?;
+        let master_key_bytes = Zeroizing::new(decode_base64(&master_data.master_key)?);
         let iv_bytes = decode_base64(&master_data.iv)?;
-        let master_key_array: [u8; 32] = master_key_bytes
-            .try_into()
-            .map_err(|_| "Invalid master key length")?;
+        let mut master_key_array = Zeroizing::new([0u8; 32]);
+        if master_key_bytes.len() != 32 {
+            return Err("Invalid master key length".into());
+        }
+        master_key_array.copy_from_slice(&master_key_bytes);
         let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
 
         // Decrypt secret data using master key and IV
@@ -331,13 +356,10 @@ impl AskryptFile {
         let salt0_iv: [u8; 16] = salt0.try_into().map_err(|_| "Invalid salt0 length")?;
 
         // Hash first answer with salt0
-        let first_answer = sha256(
-            &normalize_answer(&first_answer, self.params.translit),
-            &self.params.salt,
-        );
+        let normalized = Zeroizing::new(normalize_answer(&first_answer, self.params.translit));
+        let first_answer = Zeroizing::new(sha256(&normalized, &self.params.salt));
         // Derive first-key from first answer and salt0
-        let first_key = calc_pbkdf2(&first_answer, &salt0_iv, self.params.iterations)?;
-        let first_key_array: [u8; 32] = first_key.try_into().map_err(|_| "Invalid key length")?;
+        let first_key_array = derive_key(&first_answer, &salt0_iv, self.params.iterations)?;
 
         // Decrypt questions data
         let questions_data: QuestionsData =
@@ -464,9 +486,10 @@ pub fn encrypt_with_aes(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let cipher = Aes256CbcEnc::new(key.into(), iv.into());
 
-    // Calculate buffer size with padding
+    // Calculate buffer size with padding. The buffer holds a copy of the
+    // plaintext, so wipe it on drop.
     let pos = message.len();
-    let mut buffer = vec![0u8; pos + 16]; // Add extra block for padding
+    let mut buffer = Zeroizing::new(vec![0u8; pos + 16]); // Add extra block for padding
     buffer[..pos].copy_from_slice(message);
 
     let ciphertext = cipher
@@ -508,7 +531,9 @@ pub fn decrypt_with_aes(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let cipher = Aes256CbcDec::new(key.into(), iv.into());
 
-    let mut buffer = ciphertext.to_vec();
+    // After decryption `buffer` holds the plaintext, so wipe it on drop. The
+    // returned copy is the caller's responsibility to wipe.
+    let mut buffer = Zeroizing::new(ciphertext.to_vec());
     let plaintext = cipher
         .decrypt_padded_mut::<Pkcs7>(&mut buffer)
         .map_err(|_| "Decryption padding error")?;
@@ -616,7 +641,8 @@ pub fn encrypt_to_base64<T: Serialize>(
     key: &[u8; 32],
     iv: &[u8; 16],
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let json = serde_json::to_string(data)?;
+    // `json` is the serialized plaintext, so wipe it on drop.
+    let json = Zeroizing::new(serde_json::to_string(data)?);
     let encrypted = encrypt_with_aes(json.as_bytes(), key, iv)?;
     Ok(general_purpose::STANDARD.encode(&encrypted))
 }
@@ -639,7 +665,8 @@ pub fn decrypt_from_base64<T: for<'de> Deserialize<'de>>(
 ) -> Result<T, Box<dyn std::error::Error>> {
     let encrypted = general_purpose::STANDARD.decode(base64_data)?;
     let decrypted = decrypt_with_aes(&encrypted, key, iv)?;
-    let json = String::from_utf8(decrypted)?;
+    // `from_utf8` reuses the decrypted buffer (no copy); wipe the plaintext on drop.
+    let json = Zeroizing::new(String::from_utf8(decrypted)?);
     Ok(serde_json::from_str(&json)?)
 }
 
@@ -1290,7 +1317,9 @@ mod tests {
 
         // Decryption still works on the buffer-loaded file
         let questions_data = loaded.get_questions_data(answers[0].clone()).unwrap();
-        let decrypted = loaded.decrypt(&questions_data, answers[1..].into()).unwrap();
+        let decrypted = loaded
+            .decrypt(&questions_data, answers[1..].into())
+            .unwrap();
         assert_eq!(decrypted, data);
     }
 

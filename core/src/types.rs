@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Represents a user's secret entry (password, note, etc.)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `ZeroizeOnDrop` wipes the secret-bearing fields from memory when an entry is
+/// dropped instead of leaving them in freed allocations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct SecretEntry {
     pub name: String,
     pub user_name: String,
@@ -32,7 +36,7 @@ pub struct Params {
 }
 
 /// Represents the encrypted questions and second-level KDF parameters
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct QuestionsData {
     pub questions: Vec<String>,
     // sal1 - used to derive a second_key
@@ -40,7 +44,7 @@ pub struct QuestionsData {
 }
 
 /// Represents the encrypted master key and IV
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct MasterData {
     #[serde(rename = "masterKey")]
     pub master_key: String,

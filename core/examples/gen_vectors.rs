@@ -80,9 +80,7 @@ fn main() {
         ("пароль", "YmFzZTY0c2FsdA=="),
     ]
     .iter()
-    .map(|(data, salt)| {
-        json!({ "data": data, "salt": salt, "expected_hex": sha256(data, salt) })
-    })
+    .map(|(data, salt)| json!({ "data": data, "salt": salt, "expected_hex": sha256(data, salt) }))
     .collect();
 
     // --- pbkdf2-hmac-sha256 (secret is an ASCII string; salt is raw bytes) ---
@@ -174,7 +172,10 @@ fn main() {
         "vault": vault,
     });
 
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../app/test/fixtures/vectors.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../app/test/fixtures/vectors.json"
+    );
     std::fs::write(path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
     println!("wrote {path}");
 }

@@ -5,13 +5,13 @@ mod settings;
 mod tray;
 mod ui;
 
-use askrypt::passgen::{PasswordGenConfig, generate_password};
 use crate::settings::AppSettings;
 use crate::tray::{AppTray, TrayEvent};
 use crate::ui::{
     button_link, container_border_r5, control_button, control_button_icon, padded_button,
     text_button_icon,
 };
+use askrypt::passgen::{PasswordGenConfig, generate_password};
 use askrypt::{
     AskryptFile, QuestionsData, SecretEntry, calc_pbkdf2, decrypt_with_aes, encode_base64,
     encrypt_with_aes, generate_salt, normalize_answer, sha256,
@@ -34,6 +34,8 @@ use rfd::MessageDialogResult;
 use std::cmp::PartialEq;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 pub fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -439,9 +441,9 @@ impl AskryptApp {
                     self.file = None;
                     self.questions_data = None;
                     self.question0.clear();
-                    self.answer0.clear();
-                    self.answers.clear();
-                    self.entries.clear();
+                    self.answer0.zeroize();
+                    self.answers.zeroize();
+                    self.entries.zeroize();
                     self.edited_entry_index = None;
                     self.editing_entry = None;
                     self.show_answer0 = false;
@@ -837,7 +839,7 @@ impl AskryptApp {
                     }
                 };
                 self.editing_questions.clear();
-                self.editing_answers.clear();
+                self.editing_answers.zeroize();
                 self.is_modified = true;
                 self.shown_password_index = None;
                 self.screen = Screen::ShowEntries;
@@ -852,7 +854,7 @@ impl AskryptApp {
             }
             Message::BackFromQuestionEditor => {
                 self.editing_questions.clear();
-                self.editing_answers.clear();
+                self.editing_answers.zeroize();
                 self.shown_question_answer_index = None;
                 if self.questions_data.is_some() {
                     self.shown_password_index = None;
@@ -879,9 +881,9 @@ impl AskryptApp {
             }
             Message::LockVault => {
                 if self.ask_user_about_changes() {
-                    self.answer0.clear();
-                    self.answers.clear();
-                    self.entries.clear();
+                    self.answer0.zeroize();
+                    self.answers.zeroize();
+                    self.entries.zeroize();
                     self.unlocked = false;
                     self.questions_data = None;
                     self.screen = Screen::FirstQuestion;
@@ -1009,13 +1011,13 @@ impl AskryptApp {
                 match self.create_smart_lock_data() {
                     Ok(smart_lock_data) => {
                         self.smart_lock_data = Some(smart_lock_data);
-                        // Clear sensitive data from memory
-                        self.answer0.clear();
-                        self.answers.clear();
-                        self.entries.clear();
+                        // Wipe sensitive data from memory
+                        self.answer0.zeroize();
+                        self.answers.zeroize();
+                        self.entries.zeroize();
                         self.unlocked = false;
                         self.questions_data = None;
-                        self.smart_lock_answer.clear();
+                        self.smart_lock_answer.zeroize();
                         self.show_smart_lock_answer = false;
                         self.screen = Screen::SmartLocked;
                         self.status_message = Some("Vault is now Smart Locked".into());
@@ -1060,7 +1062,7 @@ impl AskryptApp {
                                                 self.last_user_activity = Some(Instant::now());
                                                 self.shown_password_index = None;
                                                 self.screen = Screen::ShowEntries;
-                                                self.smart_lock_answer.clear();
+                                                self.smart_lock_answer.zeroize();
                                                 // Update last activity time
                                                 if let Some(data) = self.smart_lock_data.as_mut() {
                                                     data.last_activity = Instant::now();
@@ -1095,11 +1097,11 @@ impl AskryptApp {
             Message::CancelSmartLock => {
                 // Cancel smart lock and go back to full lock (first question)
                 self.smart_lock_data = None;
-                self.smart_lock_answer.clear();
+                self.smart_lock_answer.zeroize();
                 self.show_smart_lock_answer = false;
-                self.answer0.clear();
-                self.answers.clear();
-                self.entries.clear();
+                self.answer0.zeroize();
+                self.answers.zeroize();
+                self.entries.zeroize();
                 self.unlocked = false;
                 self.questions_data = None;
                 self.screen = Screen::FirstQuestion;
@@ -1993,11 +1995,12 @@ impl AskryptApp {
         let mut rng = rand::rng();
         // index 1 corresponds to answers[0], index 2 to answers[1], etc.
         let key_answer_index = rng.random_range(1..=self.answers.len());
-        let key_answer = self
-            .answers
-            .get(key_answer_index - 1)
-            .cloned()
-            .unwrap_or_default();
+        let key_answer = Zeroizing::new(
+            self.answers
+                .get(key_answer_index - 1)
+                .cloned()
+                .unwrap_or_default(),
+        );
 
         if key_answer.is_empty() {
             return Err("Selected answer is empty".into());
@@ -2018,11 +2021,17 @@ impl AskryptApp {
 
         // Derive encryption key from the selected answer using PBKDF2
         let translit = self.file.as_ref().is_some_and(|f| f.params.translit);
-        let normalized_answer = normalize_answer(&key_answer, translit);
+        let normalized_answer = Zeroizing::new(normalize_answer(&key_answer, translit));
         let salt_b64 = encode_base64(&salt);
-        let hashed_answer = sha256(&normalized_answer, &salt_b64);
-        let key = calc_pbkdf2(&hashed_answer, &salt, SMART_LOCK_ITERATIONS)?;
-        let key_array: [u8; 32] = key.try_into().map_err(|_| "Invalid key length")?;
+        let hashed_answer = Zeroizing::new(sha256(&normalized_answer, &salt_b64));
+        // Derive the key into a self-zeroizing array (a plain `try_into` would
+        // free the PBKDF2 `Vec` without wiping it).
+        let key = Zeroizing::new(calc_pbkdf2(&hashed_answer, &salt, SMART_LOCK_ITERATIONS)?);
+        if key.len() != 32 {
+            return Err("Invalid key length".into());
+        }
+        let mut key_array = Zeroizing::new([0u8; 32]);
+        key_array.copy_from_slice(&key);
         let iv_array: [u8; 16] = iv.clone().try_into().map_err(|_| "Invalid IV length")?;
 
         // Serialize answer0 and encrypt
@@ -2030,7 +2039,7 @@ impl AskryptApp {
 
         // Serialize all other answers (excluding the key answer) and encrypt
         // We store all answers but the decryption will know which one was the key
-        let answers_json = serde_json::to_string(&self.answers)?;
+        let answers_json = Zeroizing::new(serde_json::to_string(&self.answers)?);
         let encrypted_answers = encrypt_with_aes(answers_json.as_bytes(), &key_array, &iv_array)?;
 
         Ok(SmartLockData {
@@ -2057,18 +2066,28 @@ impl AskryptApp {
 
         // Derive decryption key from the provided answer
         let translit = self.file.as_ref().is_some_and(|f| f.params.translit);
-        let normalized_answer = normalize_answer(answer, translit);
+        let normalized_answer = Zeroizing::new(normalize_answer(answer, translit));
         let salt_b64 = encode_base64(&smart_lock_data.salt);
-        let hashed_answer = sha256(&normalized_answer, &salt_b64);
-        let key = calc_pbkdf2(&hashed_answer, &smart_lock_data.salt, SMART_LOCK_ITERATIONS)?;
-        let key_array: [u8; 32] = key.try_into().map_err(|_| "Invalid key length")?;
+        let hashed_answer = Zeroizing::new(sha256(&normalized_answer, &salt_b64));
+        // Derive the key into a self-zeroizing array (a plain `try_into` would
+        // free the PBKDF2 `Vec` without wiping it).
+        let key = Zeroizing::new(calc_pbkdf2(
+            &hashed_answer,
+            &smart_lock_data.salt,
+            SMART_LOCK_ITERATIONS,
+        )?);
+        if key.len() != 32 {
+            return Err("Invalid key length".into());
+        }
+        let mut key_array = Zeroizing::new([0u8; 32]);
+        key_array.copy_from_slice(&key);
         let iv_array: [u8; 16] = smart_lock_data
             .iv
             .clone()
             .try_into()
             .map_err(|_| "Invalid IV length")?;
 
-        // Decrypt answer0
+        // Decrypt answer0 (returned to the caller, which wipes it on lock)
         let answer0_bytes =
             decrypt_with_aes(&smart_lock_data.encrypted_answer0, &key_array, &iv_array)?;
         let answer0 = String::from_utf8(answer0_bytes)?;
@@ -2076,7 +2095,8 @@ impl AskryptApp {
         // Decrypt answers
         let answers_bytes =
             decrypt_with_aes(&smart_lock_data.encrypted_answers, &key_array, &iv_array)?;
-        let answers_json = String::from_utf8(answers_bytes)?;
+        // `from_utf8` reuses the decrypted buffer (no copy); wipe the plaintext JSON on drop.
+        let answers_json = Zeroizing::new(String::from_utf8(answers_bytes)?);
         let answers: Vec<String> = serde_json::from_str(&answers_json)?;
 
         Ok((answer0, answers))
