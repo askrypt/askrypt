@@ -32,7 +32,7 @@ The crypto/format engine lives in the **`core/`** crate (`askrypt-core`, lib nam
 
 ### Desktop app — `src/` (Iced GUI)
 
-- **`src/main.rs`** — Desktop GUI using the [Iced](https://github.com/iced-rs/iced) framework. Follows Iced's Elm-like architecture: `Message` enum for events, `update()` for state transitions, `view()` for rendering. Also handles auto-lock and Smart Lock logic. The Edit Questions screen includes a "Use transliteration" checkbox that enables Russian/Ukrainian transliteration for answer normalization.
+- **`src/main.rs`** — Desktop GUI using the [Iced](https://github.com/iced-rs/iced) framework. Follows Iced's Elm-like architecture: `Message` enum for events, `update()` for state transitions, `view()` for rendering. Also handles auto-lock and Smart Lock logic. The Edit Questions screen includes a "Use transliteration" checkbox that enables Russian/Ukrainian transliteration for answer normalization. Every PBKDF2-heavy path — first-answer key check, full unlock, and both Smart Lock activation (2M-iteration encrypt) and unlock (2M-iteration recover + full decrypt) — runs off the main thread via `Task::perform` + `tokio::task::spawn_blocking` so the window stays responsive, showing an animated spinner (`ui::spinner_row`, captioned "Decrypting…" or "Locking…") in place of the controls while the work runs; a `decrypting` flag guards against re-entry.
 - **`src/ui.rs`** — Reusable styled UI components and theming helpers.
 - **`src/icon.rs`** — Bootstrap icon glyph constants for use in the UI.
 - **`src/tray.rs`** — System-tray integration.
@@ -76,6 +76,7 @@ App ID `com.askrypt.app`, display name "Askrypt", `minSdk 26`. The `android/` an
 | `zip` | Vault file format (ZIP archive) |
 | `rfd` | Native file open/save dialogs |
 | `rand` | Random number generation |
+| `tokio` | `spawn_blocking` for off-main-thread vault decryption |
 
 ### Build & Test
 

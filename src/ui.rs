@@ -1,6 +1,6 @@
 use iced::Theme;
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{Button, Container, Text, button, container, row, text, tooltip};
+use iced::widget::{Button, Container, Row, Text, button, container, row, text, tooltip};
 
 pub fn content<'a, T: 'a>(icon: Option<Text<'a>>, text: Text<'a>) -> Container<'a, T> {
     match icon {
@@ -75,6 +75,17 @@ fn button_link_style(theme: &Theme, status: button::Status) -> button::Style {
         },
         button::Status::Disabled => disabled(base),
     }
+}
+
+/// Animated progress indicator with a caption (e.g. "Decrypting…"/"Locking…").
+/// `frame` selects a spinner glyph; advance it on a timer to animate. Shown in
+/// place of the unlock/lock controls while a background crypto task is running.
+pub fn spinner_row<'a, T: 'a>(frame: usize, label: &'a str) -> Row<'a, T> {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let glyph = FRAMES[frame % FRAMES.len()];
+    row![text(glyph).size(20), text(label.to_owned()).size(16)]
+        .spacing(10)
+        .align_y(Vertical::Center)
 }
 
 fn disabled(style: button::Style) -> button::Style {

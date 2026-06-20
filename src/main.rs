@@ -9,7 +9,7 @@ use crate::settings::AppSettings;
 use crate::tray::{AppTray, TrayEvent};
 use crate::ui::{
     button_link, container_border_r5, control_button, control_button_icon, padded_button,
-    text_button_icon,
+    spinner_row, text_button_icon,
 };
 use askrypt::passgen::{PasswordGenConfig, generate_password};
 use askrypt::{
@@ -125,6 +125,14 @@ pub struct AskryptApp {
     last_user_activity: Option<Instant>,
     // System tray
     tray: Option<AppTray>,
+    // True while a background unlock/decryption task is running
+    decrypting: bool,
+    // Current frame of the spinner animation
+    spinner_frame: usize,
+    // Label shown next to the spinner ("Decrypting…" or "Locking…")
+    spinner_label: &'static str,
+    // When the current background decryption started (for the timing message)
+    decrypt_started: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +147,12 @@ pub enum Message {
     AnswerEdited(usize, String),
     AnswerFinished(usize),
     UnlockVault,
+    // Background decryption results
+    Answer0Loaded(Result<QuestionsData, String>),
+    VaultDecrypted(Result<Vec<SecretEntry>, String>),
+    SmartUnlockDone(Result<SmartUnlockResult, String>),
+    SmartLockCreated(Result<SmartLockData, String>),
+    SpinnerTick,
     AddNewEntry,
     EditEntry(usize),
     BackToEntries,
@@ -227,6 +241,16 @@ const SMART_LOCK_TIMEOUT: Duration = Duration::from_hours(8);
 // Inactivity timeout for auto Smart Lock (10 minutes)
 const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
 
+/// Result of a background Smart Lock unlock: the recovered answers (restored
+/// into app state) plus the fully decrypted vault.
+#[derive(Debug, Clone)]
+pub struct SmartUnlockResult {
+    answer0: String,
+    answers: Vec<String>,
+    questions_data: QuestionsData,
+    entries: Vec<SecretEntry>,
+}
+
 /// Data for Smart Lock mode - stores encrypted answers in RAM
 #[derive(Debug, Clone)]
 pub struct SmartLockData {
@@ -286,6 +310,10 @@ impl AskryptApp {
             show_smart_lock_answer: false,
             last_user_activity: None,
             tray: None,
+            decrypting: false,
+            spinner_frame: 0,
+            spinner_label: "Decrypting…",
+            decrypt_started: None,
         };
 
         match AppTray::new() {
@@ -357,13 +385,19 @@ impl AskryptApp {
         let events = event::listen().map(Message::Event);
         let tray_sub = time::every(Duration::from_millis(200)).map(|_| Message::CheckTrayEvents);
 
+        let mut subs = vec![events, tray_sub];
+
         // Add timer for inactivity check when vault is unlocked or smart locked
         if self.unlocked || self.smart_lock_data.is_some() {
-            let timer = time::every(Duration::from_secs(30)).map(|_| Message::InactivityTick);
-            Subscription::batch([events, timer, tray_sub])
-        } else {
-            Subscription::batch([events, tray_sub])
+            subs.push(time::every(Duration::from_secs(30)).map(|_| Message::InactivityTick));
         }
+
+        // Animate the spinner while a background decryption is running
+        if self.decrypting {
+            subs.push(time::every(Duration::from_millis(80)).map(|_| Message::SpinnerTick));
+        }
+
+        Subscription::batch(subs)
     }
 
     /// Update user activity timestamp (for auto Smart Lock after inactivity)
@@ -465,26 +499,47 @@ impl AskryptApp {
                 Task::none()
             }
             Message::Answer0Finished => {
+                if self.decrypting {
+                    return Task::none();
+                }
                 if let Some(file) = &self.file {
-                    match file.get_questions_data(self.answer0.to_string()) {
-                        Ok(questions_data) => {
-                            let questions_count = questions_data.questions.len();
-                            self.questions_data = Some(questions_data);
-                            self.screen = Screen::OtherQuestions;
-                            self.shown_answer_index = None;
-                            while self.answers.len() < questions_count {
-                                self.answers.push(String::new());
-                            }
-                            operation::focus_next()
-                        }
-                        Err(e) => {
-                            eprintln!("ERROR: The answer is incorrect: {}", e);
-                            self.error_message = Some("The answer is incorrect".into());
-                            Task::none()
-                        }
-                    }
+                    let file = file.clone();
+                    let answer0 = self.answer0.clone();
+                    self.error_message = None;
+                    self.decrypting = true;
+                    self.decrypt_started = Some(Instant::now());
+                    Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                file.get_questions_data(answer0).map_err(|e| e.to_string())
+                            })
+                            .await
+                            .expect("get_questions_data task panicked")
+                        },
+                        Message::Answer0Loaded,
+                    )
                 } else {
                     Task::none()
+                }
+            }
+            Message::Answer0Loaded(result) => {
+                self.decrypting = false;
+                match result {
+                    Ok(questions_data) => {
+                        let questions_count = questions_data.questions.len();
+                        self.questions_data = Some(questions_data);
+                        self.screen = Screen::OtherQuestions;
+                        self.shown_answer_index = None;
+                        while self.answers.len() < questions_count {
+                            self.answers.push(String::new());
+                        }
+                        operation::focus_next()
+                    }
+                    Err(e) => {
+                        eprintln!("ERROR: The answer is incorrect: {}", e);
+                        self.error_message = Some("The answer is incorrect".into());
+                        Task::none()
+                    }
                 }
             }
             Message::AnswerEdited(index, value) => {
@@ -501,27 +556,55 @@ impl AskryptApp {
                 }
             }
             Message::UnlockVault => {
+                if self.decrypting {
+                    return Task::none();
+                }
                 if let (Some(data), Some(file)) = (&self.questions_data, &self.file) {
-                    let start = Instant::now();
-                    match file.decrypt(data, self.answers.clone()) {
-                        Ok(entries) => {
-                            let duration = start.elapsed();
-                            let millis = duration.as_millis();
-                            self.entries = entries;
-                            self.shown_password_index = None;
-                            self.screen = Screen::ShowEntries;
-                            self.unlocked = true;
-                            self.last_user_activity = Some(Instant::now());
-                            self.settings.last_opened_file = self.path.clone();
-                            self.status_message =
-                                Some(format!("The Vault unlocked in {} ms", millis));
-                        }
-                        Err(e) => {
-                            eprintln!("ERROR: One or more answers are incorrect: {}", e);
-                            self.error_message = Some("One or more answers are incorrect".into());
-                        }
+                    let file = file.clone();
+                    let data = data.clone();
+                    let answers = self.answers.clone();
+                    self.error_message = None;
+                    self.decrypting = true;
+                    self.decrypt_started = Some(Instant::now());
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                file.decrypt(&data, answers).map_err(|e| e.to_string())
+                            })
+                            .await
+                            .expect("decrypt task panicked")
+                        },
+                        Message::VaultDecrypted,
+                    );
+                }
+                Task::none()
+            }
+            Message::VaultDecrypted(result) => {
+                self.decrypting = false;
+                match result {
+                    Ok(entries) => {
+                        let millis = self
+                            .decrypt_started
+                            .take()
+                            .map(|start| start.elapsed().as_millis())
+                            .unwrap_or(0);
+                        self.entries = entries;
+                        self.shown_password_index = None;
+                        self.screen = Screen::ShowEntries;
+                        self.unlocked = true;
+                        self.last_user_activity = Some(Instant::now());
+                        self.settings.last_opened_file = self.path.clone();
+                        self.status_message = Some(format!("The Vault unlocked in {} ms", millis));
+                    }
+                    Err(e) => {
+                        eprintln!("ERROR: One or more answers are incorrect: {}", e);
+                        self.error_message = Some("One or more answers are incorrect".into());
                     }
                 }
+                Task::none()
+            }
+            Message::SpinnerTick => {
+                self.spinner_frame = self.spinner_frame.wrapping_add(1);
                 Task::none()
             }
             Message::AddNewEntry => {
@@ -1045,8 +1128,43 @@ impl AskryptApp {
                 Task::none()
             }
             Message::ActivateSmartLock => {
-                // Encrypt all answers using the randomly selected answer
-                match self.create_smart_lock_data() {
+                if self.decrypting {
+                    return Task::none();
+                }
+                if self.answers.is_empty() {
+                    self.error_message = Some("Need at least 2 questions for Smart Lock".into());
+                    return Task::none();
+                }
+                // Encrypt all answers using a randomly selected answer (2M-iteration
+                // PBKDF2). Run it off the main thread with a "Locking…" spinner.
+                let answers = self.answers.clone();
+                let answer0 = self.answer0.clone();
+                let questions = self
+                    .questions_data
+                    .as_ref()
+                    .map(|q| q.questions.clone())
+                    .unwrap_or_default();
+                let translit = self.file.as_ref().is_some_and(|f| f.params.translit);
+                self.error_message = None;
+                self.decrypting = true;
+                self.spinner_label = "Locking…";
+                self.screen = Screen::SmartLocked;
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            Self::create_smart_lock_data(&answers, &answer0, &questions, translit)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .expect("create_smart_lock_data task panicked")
+                    },
+                    Message::SmartLockCreated,
+                )
+            }
+            Message::SmartLockCreated(result) => {
+                self.decrypting = false;
+                self.spinner_label = "Decrypting…";
+                match result {
                     Ok(smart_lock_data) => {
                         self.smart_lock_data = Some(smart_lock_data);
                         // Wipe sensitive data from memory
@@ -1064,6 +1182,8 @@ impl AskryptApp {
                     Err(e) => {
                         eprintln!("ERROR: Failed to create smart lock: {}", e);
                         self.error_message = Some("Failed to create Smart Lock".into());
+                        // Activation failed; return to the entries screen.
+                        self.screen = Screen::ShowEntries;
                         Task::none()
                     }
                 }
@@ -1078,56 +1198,78 @@ impl AskryptApp {
                 Task::none()
             }
             Message::SmartUnlockVault => {
-                if let Some(_smart_lock_data) = &self.smart_lock_data {
-                    let start = Instant::now();
-                    match self.decrypt_smart_lock_data(&self.smart_lock_answer.clone()) {
-                        Ok((answer0, answers)) => {
-                            // Restore answers
-                            self.answer0 = answer0;
-                            self.answers = answers;
-
-                            // Now unlock the vault using the restored answers
-                            if let Some(file) = &self.file {
-                                match file.get_questions_data(self.answer0.clone()) {
-                                    Ok(questions_data) => {
-                                        match file.decrypt(&questions_data, self.answers.clone()) {
-                                            Ok(entries) => {
-                                                let duration = start.elapsed();
-                                                let millis = duration.as_millis();
-                                                self.entries = entries;
-                                                self.questions_data = Some(questions_data);
-                                                self.unlocked = true;
-                                                self.last_user_activity = Some(Instant::now());
-                                                self.shown_password_index = None;
-                                                self.screen = Screen::ShowEntries;
-                                                self.smart_lock_answer.zeroize();
-                                                // Update last activity time
-                                                if let Some(data) = self.smart_lock_data.as_mut() {
-                                                    data.last_activity = Instant::now();
-                                                }
-                                                self.status_message = Some(format!(
-                                                    "Vault unlocked from Smart Lock in {} ms",
-                                                    millis
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                eprintln!("ERROR: Failed to decrypt vault: {}", e);
-                                                self.error_message =
-                                                    Some("Failed to decrypt vault".into());
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("ERROR: Failed to get questions data: {}", e);
-                                        self.error_message = Some("Failed to unlock vault".into());
-                                    }
-                                }
-                            }
+                if self.decrypting {
+                    return Task::none();
+                }
+                // Recovering the answers (2M-iteration PBKDF2) and the full vault
+                // unlock both run on a worker thread under a "Decrypting…" spinner.
+                if let (Some(smart_lock_data), Some(file)) = (&self.smart_lock_data, &self.file) {
+                    let smart_lock_data = smart_lock_data.clone();
+                    let file = file.clone();
+                    let answer = self.smart_lock_answer.clone();
+                    let translit = file.params.translit;
+                    self.error_message = None;
+                    self.decrypting = true;
+                    self.decrypt_started = Some(Instant::now());
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                let (answer0, answers) = Self::decrypt_smart_lock_data(
+                                    &smart_lock_data,
+                                    &answer,
+                                    translit,
+                                )
+                                .map_err(|e| e.to_string())?;
+                                let questions_data = file
+                                    .get_questions_data(answer0.clone())
+                                    .map_err(|e| e.to_string())?;
+                                let entries = file
+                                    .decrypt(&questions_data, answers.clone())
+                                    .map_err(|e| e.to_string())?;
+                                Ok::<_, String>(SmartUnlockResult {
+                                    answer0,
+                                    answers,
+                                    questions_data,
+                                    entries,
+                                })
+                            })
+                            .await
+                            .expect("smart unlock task panicked")
+                        },
+                        Message::SmartUnlockDone,
+                    );
+                }
+                Task::none()
+            }
+            Message::SmartUnlockDone(result) => {
+                self.decrypting = false;
+                match result {
+                    Ok(unlocked) => {
+                        let millis = self
+                            .decrypt_started
+                            .take()
+                            .map(|start| start.elapsed().as_millis())
+                            .unwrap_or(0);
+                        // Restore the answers recovered from Smart Lock data.
+                        self.answer0 = unlocked.answer0;
+                        self.answers = unlocked.answers;
+                        self.entries = unlocked.entries;
+                        self.questions_data = Some(unlocked.questions_data);
+                        self.unlocked = true;
+                        self.last_user_activity = Some(Instant::now());
+                        self.shown_password_index = None;
+                        self.screen = Screen::ShowEntries;
+                        self.smart_lock_answer.zeroize();
+                        // Update last activity time
+                        if let Some(data) = self.smart_lock_data.as_mut() {
+                            data.last_activity = Instant::now();
                         }
-                        Err(e) => {
-                            eprintln!("ERROR: Smart Lock answer incorrect: {}", e);
-                            self.error_message = Some("Incorrect answer".into());
-                        }
+                        self.status_message =
+                            Some(format!("Vault unlocked from Smart Lock in {} ms", millis));
+                    }
+                    Err(e) => {
+                        eprintln!("ERROR: Smart unlock failed: {}", e);
+                        self.error_message = Some("Incorrect answer".into());
                     }
                 }
                 Task::none()
@@ -1345,13 +1487,17 @@ impl AskryptApp {
             .push(text(&self.question0).size(15))
             .push(answer0_input);
 
-        let controls = row![
-            padded_button("Unlock").on_press(Message::Answer0Finished),
-            padded_button("Main menu").on_press(Message::BackToWelcome),
-            padded_button("Exit").on_press(Message::ExitApp),
-        ]
-        .spacing(10);
-        column = column.push(controls);
+        if self.decrypting {
+            column = column.push(spinner_row(self.spinner_frame, self.spinner_label));
+        } else {
+            let controls = row![
+                padded_button("Unlock").on_press(Message::Answer0Finished),
+                padded_button("Main menu").on_press(Message::BackToWelcome),
+                padded_button("Exit").on_press(Message::ExitApp),
+            ]
+            .spacing(10);
+            column = column.push(controls);
+        }
         column = self.show_messages_in_column(column);
 
         column
@@ -1403,13 +1549,17 @@ impl AskryptApp {
                 column = column.push(answer_input);
             }
 
-            let controls = row![
-                padded_button("Unlock").on_press(Message::UnlockVault),
-                padded_button("Cancel").on_press(Message::BackToWelcome),
-                padded_button("Exit").on_press(Message::ExitApp),
-            ]
-            .spacing(10);
-            column = column.push(controls);
+            if self.decrypting {
+                column = column.push(spinner_row(self.spinner_frame, self.spinner_label));
+            } else {
+                let controls = row![
+                    padded_button("Unlock").on_press(Message::UnlockVault),
+                    padded_button("Cancel").on_press(Message::BackToWelcome),
+                    padded_button("Exit").on_press(Message::ExitApp),
+                ]
+                .spacing(10);
+                column = column.push(controls);
+            }
             column = self.show_messages_in_column(column);
         }
 
@@ -1738,13 +1888,17 @@ impl AskryptApp {
             );
         }
 
-        let controls = row![
-            padded_button("Unlock").on_press(Message::SmartUnlockVault),
-            padded_button("Full Lock").on_press(Message::CancelSmartLock),
-            padded_button("Exit").on_press(Message::ExitApp),
-        ]
-        .spacing(10);
-        column = column.push(controls);
+        if self.decrypting {
+            column = column.push(spinner_row(self.spinner_frame, self.spinner_label));
+        } else {
+            let controls = row![
+                padded_button("Unlock").on_press(Message::SmartUnlockVault),
+                padded_button("Full Lock").on_press(Message::CancelSmartLock),
+                padded_button("Exit").on_press(Message::ExitApp),
+            ]
+            .spacing(10);
+            column = column.push(controls);
+        }
         column = self.show_messages_in_column(column);
 
         column
@@ -2065,19 +2219,26 @@ impl AskryptApp {
 
     /// Create Smart Lock data by encrypting all answers (except the key answer) with the selected answer.
     /// Uses 2,000,000 iterations for key derivation as specified.
-    fn create_smart_lock_data(&self) -> Result<SmartLockData, Box<dyn std::error::Error>> {
+    /// Build Smart Lock data (2M-iteration PBKDF2). Runs on a worker thread, so
+    /// it takes owned inputs instead of borrowing `self`.
+    fn create_smart_lock_data(
+        answers: &[String],
+        answer0: &str,
+        questions: &[String],
+        translit: bool,
+    ) -> Result<SmartLockData, Box<dyn std::error::Error>> {
         // Randomly select an answer index (not the first one)
         // answers vector contains answers for questions 2, 3, etc.
         // So we pick a random index from 1 to answers.len() (inclusive)
-        if self.answers.is_empty() {
+        if answers.is_empty() {
             return Err("Need at least 2 questions for Smart Lock".into());
         }
 
         let mut rng = rand::rng();
         // index 1 corresponds to answers[0], index 2 to answers[1], etc.
-        let key_answer_index = rng.random_range(1..=self.answers.len());
+        let key_answer_index = rng.random_range(1..=answers.len());
         let key_answer = Zeroizing::new(
-            self.answers
+            answers
                 .get(key_answer_index - 1)
                 .cloned()
                 .unwrap_or_default(),
@@ -2087,21 +2248,15 @@ impl AskryptApp {
             return Err("Selected answer is empty".into());
         }
         // Get the question text for display on the Smart Lock screen
-        let key_question = if let Some(questions_data) = &self.questions_data {
-            questions_data
-                .questions
-                .get(key_answer_index - 1)
-                .cloned()
-                .unwrap_or_else(|| format!("Question {}", key_answer_index + 1))
-        } else {
-            format!("Question {}", key_answer_index + 1)
-        };
+        let key_question = questions
+            .get(key_answer_index - 1)
+            .cloned()
+            .unwrap_or_else(|| format!("Question {}", key_answer_index + 1));
 
         let salt = generate_salt(16);
         let iv = generate_salt(16);
 
         // Derive encryption key from the selected answer using PBKDF2
-        let translit = self.file.as_ref().is_some_and(|f| f.params.translit);
         let normalized_answer = Zeroizing::new(normalize_answer(&key_answer, translit));
         let salt_b64 = encode_base64(&salt);
         let hashed_answer = Zeroizing::new(sha256(&normalized_answer, &salt_b64));
@@ -2116,11 +2271,11 @@ impl AskryptApp {
         let iv_array: [u8; 16] = iv.clone().try_into().map_err(|_| "Invalid IV length")?;
 
         // Serialize answer0 and encrypt
-        let encrypted_answer0 = encrypt_with_aes(self.answer0.as_bytes(), &key_array, &iv_array)?;
+        let encrypted_answer0 = encrypt_with_aes(answer0.as_bytes(), &key_array, &iv_array)?;
 
         // Serialize all other answers (excluding the key answer) and encrypt
         // We store all answers but the decryption will know which one was the key
-        let answers_json = Zeroizing::new(serde_json::to_string(&self.answers)?);
+        let answers_json = Zeroizing::new(serde_json::to_string(answers)?);
         let encrypted_answers = encrypt_with_aes(answers_json.as_bytes(), &key_array, &iv_array)?;
 
         Ok(SmartLockData {
@@ -2134,19 +2289,15 @@ impl AskryptApp {
         })
     }
 
-    /// Decrypt Smart Lock data using the provided answer.
+    /// Decrypt Smart Lock data using the provided answer (2M-iteration PBKDF2).
+    /// Runs on a worker thread, so it borrows plain data instead of `self`.
     /// Returns the decrypted answer0 and answers vector.
     fn decrypt_smart_lock_data(
-        &self,
+        smart_lock_data: &SmartLockData,
         answer: &str,
+        translit: bool,
     ) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
-        let smart_lock_data = self
-            .smart_lock_data
-            .as_ref()
-            .ok_or("No smart lock data available")?;
-
         // Derive decryption key from the provided answer
-        let translit = self.file.as_ref().is_some_and(|f| f.params.translit);
         let normalized_answer = Zeroizing::new(normalize_answer(answer, translit));
         let salt_b64 = encode_base64(&smart_lock_data.salt);
         let hashed_answer = Zeroizing::new(sha256(&normalized_answer, &salt_b64));

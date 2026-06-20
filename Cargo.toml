@@ -37,6 +37,8 @@ image = "0.25.10"
 png = "0.18"
 tray-item = "0.10.0"
 zeroize = "1"
+# `spawn_blocking` for off-main-thread vault decryption (matches iced's tokio).
+tokio = { version = "1", features = ["rt"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-item = { version = "0.10.0", features = ["ksni"] }

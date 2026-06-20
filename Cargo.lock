@@ -191,6 +191,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "tokio",
  "tray-item",
  "winresource",
  "zeroize",
