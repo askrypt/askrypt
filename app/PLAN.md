@@ -16,9 +16,6 @@ Mobile app (Android + iOS) living in this repo under `app/`, implemented as a
   desktop app.** The Dart implementation must produce/consume byte-identical
   `vault.askrypt` files. Parity is guaranteed by a shared cross-implementation
   **test-vector suite** (see Phase 1) — not by sharing code.
-- Native autofill shells (Phase 5) use platform code (Kotlin/Swift); the
-  credential lookup they need is small and is bridged from Dart (platform
-  channels) rather than reimplementing crypto a third time.
 
 ### Accepted trade-offs vs. the Rust-bridge approach
 
@@ -56,9 +53,9 @@ askrypt/
 │   │   │   └── translit.dart      # BGN/PCGN Russian/Ukrainian -> ASCII
 │   │   ├── session/          # in-memory unlocked-vault state (Riverpod)
 │   │   ├── screens/          # welcome, unlock, list, entry, questions, passgen
-│   │   └── platform/         # biometrics, clipboard, file picker, recent-vault cache, autofill bridge
+│   │   └── platform/         # biometrics, clipboard, file picker, recent-vault cache
 │   ├── test/                 # Dart unit + parity (test-vector) tests
-│   ├── android/  ios/        # Flutter shells (+ autofill extensions later)
+│   ├── android/  ios/        # Flutter shells
 │   └── integration_test/
 └── SPEC.md
 ```
@@ -105,7 +102,7 @@ entry CRUD, search/filter, tags, hidden entries, show/copy secret & username,
 open URL, password generator, auto-lock on inactivity, Smart Lock.
 
 Mobile additions: biometric unlock (successor to Smart Lock), auto-clearing
-clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
+clipboard.
 
 ## Phases & status
 
@@ -143,9 +140,9 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
 - **Phase 2 — Flutter skeleton. ✅ DONE.**
   - `flutter create --platforms=android,ios --org com.askrypt .` scaffolded the
     Android + iOS shells (preserving `lib/crypto` + `test/`). App ID set to
-    **`com.askrypt.app`**, display name **"Askrypt"**, **`minSdk 26`** (Autofill
-    Framework floor for Phase 5). The `android/`+`ios/` folders are now tracked
-    in git (they carry that native config; Phase 5 adds native code there).
+    **`com.askrypt.app`**, display name **"Askrypt"**, **`minSdk 26`**. The
+    `android/`+`ios/` folders are now tracked in git (they carry that native
+    config).
   - Deps added: `flutter_riverpod`, `file_picker` (alongside Phase 1
     `pointycastle` + `archive`).
   - Session/state layer wired on top of `lib/crypto`:
@@ -249,14 +246,7 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
   save; if the file is edited elsewhere the cached copy is a stale snapshot
   and the manual picker remains the fallback.
 
-- **Phase 5 — Autofill (largest native piece, last).** Android Autofill Service
-  (Kotlin) + iOS AutoFill Credential Provider extension (Swift). These run in
-  separate processes from the Flutter UI; resolve crypto via a small **platform
-  channel into the Dart engine** (preferred) or, if a headless Flutter engine in
-  the extension proves impractical, a minimal Kotlin/Swift port limited to
-  unlock+lookup. Decide during this phase.
-
-- **Phase 6 — CI/CD.** Extend `.github/workflows`: run the **Dart parity test
+- **Phase 5 — CI/CD.** Extend `.github/workflows`: run the **Dart parity test
   suite against committed golden vectors** (catches Rust/Dart drift), Flutter
   build/test, signed AAB (Play) + IPA (TestFlight); macOS runner for iOS.
   No Rust mobile-target builds needed.
@@ -278,8 +268,6 @@ clipboard, **autofill** (Android Autofill Framework / iOS Credential Provider).
   SHA-256. The unlock screen still shows a progress indicator during a
   derivation. Still open: an adaptive iteration count at creation for low-end
   phones.
-- Autofill crypto strategy (Dart platform channel vs minimal native port) — see
-  Phase 5.
 
 ## Verification commands
 
