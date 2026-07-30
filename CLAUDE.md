@@ -71,6 +71,13 @@ App ID `com.askrypt.app`, display name "Askrypt", `minSdk 26`. The `android/` an
 
 `MainActivity` extends **`FlutterFragmentActivity`** (not the default `FlutterActivity`) because `local_auth`'s biometric prompt requires a `FragmentActivity` host; it also registers the `askrypt/secure` channel. iOS needs `NSFaceIDUsageDescription` in `Info.plist`.
 
+### Server — `server/` (planned)
+
+A planned Rust (axum) server providing accounts (email + password) and cloud
+storage of vaults as **opaque encrypted files** — it never handles questions,
+answers, or vault crypto. No code exists yet; the phased plan lives in
+**`server/PLAN.md`**.
+
 ### Key Dependencies
 
 | Crate | Purpose |
