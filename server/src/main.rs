@@ -39,7 +39,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let state = AppState::in_memory();
 
-    let app = routes::router(state);
+    if !config.static_dir.join("index.html").is_file() {
+        tracing::warn!(
+            static_dir = %config.static_dir.display(),
+            "no index.html in static dir; landing page will 404 (set ASKRYPT_STATIC_DIR)"
+        );
+    }
+
+    let app = routes::router(state, &config.static_dir);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     info!(addr = %listener.local_addr()?, "listening");
     axum::serve(listener, app)

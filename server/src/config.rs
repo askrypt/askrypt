@@ -1,10 +1,11 @@
 //! Server configuration, read from environment variables.
 //!
-//! | Variable           | Default          | Meaning                          |
-//! |--------------------|------------------|----------------------------------|
-//! | `ASKRYPT_BIND`     | `127.0.0.1:8080` | Socket address to listen on      |
-//! | `ASKRYPT_DATA_DIR` | `data`           | Runtime data directory           |
-//! | `ASKRYPT_BACKEND`  | `sqlite`         | Storage backend: `sqlite`/`memory` |
+//! | Variable             | Default          | Meaning                          |
+//! |----------------------|------------------|----------------------------------|
+//! | `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on      |
+//! | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data directory           |
+//! | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite`/`memory` |
+//! | `ASKRYPT_STATIC_DIR` | `server/static`  | Static asset directory (landing/SPA) |
 //!
 //! Logging is configured separately via the standard `RUST_LOG` filter.
 //! Secrets (e.g. Google OAuth client ids) join this struct in Phase 2.
@@ -15,9 +16,12 @@ use std::path::PathBuf;
 pub const ENV_BIND: &str = "ASKRYPT_BIND";
 pub const ENV_DATA_DIR: &str = "ASKRYPT_DATA_DIR";
 pub const ENV_BACKEND: &str = "ASKRYPT_BACKEND";
+pub const ENV_STATIC_DIR: &str = "ASKRYPT_STATIC_DIR";
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_DATA_DIR: &str = "data";
+// Matches `cargo run` from the workspace root; deployments set the env var.
+const DEFAULT_STATIC_DIR: &str = "server/static";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -40,6 +44,7 @@ pub struct Config {
     pub bind: SocketAddr,
     pub data_dir: PathBuf,
     pub backend: Backend,
+    pub static_dir: PathBuf,
 }
 
 impl Config {
@@ -67,10 +72,15 @@ impl Config {
             }
         };
 
+        let static_dir = PathBuf::from(
+            std::env::var(ENV_STATIC_DIR).unwrap_or_else(|_| DEFAULT_STATIC_DIR.into()),
+        );
+
         Ok(Config {
             bind,
             data_dir,
             backend,
+            static_dir,
         })
     }
 

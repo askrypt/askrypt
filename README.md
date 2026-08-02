@@ -79,6 +79,10 @@ The repository is a Cargo workspace with a shared crypto core plus a desktop and
 - **Mobile (`app/`)** — a **pure-Dart Flutter** app for **Android and iOS** (no Rust on device).
   It re-implements the vault format in Dart and stays byte-compatible with `core/`, verified by
   golden test vectors. *In progress* — see [`app/PLAN.md`](app/PLAN.md).
+- **Server (`server/`) — `askrypt-server`** — an optional, self-hostable
+  [axum](https://github.com/tokio-rs/axum) server for accounts and cloud storage of vaults as
+  **opaque encrypted files**. Zero-knowledge by design: it never sees questions, answers, or keys,
+  and never links `askrypt-core`. *In progress* — see [`server/PLAN.md`](server/PLAN.md).
 
 ## Build & test
 
@@ -92,6 +96,31 @@ cargo build -p askrypt                 # build the desktop binary
 # Regenerate the Dart parity vectors after any format/normalization change:
 cargo run -p askrypt-core --example gen_vectors
 ```
+
+### Server (Rust)
+
+```sh
+cargo run -p askrypt-server   # http://127.0.0.1:8080 — landing page at /, API under /api/v1
+```
+
+Run it from the repository root (the default static-asset path is relative to it). Smoke checks:
+
+```sh
+curl http://127.0.0.1:8080/healthz        # {"status":"ok"}
+curl http://127.0.0.1:8080/api/v1/about   # {"name":"askrypt-server","version":"..."}
+```
+
+Configuration via environment variables (all optional):
+
+| Variable             | Default          | Meaning                                  |
+|----------------------|------------------|------------------------------------------|
+| `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on              |
+| `ASKRYPT_DATA_DIR`   | `data`           | Runtime data dir (SQLite db, vault blobs)|
+| `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite` or `memory`    |
+| `ASKRYPT_STATIC_DIR` | `server/static`  | Static asset directory (landing page)    |
+
+Logging uses the standard `RUST_LOG` filter. The server crate is covered by the
+`cargo test --workspace` / `cargo clippy --workspace` commands above.
 
 ### Mobile (Flutter)
 

@@ -77,8 +77,9 @@ App ID `com.askrypt.app`, display name "Askrypt", `minSdk 26`. The `android/` an
 A Rust (axum) server providing accounts (email + password, plus Google
 sign-in) and cloud storage of vaults as **opaque encrypted files** — it never
 handles questions, answers, or vault crypto, and it must **never depend on
-`askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phase 0
-(scaffolding) is done, Phase 1 (landing page) is next.
+`askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phases 0
+(scaffolding) and 1 (landing page + API namespacing) are done, Phase 2
+(auth: register & login) is next.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). With the `sqlite`
@@ -86,12 +87,17 @@ handles questions, answers, or vault crypto, and it must **never depend on
   the in-memory fakes until the SQLite store impls land in Phase 2.
 - **`server/src/config.rs`** — `Config::from_env()`: `ASKRYPT_BIND`
   (default `127.0.0.1:8080`), `ASKRYPT_DATA_DIR` (default `data`, gitignored),
-  `ASKRYPT_BACKEND` (`sqlite` default | `memory`).
+  `ASKRYPT_BACKEND` (`sqlite` default | `memory`), `ASKRYPT_STATIC_DIR`
+  (default `server/static`, i.e. `cargo run` from the workspace root).
 - **`server/src/error.rs`** — Uniform JSON error convention: every API error is
   `{"error": {"code", "message"}}` via `ApiError` (`IntoResponse`), with
   `From<StoreError>`; internal details are logged, never sent to clients.
-- **`server/src/routes.rs`** — Router: `/healthz` + JSON 404 fallback. All
-  future dynamic endpoints go under `/api/v1`.
+- **`server/src/routes.rs`** — Router: `/healthz`; `/api/v1` nest (currently
+  `GET /about` → name+version) where all dynamic endpoints live, with a JSON
+  404 fallback covering everything under `/api`; all other paths serve static
+  assets from the configured static dir (`tower-http` `ServeDir`) with SPA
+  fallback to `index.html` — `server/static/` ships a placeholder landing
+  page until Phase 7.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
   seam; handlers can only reach the traits.
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,

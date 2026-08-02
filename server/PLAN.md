@@ -108,7 +108,7 @@ askrypt/
   - Gate: server boots, health check answers, `cargo test`/`clippy` clean;
     handlers compile against traits only (no `sqlx` types in handler code).
 
-- **Phase 1 — Landing page.**
+- **Phase 1 — Landing page.** ✅ *(done 2026-08-02)*
   - Serve static assets at `/` from `server/static/` with SPA fallback routing;
     ship a minimal placeholder landing page until Phase 7.
   - Clean separation: everything dynamic lives under `/api/v1`.
