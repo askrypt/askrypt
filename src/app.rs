@@ -5,8 +5,8 @@
 use crate::message::{GlobalMsg, Message};
 use crate::screens::{self, Action, Screen, entries, smart_lock, unlock};
 use crate::session::{Session, SmartLockData};
+use crate::settings::VaultLocation;
 use crate::tray::TrayEvent;
-use askrypt::AskryptFile;
 use iced::event::{self, Event};
 use iced::keyboard::key;
 use iced::widget::{container, operation};
@@ -27,26 +27,24 @@ impl AskryptApp {
         };
 
         let mut task = Task::none();
-        let vault_path = match vault_path {
-            None => {
-                if let Some(last_file) = &app.session.settings.last_opened_file
-                    && last_file.exists()
-                {
-                    // Try to open last opened file if it exists
-                    Some(last_file.clone())
-                } else {
-                    None
-                }
-            }
+        let location = match vault_path {
             // Load vault from program argument if provided
-            Some(_) => vault_path,
+            Some(path) => Some(VaultLocation::LocalFile(path)),
+            None => {
+                // Try to open the last opened vault if it still exists
+                app.session
+                    .settings
+                    .last_opened_file
+                    .clone()
+                    .filter(|location| location.storage().exists())
+            }
         };
 
-        if let Some(path) = vault_path {
-            match AskryptFile::load_from_file(path.as_path()) {
+        if let Some(location) = location {
+            match location.storage().load_vault() {
                 Ok(file) => {
                     app.session.question0 = file.question0.clone();
-                    app.session.path = Some(path);
+                    app.session.location = Some(location);
                     app.session.file = Some(file);
                     app.screen = Screen::FirstQuestion(unlock::FirstState::default());
                     task = operation::focus_next();
@@ -169,7 +167,7 @@ impl AskryptApp {
             }
             GlobalMsg::BackToWelcome => {
                 if self.session.ask_user_about_changes() {
-                    self.session.path = None;
+                    self.session.location = None;
                     self.session.file = None;
                     self.session.questions_data = None;
                     self.session.question0.clear();

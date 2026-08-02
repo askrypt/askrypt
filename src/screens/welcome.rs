@@ -3,8 +3,8 @@
 use crate::message::{GlobalMsg, Message};
 use crate::screens::{Action, Screen, questions, show_messages_in_column, unlock};
 use crate::session::Session;
+use crate::settings::VaultLocation;
 use crate::ui::{padded_button, title_h1};
-use askrypt::AskryptFile;
 use iced::widget::operation;
 use iced::{Element, alignment};
 
@@ -17,7 +17,7 @@ pub enum Msg {
 pub fn update(session: &mut Session, msg: Msg) -> Action {
     match msg {
         Msg::CreateNewVault => {
-            session.path = None;
+            session.location = None;
             session.file = None;
             Action::switch(Screen::Questions(questions::State::new_for_create()))
         }
@@ -27,10 +27,11 @@ pub fn update(session: &mut Session, msg: Msg) -> Action {
                 .add_filter("All files", &["*"])
                 .pick_file()
             {
-                match AskryptFile::load_from_file(path.as_path()) {
+                let location = VaultLocation::LocalFile(path);
+                match location.storage().load_vault() {
                     Ok(file) => {
                         session.question0 = file.question0.clone();
-                        session.path = Some(path);
+                        session.location = Some(location);
                         session.file = Some(file);
                         session.is_modified = false;
                         return Action::switch_run(

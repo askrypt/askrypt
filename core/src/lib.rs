@@ -67,9 +67,11 @@
 //! ```
 
 pub mod passgen;
+pub mod storage;
 pub mod translit;
 pub mod types;
 
+pub use storage::{LocalFileStorage, MemoryStorage, StorageError, VaultStorage};
 pub use types::*;
 
 use aes::Aes256;
@@ -425,6 +427,9 @@ impl AskryptFile {
 
     /// Save the AskryptFile to a ZIP file with internal file name "askrypt.json"
     ///
+    /// Convenience wrapper over [`storage::LocalFileStorage`]; use a
+    /// [`storage::VaultStorage`] directly for backend-agnostic persistence.
+    ///
     /// # Arguments
     ///
     /// * `path` - The file path where the ZIP file should be saved
@@ -436,11 +441,13 @@ impl AskryptFile {
         &self,
         path: P,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        std::fs::write(path, self.to_bytes()?)?;
-        Ok(())
+        Ok(LocalFileStorage::new(path.as_ref()).save_vault(self)?)
     }
 
     /// Load an AskryptFile from a ZIP file containing "askrypt.json"
+    ///
+    /// Convenience wrapper over [`storage::LocalFileStorage`]; use a
+    /// [`storage::VaultStorage`] directly for backend-agnostic persistence.
     ///
     /// # Arguments
     ///
@@ -452,7 +459,7 @@ impl AskryptFile {
     pub fn load_from_file<P: AsRef<std::path::Path>>(
         path: P,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::from_bytes(&std::fs::read(path)?)
+        Ok(LocalFileStorage::new(path.as_ref()).load_vault()?)
     }
 }
 
@@ -1212,13 +1219,14 @@ mod tests {
         )
         .unwrap();
 
-        let temp_file = "test_askrypt_file.askrypt";
+        let temp_file =
+            std::env::temp_dir().join(format!("test_askrypt_file_{}.askrypt", std::process::id()));
 
         // Save to file
-        askrypt_file.save_to_file(temp_file).unwrap();
+        askrypt_file.save_to_file(&temp_file).unwrap();
 
         // Load from file
-        let loaded_file = AskryptFile::load_from_file(temp_file).unwrap();
+        let loaded_file = AskryptFile::load_from_file(&temp_file).unwrap();
 
         // Verify they match
         assert_eq!(askrypt_file, loaded_file);
@@ -1231,7 +1239,7 @@ mod tests {
         assert_eq!(decrypted_data, data);
 
         // Cleanup
-        fs::remove_file(temp_file).ok();
+        fs::remove_file(&temp_file).ok();
     }
 
     #[test]
@@ -1261,13 +1269,14 @@ mod tests {
         let askrypt_file =
             AskryptFile::create(questions, answers, data, Some(6000), false).unwrap();
 
-        let temp_file = "test_vault_content.askrypt";
+        let temp_file =
+            std::env::temp_dir().join(format!("test_vault_content_{}.askrypt", std::process::id()));
 
         // Save to zip file
-        askrypt_file.save_to_file(temp_file).unwrap();
+        askrypt_file.save_to_file(&temp_file).unwrap();
 
         // Verify the zip file contains askrypt.json
-        let file = fs::File::open(temp_file).unwrap();
+        let file = fs::File::open(&temp_file).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
 
         // Check that askrypt.json exists in the archive
@@ -1275,7 +1284,7 @@ mod tests {
         assert!(result.is_ok(), "askrypt.json should exist in the zip file");
 
         // Cleanup
-        fs::remove_file(temp_file).ok();
+        fs::remove_file(&temp_file).ok();
     }
 
     #[test]

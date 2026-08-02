@@ -81,11 +81,11 @@ pub fn show_messages_in_column<'a, M: 'a>(
     }
 }
 
-/// Append the vault file path (if any) to a column.
+/// Append the vault location (if any) to a column.
 pub fn show_vault_path<'a, M: 'a>(session: &Session, mut column: Column<'a, M>) -> Column<'a, M> {
-    if let Some(path) = &session.path {
+    if let Some(location) = &session.location {
         let text_prefix = text("Vault File:");
-        let text_path = text(path.to_str().expect("Invalid vault path").to_owned()).font(Font {
+        let text_path = text(location.display_location()).font(Font {
             weight: iced::font::Weight::Bold,
             ..Default::default()
         });

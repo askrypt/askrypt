@@ -1,10 +1,46 @@
+use askrypt::{LocalFileStorage, VaultStorage};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// Where a vault lives. Serializable identity for a storage backend;
+/// `LocalFile` serializes untagged as a plain path string, keeping existing
+/// settings.json files compatible. A future `Server { .. }` variant will
+/// serialize as an object, which untagged deserialization distinguishes
+/// unambiguously from a string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum VaultLocation {
+    LocalFile(PathBuf),
+}
+
+impl VaultLocation {
+    /// Build the storage backend for this location.
+    pub fn storage(&self) -> Box<dyn VaultStorage> {
+        match self {
+            VaultLocation::LocalFile(path) => Box::new(LocalFileStorage::new(path.clone())),
+        }
+    }
+
+    /// Short name for the window title (file name, or "Untitled").
+    pub fn display_name(&self) -> String {
+        match self {
+            VaultLocation::LocalFile(path) => path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Untitled".to_string()),
+        }
+    }
+
+    /// Full location string for status lines.
+    pub fn display_location(&self) -> String {
+        self.storage().location()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
-    pub last_opened_file: Option<PathBuf>,
+    pub last_opened_file: Option<VaultLocation>,
 }
 
 impl AppSettings {
@@ -87,5 +123,37 @@ impl AppSettings {
         {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_json_backcompat_plain_string_path() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"last_opened_file":"/tmp/v.askrypt"}"#).unwrap();
+        assert_eq!(
+            settings.last_opened_file,
+            Some(VaultLocation::LocalFile(PathBuf::from("/tmp/v.askrypt")))
+        );
+    }
+
+    #[test]
+    fn settings_json_local_file_serializes_as_plain_string() {
+        let settings = AppSettings {
+            last_opened_file: Some(VaultLocation::LocalFile(PathBuf::from("/tmp/v.askrypt"))),
+        };
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["last_opened_file"], "/tmp/v.askrypt");
+    }
+
+    #[test]
+    fn settings_json_null_and_missing_field_are_none() {
+        let null: AppSettings = serde_json::from_str(r#"{"last_opened_file":null}"#).unwrap();
+        assert_eq!(null.last_opened_file, None);
+        let missing: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.last_opened_file, None);
     }
 }

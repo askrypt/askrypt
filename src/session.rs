@@ -6,7 +6,7 @@
 //! screen module borrows `&mut Session` to read or mutate this shared state,
 //! while keeping its own UI fields in a per-screen `State` struct.
 
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, VaultLocation};
 use crate::tray::AppTray;
 use askrypt::{
     AskryptFile, QuestionsData, SecretEntry, calc_pbkdf2, decrypt_with_aes, encode_base64,
@@ -14,7 +14,6 @@ use askrypt::{
 };
 use rand::RngExt;
 use rfd::MessageDialogResult;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -61,7 +60,7 @@ pub struct SmartLockData {
 
 /// Shared, screen-independent application state.
 pub struct Session {
-    pub path: Option<PathBuf>,
+    pub location: Option<VaultLocation>,
     pub file: Option<AskryptFile>,
     pub questions_data: Option<QuestionsData>,
     pub question0: String,
@@ -104,7 +103,7 @@ impl Session {
         };
 
         Self {
-            path: None,
+            location: None,
             file: None,
             questions_data: None,
             question0: String::new(),
@@ -128,12 +127,8 @@ impl Session {
     }
 
     pub fn title(&self) -> String {
-        if let Some(path) = &self.path {
-            let mut title = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Untitled")
-                .to_string();
+        if let Some(location) = &self.location {
+            let mut title = location.display_name();
             if self.is_modified {
                 title.push('*');
             }
@@ -178,11 +173,12 @@ impl Session {
             .is_some_and(|data| data.last_activity.elapsed() >= SMART_LOCK_TIMEOUT)
     }
 
-    /// Save the current vault to its existing path (falling back to "Save As"
-    /// when the vault has never been written to disk).
+    /// Save the current vault to its existing location (falling back to
+    /// "Save As" when the vault has never been persisted).
     pub fn save_vault(&mut self) {
-        if let (Some(path), Some(file), Some(questions_data)) =
-            (&self.path, &self.file, &self.questions_data)
+        let location = self.location.clone();
+        if let (Some(location), Some(file), Some(questions_data)) =
+            (location, &self.file, &self.questions_data)
         {
             // Reconstruct questions list
             let mut questions = vec![self.question0.clone()];
@@ -200,7 +196,7 @@ impl Session {
                 Some(file.params.iterations),
                 file.params.translit,
             ) {
-                Ok(new_file) => match new_file.save_to_file(path) {
+                Ok(new_file) => match location.storage().save_vault(&new_file) {
                     Ok(_) => {
                         self.file = Some(new_file);
                         self.is_modified = false;
@@ -241,6 +237,8 @@ impl Session {
             let mut all_answers = vec![self.answer0.clone()];
             all_answers.extend(self.answers.clone());
 
+            let location = VaultLocation::LocalFile(new_path);
+
             // Create new AskryptFile with current entries
             match AskryptFile::create(
                 questions,
@@ -249,13 +247,13 @@ impl Session {
                 Some(DEFAULT_ITERATIONS), // TODO: allow user to set this iterations
                 self.file.as_ref().is_some_and(|f| f.params.translit),
             ) {
-                Ok(new_file) => match new_file.save_to_file(&new_path) {
+                Ok(new_file) => match location.storage().save_vault(&new_file) {
                     Ok(_) => {
-                        self.path = Some(new_path.clone());
+                        self.location = Some(location.clone());
                         self.file = Some(new_file);
                         self.is_modified = false;
                         self.success_message = Some("Vault saved successfully".into());
-                        self.settings.last_opened_file = Some(new_path);
+                        self.settings.last_opened_file = Some(location);
                     }
                     Err(e) => {
                         eprintln!("ERROR: Failed to save vault: {}", e);

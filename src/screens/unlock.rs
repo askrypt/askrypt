@@ -129,7 +129,7 @@ pub fn other_update(state: &mut OtherState, session: &mut Session, msg: OtherMsg
                     session.entries = entries;
                     session.unlocked = true;
                     session.last_user_activity = Some(Instant::now());
-                    session.settings.last_opened_file = session.path.clone();
+                    session.settings.last_opened_file = session.location.clone();
                     session.status_message = Some(format!("The Vault unlocked in {} ms", millis));
                     Action::switch(Screen::Entries(entries::State::default()))
                 }
