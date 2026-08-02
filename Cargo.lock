@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "askrypt"
-version = "0.6.1-dev"
+version = "0.6.2-dev"
 dependencies = [
  "askrypt-core",
  "chrono",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "askrypt-core"
-version = "0.6.1-dev"
+version = "0.6.2-dev"
 dependencies = [
  "aes",
  "base64",

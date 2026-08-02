@@ -19,7 +19,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 /// Default number of iterations for key derivation (OWASP recommendation for 2025)
 pub const DEFAULT_ITERATIONS: u32 = 600_000;
-pub const APP_TITLE: &str = "Askrypt 0.6.1-dev"; // TODO: get version from Cargo.toml
+pub const APP_TITLE: &str = "Askrypt 0.6.2-dev"; // TODO: get version from Cargo.toml
 /// Iterations for Smart Lock encryption (2,000,000 as specified)
 pub const SMART_LOCK_ITERATIONS: u32 = 2_000_000;
 /// Smart Lock timeout duration (8 hours)
