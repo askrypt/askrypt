@@ -15,6 +15,11 @@ An Askrypt file is a JSON with the following fields:
   * `salt` - base64 encoded salt (**salt0**), 16 bytes (string)
   * `translit` - whether to apply Russian/Ukrainian transliteration to answers
     during normalization (boolean, default: `false`; absent in older files)
+  * `host` - name of the host that last wrote the vault (string, optional;
+    omitted when unknown and absent in older files)
+  * `updated_at` - when the vault was last written, RFC 3339 UTC with second
+    precision, e.g. `"2026-08-02T10:15:30Z"` (string, optional; absent in older
+    files)
 * `qs` - base64 encoded encrypted data (string, json), encrypted by the first answer:
   * `questions` - the rest of the questions
   * `salt` - base64 encoded salt (**salt1**), 16 bytes (string)
@@ -41,13 +46,20 @@ An Askrypt file is a JSON with the following fields:
       "kdf": "pbkdf2",
       "iterations": 600000,
       "salt": "base64-encoded-salt",
-      "translit": false
+      "translit": false,
+      "host": "my-laptop",
+      "updated_at": "2026-08-02T10:15:30Z"
     },
     "qs": "base64-encoded-encrypted-questions",
     "master": "base64-encoded-encrypted-master-key",
     "data": "base64-encoded-encrypted-main-secret"
 }
 ```
+`host` and `updated_at` are **write metadata**, not inputs to any derivation:
+they are refreshed on every save and are stored unencrypted, so they are
+readable without any answer. Writers that cannot determine one of them omit the
+field entirely rather than writing a placeholder.
+
 The maximum question length is **500 bytes** (UTF-8). Each question is human-readable text. 
 The answer is a secret known only to the user. Questions can include spaces and special characters.
 

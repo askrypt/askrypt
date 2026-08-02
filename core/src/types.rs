@@ -22,6 +22,9 @@ pub struct SecretEntry {
 }
 
 /// Represents open parameters for [AskryptFile]
+///
+/// Note that these are stored **unencrypted** in the vault, so `host` is
+/// visible to anyone holding the file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Params {
     /// Key derivation function name (e.g. "pbkdf2-sha256")
@@ -33,6 +36,14 @@ pub struct Params {
     /// Whether to apply Russian/Ukrainian transliteration to answers
     #[serde(default)]
     pub translit: bool,
+    /// Name of the host that last wrote the vault (absent in older files or
+    /// when the host name cannot be determined)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// When the vault was last written, RFC 3339 UTC with second precision
+    /// (e.g. `2026-08-02T10:15:30Z`); absent in older files
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 /// Represents the encrypted questions and second-level KDF parameters

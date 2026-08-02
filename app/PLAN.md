@@ -53,7 +53,8 @@ askrypt/
 │   │   │   └── translit.dart      # BGN/PCGN Russian/Ukrainian -> ASCII
 │   │   ├── session/          # in-memory unlocked-vault state (Riverpod)
 │   │   ├── screens/          # welcome, unlock, list, entry, questions, passgen
-│   │   └── platform/         # biometrics, clipboard, file picker, recent-vault cache
+│   │   └── platform/         # biometrics, clipboard, file picker, recent-vault cache,
+│   │                         #   host name (params.host write stamp)
 │   ├── test/                 # Dart unit + parity (test-vector) tests
 │   ├── android/  ios/        # Flutter shells
 │   └── integration_test/
@@ -94,6 +95,11 @@ on device, Dart fallback in tests), **`pointycastle`** (AES-CBC + SHA256),
   whitespace classification match Rust's `char::is_whitespace`/`to_lowercase`.
 - **IV = salt bytes** for each layer (not a separate random IV except where the
   format stores one, e.g. master `iv`).
+- **`params.host` / `params.updated_at`** are written on every save (see
+  `SPEC.md`): `updated_at` must be RFC 3339 UTC with *second* precision
+  (`2026-08-02T10:15:30Z`), not Dart's default `toIso8601String()` millisecond
+  form, and both keys are omitted entirely when absent rather than written as
+  `null`.
 
 ## Operations to reach feature parity (from desktop `Message` enum)
 

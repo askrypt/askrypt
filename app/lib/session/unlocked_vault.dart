@@ -17,6 +17,7 @@ import 'dart:typed_data';
 
 import '../crypto/secret_entry.dart';
 import '../crypto/vault.dart';
+import '../platform/host_name.dart';
 
 /// A read-only projection of a [SecretEntry] for list/search UI: everything
 /// except the sensitive `secret` and `notes` fields, plus the entry's index in
@@ -202,7 +203,8 @@ class UnlockedVault {
   ///
   /// Re-creates the whole file (fresh salts + master key) like the desktop
   /// save path, then clears [isModified]. The bytes are ready to write to a
-  /// file/SAF document.
+  /// file/SAF document. Each save stamps `params.host`/`params.updated_at`
+  /// with this device and the current UTC time.
   ///
   /// Async because [AskryptFile.create] performs two PBKDF2 derivations on
   /// native platform crypto (see [pbkdf2]); awaiting keeps a save responsive
@@ -214,6 +216,7 @@ class UnlockedVault {
       entries: _entries,
       iterations: iterations,
       translit: translit,
+      host: currentHostName(),
     );
     isModified = false;
     return file.toBytes();

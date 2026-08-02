@@ -93,6 +93,48 @@ void main() {
     for (var i = 0; i < entries.length; i++) {
       expect(entries[i].toJson(), expected[i].toJson(), reason: 'entry $i');
     }
+
+    // Write stamp (params.host / params.updated_at), pinned by the generator.
+    expect(file.host, v['expected_host']);
+    expect(file.updatedAt, v['expected_updated_at']);
+  });
+
+  test('stamps host/updated_at, and omits them when absent', () async {
+    final file = await AskryptFile.create(
+      questions: ['Q one?', 'Q two?'],
+      answers: ['a1', 'a2'],
+      entries: const [],
+      iterations: 1,
+      host: 'test-host',
+      updatedAt: DateTime.utc(2026, 8, 2, 10, 15, 30, 456),
+    );
+    expect(file.host, 'test-host');
+    expect(file.updatedAt, '2026-08-02T10:15:30Z');
+
+    final params =
+        AskryptFile.fromBytes(file.toBytes()).toJson()['params'] as Map;
+    expect(params['host'], 'test-host');
+    expect(params['updated_at'], '2026-08-02T10:15:30Z');
+
+    // Local time is converted to UTC, matching the Rust stamp.
+    expect(formatUtcStamp(DateTime.utc(2026, 1, 2, 3, 4, 5).toLocal()),
+        '2026-01-02T03:04:05Z');
+
+    // Pre-stamp files load, and round-trip without inventing the keys.
+    final legacy = AskryptFile(
+      version: '0.9',
+      question0: 'Q0',
+      kdf: 'pbkdf2',
+      iterations: 1,
+      salt0B64: 'c2FsdA==',
+      translit: false,
+      qs: 'qs',
+      master: 'master',
+      data: 'data',
+    );
+    expect((legacy.toJson()['params'] as Map).containsKey('host'), isFalse);
+    expect(
+        (legacy.toJson()['params'] as Map).containsKey('updated_at'), isFalse);
   });
 
   test('Dart-created vault round-trips through Dart', () async {

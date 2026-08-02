@@ -52,6 +52,8 @@ class AskryptFile {
     required this.iterations,
     required this.salt0B64,
     required this.translit,
+    this.host,
+    this.updatedAt,
     required this.qs,
     required this.master,
     required this.data,
@@ -63,6 +65,15 @@ class AskryptFile {
   final int iterations;
   final String salt0B64; // params.salt
   final bool translit;
+
+  /// Name of the host that last wrote the vault (`params.host`), or `null` for
+  /// files written before the stamp existed. Stored **unencrypted**.
+  final String? host;
+
+  /// When the vault was last written (`params.updated_at`), RFC 3339 UTC with
+  /// second precision (e.g. `2026-08-02T10:15:30Z`); `null` in older files.
+  final String? updatedAt;
+
   final String qs;
   final String master;
   final String data;
@@ -78,6 +89,8 @@ class AskryptFile {
       iterations: params['iterations'] as int,
       salt0B64: params['salt'] as String,
       translit: (params['translit'] as bool?) ?? false,
+      host: params['host'] as String?,
+      updatedAt: params['updated_at'] as String?,
       qs: j['qs'] as String,
       master: j['master'] as String,
       data: j['data'] as String,
@@ -92,6 +105,9 @@ class AskryptFile {
           'iterations': iterations,
           'salt': salt0B64,
           'translit': translit,
+          // Omitted when absent, matching the Rust `skip_serializing_if`.
+          if (host != null) 'host': host,
+          if (updatedAt != null) 'updated_at': updatedAt,
         },
         'qs': qs,
         'master': master,
@@ -169,6 +185,8 @@ class AskryptFile {
     required List<SecretEntry> entries,
     int iterations = defaultIterations,
     bool translit = false,
+    String? host,
+    DateTime? updatedAt,
     Random? rng,
   }) async {
     if (questions.length < 2) {
@@ -215,11 +233,22 @@ class AskryptFile {
       iterations: iterations,
       salt0B64: salt0B64,
       translit: translit,
+      host: host,
+      updatedAt: formatUtcStamp(updatedAt ?? DateTime.now()),
       qs: qs,
       master: master,
       data: data,
     );
   }
+}
+
+/// Format [t] as RFC 3339 UTC with second precision — the `params.updated_at`
+/// shape written by `AskryptFile::touch` in `core/src/lib.rs`.
+String formatUtcStamp(DateTime t) {
+  final u = t.toUtc();
+  String pad(int v, [int width = 2]) => v.toString().padLeft(width, '0');
+  return '${pad(u.year, 4)}-${pad(u.month)}-${pad(u.day)}'
+      'T${pad(u.hour)}:${pad(u.minute)}:${pad(u.second)}Z';
 }
 
 Uint8List _jsonBytes(Object value) =>

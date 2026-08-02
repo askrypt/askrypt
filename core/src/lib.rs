@@ -229,7 +229,7 @@ impl AskryptFile {
         let data = encrypt_to_base64(&secret_data, &master_key_array, &iv_array)?;
 
         // Step 7: Create and return AskryptFile
-        Ok(AskryptFile {
+        let mut file = AskryptFile {
             version: "0.9".to_string(),
             question0: questions[0].clone(),
             params: Params {
@@ -237,11 +237,27 @@ impl AskryptFile {
                 iterations,
                 salt: salt0_b64,
                 translit,
+                host: None,
+                updated_at: None,
             },
             qs,
             master,
             data,
-        })
+        };
+        // Every write goes through `create` (the vault is re-encrypted from
+        // scratch on each save), so stamping here keeps the fields current.
+        file.touch();
+        Ok(file)
+    }
+
+    /// Stamp `params.host` and `params.updated_at` with this machine and the
+    /// current UTC time.
+    ///
+    /// Called by [`create`](Self::create); call it directly only when writing a
+    /// vault that was not rebuilt through `create`.
+    pub fn touch(&mut self) {
+        self.params.host = current_host();
+        self.params.updated_at = Some(now_utc_rfc3339());
     }
 
     /// Decrypt an AskryptFile and retrieve the secret data using the answers
@@ -461,6 +477,34 @@ impl AskryptFile {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(LocalFileStorage::new(path.as_ref()).load_vault()?)
     }
+}
+
+/// Name of the machine writing the vault, for [`Params::host`].
+///
+/// Returns `None` when the host name is unavailable or not valid UTF-8.
+///
+/// # Example
+///
+/// ```
+/// let host = askrypt::current_host();
+/// assert!(host.as_deref() != Some(""));
+/// ```
+pub fn current_host() -> Option<String> {
+    let host = gethostname::gethostname().into_string().ok()?;
+    if host.is_empty() { None } else { Some(host) }
+}
+
+/// Current UTC time formatted as RFC 3339 with second precision, for
+/// [`Params::updated_at`] (e.g. `2026-08-02T10:15:30Z`).
+///
+/// # Example
+///
+/// ```
+/// let stamp = askrypt::now_utc_rfc3339();
+/// assert!(stamp.ends_with('Z'));
+/// ```
+pub fn now_utc_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// Encrypt a message using AES-256-CBC with a custom IV
@@ -953,6 +997,8 @@ mod tests {
                 iterations: 600000,
                 salt: "base64-salt".to_string(),
                 translit: false,
+                host: Some("test-host".to_string()),
+                updated_at: Some("2026-08-02T10:15:30Z".to_string()),
             },
             qs: "base64-encrypted-questions".to_string(),
             master: "base64-encrypted-master".to_string(),
@@ -1007,6 +1053,57 @@ mod tests {
         assert!(!askrypt_file.qs.is_empty());
         assert!(!askrypt_file.master.is_empty());
         assert!(!askrypt_file.data.is_empty());
+
+        // Write stamp
+        assert_eq!(askrypt_file.params.host, current_host());
+        let updated_at = askrypt_file.params.updated_at.unwrap();
+        assert!(updated_at.ends_with('Z'), "not RFC 3339 UTC: {updated_at}");
+        assert_eq!(updated_at.len(), "2026-08-02T10:15:30Z".len());
+    }
+
+    #[test]
+    fn test_askrypt_file_touch_refreshes_stamp() {
+        let mut file = AskryptFile {
+            version: "0.9".to_string(),
+            question0: "Q0".to_string(),
+            params: Params {
+                kdf: DEFAULT_KDF.to_string(),
+                iterations: 600000,
+                salt: "base64-salt".to_string(),
+                translit: false,
+                host: Some("some-other-host".to_string()),
+                updated_at: Some("2000-01-01T00:00:00Z".to_string()),
+            },
+            qs: "qs".to_string(),
+            master: "master".to_string(),
+            data: "data".to_string(),
+        };
+
+        file.touch();
+
+        assert_eq!(file.params.host, current_host());
+        assert!(file.params.updated_at.unwrap().as_str() > "2000-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_params_stamp_is_optional_and_omitted_when_absent() {
+        // Files written before the stamp existed must still load.
+        let json = r#"{
+            "version": "0.9",
+            "question0": "Q0",
+            "params": {"kdf": "pbkdf2", "iterations": 600000, "salt": "c2FsdA=="},
+            "qs": "qs",
+            "master": "master",
+            "data": "data"
+        }"#;
+        let file: AskryptFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.params.host, None);
+        assert_eq!(file.params.updated_at, None);
+
+        // ...and round-trip without inventing the keys.
+        let out = serde_json::to_string(&file).unwrap();
+        assert!(!out.contains("host"), "{out}");
+        assert!(!out.contains("updated_at"), "{out}");
     }
 
     #[test]

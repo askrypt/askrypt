@@ -141,7 +141,7 @@ fn main() {
         },
     ];
     let iterations = 1000u32; // keep tests fast; production default is 600_000
-    let file = AskryptFile::create(
+    let mut file = AskryptFile::create(
         questions.clone(),
         answers.clone(),
         entries.clone(),
@@ -149,6 +149,13 @@ fn main() {
         false,
     )
     .unwrap();
+    // `create` stamps params.host/params.updated_at with this machine and the
+    // current time; pin them so the fixture stays deterministic (and doesn't
+    // bake the generating machine's host name into the repo).
+    let host = "vector-host";
+    let updated_at = "2026-01-02T03:04:05Z";
+    file.params.host = Some(host.to_string());
+    file.params.updated_at = Some(updated_at.to_string());
     let vault_bytes = file.to_bytes().unwrap();
 
     let vault = json!({
@@ -156,6 +163,8 @@ fn main() {
         "answers": answers,
         "iterations": iterations,
         "translit": false,
+        "expected_host": host,
+        "expected_updated_at": updated_at,
         "expected_entries": serde_json::to_value(&entries).unwrap(),
         "vault_b64": encode_base64(&vault_bytes),
     });
