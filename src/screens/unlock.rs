@@ -4,7 +4,7 @@
 //! answer-input widgets and the `answer0` visibility toggle.
 
 use crate::message::{GlobalMsg, Message};
-use crate::screens::{Action, Screen, entries, show_messages_in_column, show_vault_path};
+use crate::screens::{Action, Screen, entries, passgen, show_messages_in_column, show_vault_path};
 use crate::session::Session;
 use crate::ui::{padded_button, security_input_with_toggle, spinner_row, title_h1};
 use askrypt::{QuestionsData, SecretEntry};
@@ -31,6 +31,7 @@ pub enum FirstMsg {
     Answer0Finished,
     Answer0Loaded(Result<QuestionsData, String>),
     ToggleAnswer0Visibility,
+    OpenPassGen,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ pub enum OtherMsg {
     VaultDecrypted(Result<Vec<SecretEntry>, String>),
     ToggleAnswer0Visibility,
     ShowAnswer(usize),
+    OpenPassGen,
 }
 
 pub fn first_update(state: &mut FirstState, session: &mut Session, msg: FirstMsg) -> Action {
@@ -97,6 +99,9 @@ pub fn first_update(state: &mut FirstState, session: &mut Session, msg: FirstMsg
         FirstMsg::ToggleAnswer0Visibility => {
             state.show_answer0 = !state.show_answer0;
             Action::None
+        }
+        FirstMsg::OpenPassGen => {
+            Action::switch(Screen::PassGen(passgen::State::new(None, session)))
         }
     }
 }
@@ -156,6 +161,9 @@ pub fn other_update(state: &mut OtherState, session: &mut Session, msg: OtherMsg
             }
             Action::None
         }
+        OtherMsg::OpenPassGen => {
+            Action::switch(Screen::PassGen(passgen::State::new(None, session)))
+        }
     }
 }
 
@@ -214,6 +222,8 @@ pub fn first_view<'a>(state: &'a FirstState, session: &'a Session) -> Element<'a
     } else {
         let controls = row![
             padded_button("Unlock").on_press(Message::FirstQuestion(FirstMsg::Answer0Finished)),
+            padded_button("Password Generator")
+                .on_press(Message::FirstQuestion(FirstMsg::OpenPassGen)),
             padded_button("Main menu").on_press(Message::Global(GlobalMsg::BackToWelcome)),
             padded_button("Exit").on_press(Message::Global(GlobalMsg::ExitApp)),
         ]
@@ -276,6 +286,8 @@ pub fn other_view<'a>(state: &'a OtherState, session: &'a Session) -> Element<'a
         } else {
             let controls = row![
                 padded_button("Unlock").on_press(Message::OtherQuestions(OtherMsg::UnlockVault)),
+                padded_button("Password Generator")
+                    .on_press(Message::OtherQuestions(OtherMsg::OpenPassGen)),
                 padded_button("Cancel").on_press(Message::Global(GlobalMsg::BackToWelcome)),
                 padded_button("Exit").on_press(Message::Global(GlobalMsg::ExitApp)),
             ]

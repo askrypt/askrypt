@@ -1,7 +1,7 @@
 //! Welcome screen: create or open a vault.
 
 use crate::message::{GlobalMsg, Message};
-use crate::screens::{Action, Screen, questions, show_messages_in_column, unlock};
+use crate::screens::{Action, Screen, passgen, questions, show_messages_in_column, unlock};
 use crate::session::Session;
 use crate::settings::VaultLocation;
 use crate::ui::{padded_button, title_h1};
@@ -12,6 +12,7 @@ use iced::{Element, alignment};
 pub enum Msg {
     OpenVault,
     CreateNewVault,
+    OpenPassGen,
 }
 
 pub fn update(session: &mut Session, msg: Msg) -> Action {
@@ -47,6 +48,7 @@ pub fn update(session: &mut Session, msg: Msg) -> Action {
             }
             Action::Run(operation::focus_next())
         }
+        Msg::OpenPassGen => Action::switch(Screen::PassGen(passgen::State::new(None, session))),
     }
 }
 
@@ -56,6 +58,7 @@ pub fn view(session: &Session) -> Element<'_, Message> {
         .push("Your secrets are protected by security questions only you know")
         .push(padded_button("Create New Vault").on_press(Message::Welcome(Msg::CreateNewVault)))
         .push(padded_button("Open Existing Vault").on_press(Message::Welcome(Msg::OpenVault)))
+        .push(padded_button("Password Generator").on_press(Message::Welcome(Msg::OpenPassGen)))
         .push(padded_button("Exit").on_press(Message::Global(GlobalMsg::ExitApp)))
         .align_x(alignment::Horizontal::Center);
 

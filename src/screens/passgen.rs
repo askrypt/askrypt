@@ -3,11 +3,12 @@
 //! When opened from the entry editor it carries the editor's state in
 //! `return_to` so "Copy and use" can write the generated password back into the
 //! draft entry and return to the editor; opened standalone, `return_to` is
-//! `None` and it returns to the entries list.
+//! `None` and it returns to the screen it was opened from (entries list,
+//! either unlock screen, or welcome — inferred from the session state).
 
 use crate::message::Message;
 use crate::screens::entry_editor;
-use crate::screens::{Action, Screen, entries, show_messages_in_column};
+use crate::screens::{Action, Screen, entries, show_messages_in_column, unlock};
 use crate::session::Session;
 use crate::ui::{container_border_r5, padded_button, title_h1};
 use askrypt::passgen::{PasswordGenConfig, generate_password};
@@ -32,6 +33,23 @@ impl State {
             generated,
             return_to,
         }
+    }
+}
+
+/// Where to go when leaving a standalone generator (no editor to return to).
+/// The session state identifies the screen the generator was opened from:
+/// vault unlocked → entries list, mid-unlock (questions revealed) → other
+/// questions, vault loaded but first answer pending → first question,
+/// nothing loaded → welcome.
+fn back_screen(session: &Session) -> Screen {
+    if session.unlocked {
+        Screen::Entries(entries::State::default())
+    } else if session.questions_data.is_some() {
+        Screen::OtherQuestions(unlock::OtherState::default())
+    } else if session.file.is_some() {
+        Screen::FirstQuestion(unlock::FirstState::default())
+    } else {
+        Screen::Welcome
     }
 }
 
@@ -114,14 +132,14 @@ pub fn update(state: &mut State, session: &mut Session, msg: Msg) -> Action {
                 let task = clipboard::write(state.generated.clone());
                 Action::switch_run(Screen::EntryEditor(editor), task)
             } else {
-                Action::switch(Screen::Entries(entries::State::default()))
+                Action::switch(back_screen(session))
             }
         }
         Msg::Cancel => {
             if let Some(editor) = state.return_to.take() {
                 Action::switch(Screen::EntryEditor(editor))
             } else {
-                Action::switch(Screen::Entries(entries::State::default()))
+                Action::switch(back_screen(session))
             }
         }
     }
