@@ -1,0 +1,3 @@
+-- Phase 0: initial empty migration.
+-- Proves the embedded migration runner works end-to-end; real tables
+-- (accounts, sessions, vault metadata) arrive with Phase 2+.

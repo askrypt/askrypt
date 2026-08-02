@@ -72,13 +72,35 @@ App ID `com.askrypt.app`, display name "Askrypt", `minSdk 26`. The `android/` an
 
 `MainActivity` extends **`FlutterFragmentActivity`** (not the default `FlutterActivity`) because `local_auth`'s biometric prompt requires a `FragmentActivity` host; it also registers the `askrypt/secure` channel. iOS needs `NSFaceIDUsageDescription` in `Info.plist`.
 
-### Server — `server/` (planned)
+### Server — `server/` (`askrypt-server`)
 
-A planned Rust (axum) server providing accounts (email + password, plus
-Google sign-in) and cloud
-storage of vaults as **opaque encrypted files** — it never handles questions,
-answers, or vault crypto. No code exists yet; the phased plan lives in
-**`server/PLAN.md`**.
+A Rust (axum) server providing accounts (email + password, plus Google
+sign-in) and cloud storage of vaults as **opaque encrypted files** — it never
+handles questions, answers, or vault crypto, and it must **never depend on
+`askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phase 0
+(scaffolding) is done, Phase 1 (landing page) is next.
+
+- **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
+  backend selection, graceful shutdown (Ctrl+C/SIGTERM). With the `sqlite`
+  backend it opens the pool and runs migrations at boot; the trait objects are
+  the in-memory fakes until the SQLite store impls land in Phase 2.
+- **`server/src/config.rs`** — `Config::from_env()`: `ASKRYPT_BIND`
+  (default `127.0.0.1:8080`), `ASKRYPT_DATA_DIR` (default `data`, gitignored),
+  `ASKRYPT_BACKEND` (`sqlite` default | `memory`).
+- **`server/src/error.rs`** — Uniform JSON error convention: every API error is
+  `{"error": {"code", "message"}}` via `ApiError` (`IntoResponse`), with
+  `From<StoreError>`; internal details are logged, never sent to clients.
+- **`server/src/routes.rs`** — Router: `/healthz` + JSON 404 fallback. All
+  future dynamic endpoints go under `/api/v1`.
+- **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
+  seam; handlers can only reach the traits.
+- **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
+  `SessionStore`, `VaultMetaStore`, `VaultBlobStore`, `Mailer`,
+  `IdTokenVerifier` (+ `StoreError`/`MailerError`/`IdTokenError`, all
+  `#[non_exhaustive]`); `memory.rs` in-memory fakes for all six (used by tests
+  and the `memory` backend); `sqlite.rs` SQLite pool + embedded migration
+  runner over `server/migrations/`.
+- **`server/tests/http.rs`** — HTTP-level tests (tower `oneshot`, no socket).
 
 ### Key Dependencies
 
@@ -102,6 +124,8 @@ cargo clippy --workspace --all-targets
 cargo build -p askrypt
 # Regenerate Dart parity vectors after any format/normalization change:
 cargo run -p askrypt-core --example gen_vectors
+# Server (also covered by the --workspace commands above):
+cargo run -p askrypt-server      # then curl /healthz
 
 # Mobile (Flutter) — SDK at /home/ruslan/Apps/flutter (add bin to PATH)
 cd app && flutter test       # crypto parity + session + passgen + widget tests

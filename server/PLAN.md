@@ -94,7 +94,7 @@ askrypt/
 
 ## Phases
 
-- **Phase 0 — Scaffolding.**
+- **Phase 0 — Scaffolding.** ✅ *(done 2026-08-02)*
   - Add `server/` crate (`askrypt-server`) to the Cargo workspace.
   - axum app skeleton: router, graceful shutdown, `/healthz`.
   - Configuration (bind address, data dir, secrets) via env vars / config file.
