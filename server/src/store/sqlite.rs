@@ -343,6 +343,21 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn account_update_to_taken_email_conflicts() {
+        let (_dir, pool) = setup().await;
+        let store = SqliteAccountStore::new(pool);
+        let account = store.create(new_account("a@example.com")).await.unwrap();
+        store.create(new_account("b@example.com")).await.unwrap();
+
+        let mut clash = account.clone();
+        clash.email = "b@example.com".to_string();
+        assert!(matches!(
+            store.update(&clash).await,
+            Err(StoreError::Conflict(_))
+        ));
+    }
+
     fn new_session(token: &str, account_id: AccountId) -> Session {
         Session {
             token: token.to_string(),

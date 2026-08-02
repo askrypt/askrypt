@@ -25,9 +25,7 @@ pub struct MemoryAccountStore {
 impl AccountStore for MemoryAccountStore {
     async fn create(&self, new: NewAccount) -> Result<Account, StoreError> {
         let mut accounts = self.accounts.lock().unwrap();
-        if accounts.values().any(|a| a.email == new.email) {
-            return Err(StoreError::Conflict("email already registered".into()));
-        }
+        check_unique(&accounts, None, &new.email, new.google_sub.as_deref())?;
         let account = Account {
             id: Uuid::new_v4(),
             email: new.email,
@@ -50,6 +48,12 @@ impl AccountStore for MemoryAccountStore {
 
     async fn update(&self, account: &Account) -> Result<(), StoreError> {
         let mut accounts = self.accounts.lock().unwrap();
+        check_unique(
+            &accounts,
+            Some(account.id),
+            &account.email,
+            account.google_sub.as_deref(),
+        )?;
         match accounts.get_mut(&account.id) {
             Some(existing) => {
                 *existing = account.clone();
@@ -65,6 +69,24 @@ impl AccountStore for MemoryAccountStore {
             None => Err(StoreError::NotFound),
         }
     }
+}
+
+/// Mirrors the SQLite unique constraints on `email` and `google_sub`;
+/// `exclude` skips the record being updated.
+fn check_unique(
+    accounts: &HashMap<AccountId, Account>,
+    exclude: Option<AccountId>,
+    email: &str,
+    google_sub: Option<&str>,
+) -> Result<(), StoreError> {
+    let others = || accounts.values().filter(|a| Some(a.id) != exclude);
+    if others().any(|a| a.email == email) {
+        return Err(StoreError::Conflict("email already registered".into()));
+    }
+    if google_sub.is_some() && others().any(|a| a.google_sub.as_deref() == google_sub) {
+        return Err(StoreError::Conflict("google account already linked".into()));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -321,6 +343,32 @@ mod tests {
         store.create(new_account("a@example.com")).await.unwrap();
         assert!(matches!(
             store.create(new_account("a@example.com")).await,
+            Err(StoreError::Conflict(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn account_update_enforces_uniqueness() {
+        let store = MemoryAccountStore::default();
+        let account = store.create(new_account("a@example.com")).await.unwrap();
+        let mut linked = new_account("b@example.com");
+        linked.google_sub = Some("google-sub-1".to_string());
+        store.create(linked).await.unwrap();
+
+        // Updating without changing unique fields is fine (no self-conflict).
+        store.update(&account).await.unwrap();
+
+        let mut clash = account.clone();
+        clash.email = "b@example.com".to_string();
+        assert!(matches!(
+            store.update(&clash).await,
+            Err(StoreError::Conflict(_))
+        ));
+
+        let mut clash = account.clone();
+        clash.google_sub = Some("google-sub-1".to_string());
+        assert!(matches!(
+            store.update(&clash).await,
             Err(StoreError::Conflict(_))
         ));
     }

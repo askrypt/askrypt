@@ -138,13 +138,14 @@ askrypt/
     Google flow (new account + link-to-existing) integration-tested against
     the fake `IdTokenVerifier`.
 
-- **Phase 3 — Profile page (API).**
+- **Phase 3 — Profile page (API).** ✅ *(done 2026-08-02)*
   - Get current user info, including linked login providers (password /
     Google).
   - Update email; change password (requires current password re-auth).
     Google-created accounts have no password — support **set password**
     there; current-password re-auth applies only to accounts that have one.
-  - List active sessions/devices; revoke a session.
+  - List active sessions/devices; revoke a session. (Sessions are identified
+    to clients by a SHA-256 digest of the bearer token, never the token.)
   - Delete account — cascades to all stored vault files.
   - Gate: profile CRUD integration-tested.
 

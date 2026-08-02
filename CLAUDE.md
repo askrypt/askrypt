@@ -78,8 +78,9 @@ A Rust (axum) server providing accounts (email + password, plus Google
 sign-in) and cloud storage of vaults as **opaque encrypted files** — it never
 handles questions, answers, or vault crypto, and it must **never depend on
 `askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phases 0
-(scaffolding), 1 (landing page + API namespacing) and 2 (auth: register,
-login, Google sign-in) are done, Phase 3 (profile API) is next.
+(scaffolding), 1 (landing page + API namespacing), 2 (auth: register, login,
+Google sign-in) and 3 (profile API) are done, Phase 4 (vault cloud storage)
+is next.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
@@ -99,9 +100,9 @@ login, Google sign-in) are done, Phase 3 (profile API) is next.
   sent to clients. `ApiJson<T>` is the `Json` extractor variant whose
   rejection keeps the envelope.
 - **`server/src/routes.rs`** — Router: `/healthz`; `/api/v1` nest (`GET
-  /about`, `GET /me`, and `/auth/{register,login,google,logout}` behind a
-  20 req/min fixed-window rate limiter) with a JSON 404 fallback covering
-  everything under `/api`; all other paths serve static assets from the
+  /about`, the `/me` profile tree, and `/auth/{register,login,google,logout}`
+  behind a 20 req/min fixed-window rate limiter) with a JSON 404 fallback
+  covering everything under `/api`; all other paths serve static assets from the
   configured static dir (`tower-http` `ServeDir`) with SPA fallback to
   `index.html` — `server/static/` ships a placeholder landing page until
   Phase 7.
@@ -112,6 +113,15 @@ login, Google sign-in) are done, Phase 3 (profile API) is next.
   requires `email_verified`, creates or links the account by verified email),
   logout, and the `AuthSession` extractor (`Authorization: Bearer` →
   session + account) used by protected routes.
+- **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`:
+  `GET /me` (full profile incl. linked providers), `PUT /me/email`,
+  `PUT /me/password` (current-password re-auth when one exists; sets the
+  first password on Google-created accounts), `GET /me/sessions` +
+  `DELETE /me/sessions/{id}` (sessions are identified by a SHA-256 digest of
+  the bearer token so listings never leak tokens; `current` flags the
+  caller's), and `DELETE /me` (cascades vault blobs → vault metadata →
+  sessions → account). The email/password mutations sit behind their own
+  20 req/min rate limiter.
 - **`server/src/ratelimit.rs`** — In-memory fixed-window `RateLimiter` +
   axum middleware, keyed by first `X-Forwarded-For` address, else peer IP.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
@@ -127,9 +137,11 @@ login, Google sign-in) are done, Phase 3 (profile API) is next.
   against Google's JWKS, cached with a 60 s refetch floor, issuer/audience/
   expiry checks) and `NotConfiguredIdTokenVerifier`.
 - **`server/tests/`** — HTTP-level tests (tower `oneshot`, no socket):
-  `http.rs` (routing/static) and `auth.rs` (the Phase 2 gate: register →
+  `http.rs` (routing/static), `auth.rs` (the Phase 2 gate: register →
   login → `/me` → logout, Google new-account + link-to-existing against the
-  fake verifier, validation, rate limiting).
+  fake verifier, validation, rate limiting) and `profile.rs` (the Phase 3
+  gate: providers, email update, change/set password, session list/revoke,
+  account-delete cascade incl. the vault stores).
 
 ### Key Dependencies
 

@@ -9,6 +9,10 @@
 //!
 //! Auth (Phase 2): the handlers live in [`crate::auth`]; everything under
 //! `/api/v1/auth` shares one fixed-window rate limiter.
+//!
+//! Profile (Phase 3): the `/api/v1/me` tree lives in [`crate::profile`]; the
+//! email/password mutation endpoints get their own rate limiter so a stolen
+//! bearer token can't brute-force the current password unthrottled.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,12 +21,13 @@ use std::time::Duration;
 use axum::Json;
 use axum::Router;
 use axum::middleware;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 use serde::Serialize;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth;
 use crate::error::ApiError;
+use crate::profile;
 use crate::ratelimit::{self, RateLimiter};
 use crate::state::AppState;
 
@@ -41,9 +46,21 @@ pub fn router(state: AppState, static_dir: &Path) -> Router {
             ratelimit::middleware,
         ));
 
+    let profile_limiter = Arc::new(RateLimiter::new(AUTH_RATE_LIMIT, AUTH_RATE_WINDOW));
+    let profile_sensitive = Router::new()
+        .route("/me/email", put(profile::update_email))
+        .route("/me/password", put(profile::change_password))
+        .route_layer(middleware::from_fn_with_state(
+            profile_limiter,
+            ratelimit::middleware,
+        ));
+
     let api_v1 = Router::new()
         .route("/about", get(about))
-        .route("/me", get(auth::me))
+        .route("/me", get(profile::me).delete(profile::delete_account))
+        .route("/me/sessions", get(profile::list_sessions))
+        .route("/me/sessions/{id}", delete(profile::revoke_session))
+        .merge(profile_sensitive)
         .nest("/auth", auth_api)
         .fallback(api_fallback);
 

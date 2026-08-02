@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod profile;
 pub mod ratelimit;
 pub mod routes;
 pub mod state;

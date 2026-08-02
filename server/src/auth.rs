@@ -166,12 +166,6 @@ pub async fn logout(State(state): State<AppState>, auth: AuthSession) -> ApiResu
     }
 }
 
-/// `GET /api/v1/me` — minimal authenticated endpoint; Phase 3 grows it into
-/// the full profile.
-pub async fn me(auth: AuthSession) -> Json<AccountInfo> {
-    Json(AccountInfo::from(&auth.account))
-}
-
 /// Extractor for protected routes: validates the `Authorization: Bearer`
 /// token against the session store and loads the owning account.
 pub struct AuthSession {
@@ -250,7 +244,7 @@ fn invalid_credentials() -> ApiError {
 /// Normalizes (trim + lowercase) and sanity-checks an email address. Full
 /// RFC 5322 validation is a rabbit hole; ownership is what verification
 /// emails are for.
-fn validate_email(raw: &str) -> Result<String, ApiError> {
+pub(crate) fn validate_email(raw: &str) -> Result<String, ApiError> {
     let email = raw.trim().to_ascii_lowercase();
     let ok = !email.is_empty()
         && email.len() <= MAX_EMAIL_LEN
@@ -271,7 +265,7 @@ fn validate_email(raw: &str) -> Result<String, ApiError> {
     }
 }
 
-fn validate_password(password: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_password(password: &str) -> Result<(), ApiError> {
     if password.chars().count() < MIN_PASSWORD_LEN {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -289,7 +283,7 @@ fn validate_password(password: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn hash_password(password: String) -> ApiResult<String> {
+pub(crate) async fn hash_password(password: String) -> ApiResult<String> {
     tokio::task::spawn_blocking(move || {
         let mut salt_bytes = [0u8; 16];
         getrandom::fill(&mut salt_bytes).expect("OS RNG unavailable");
@@ -306,7 +300,7 @@ async fn hash_password(password: String) -> ApiResult<String> {
     })
 }
 
-async fn verify_password(hash: String, password: String) -> ApiResult<bool> {
+pub(crate) async fn verify_password(hash: String, password: String) -> ApiResult<bool> {
     tokio::task::spawn_blocking(move || {
         let parsed = PasswordHash::new(&hash).map_err(|e| e.to_string())?;
         Ok(Argon2::default()
