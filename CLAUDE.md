@@ -78,26 +78,42 @@ A Rust (axum) server providing accounts (email + password, plus Google
 sign-in) and cloud storage of vaults as **opaque encrypted files** — it never
 handles questions, answers, or vault crypto, and it must **never depend on
 `askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phases 0
-(scaffolding) and 1 (landing page + API namespacing) are done, Phase 2
-(auth: register & login) is next.
+(scaffolding), 1 (landing page + API namespacing) and 2 (auth: register,
+login, Google sign-in) are done, Phase 3 (profile API) is next.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
-  backend selection, graceful shutdown (Ctrl+C/SIGTERM). With the `sqlite`
-  backend it opens the pool and runs migrations at boot; the trait objects are
-  the in-memory fakes until the SQLite store impls land in Phase 2.
+  backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
+  wires `SqliteAccountStore`/`SqliteSessionStore` (vault stores + mailer stay
+  in-memory until their phases); the Google verifier is real when
+  `ASKRYPT_GOOGLE_CLIENT_IDS` is set, else `NotConfiguredIdTokenVerifier`
+  (501). Serves with `ConnectInfo` so rate limiting can key on peer IPs.
 - **`server/src/config.rs`** — `Config::from_env()`: `ASKRYPT_BIND`
   (default `127.0.0.1:8080`), `ASKRYPT_DATA_DIR` (default `data`, gitignored),
   `ASKRYPT_BACKEND` (`sqlite` default | `memory`), `ASKRYPT_STATIC_DIR`
-  (default `server/static`, i.e. `cargo run` from the workspace root).
+  (default `server/static`, i.e. `cargo run` from the workspace root),
+  `ASKRYPT_GOOGLE_CLIENT_IDS` (comma-separated ID-token audiences; empty
+  disables Google sign-in).
 - **`server/src/error.rs`** — Uniform JSON error convention: every API error is
   `{"error": {"code", "message"}}` via `ApiError` (`IntoResponse`), with
-  `From<StoreError>`; internal details are logged, never sent to clients.
-- **`server/src/routes.rs`** — Router: `/healthz`; `/api/v1` nest (currently
-  `GET /about` → name+version) where all dynamic endpoints live, with a JSON
-  404 fallback covering everything under `/api`; all other paths serve static
-  assets from the configured static dir (`tower-http` `ServeDir`) with SPA
-  fallback to `index.html` — `server/static/` ships a placeholder landing
-  page until Phase 7.
+  `From<StoreError>`/`From<IdTokenError>`; internal details are logged, never
+  sent to clients. `ApiJson<T>` is the `Json` extractor variant whose
+  rejection keeps the envelope.
+- **`server/src/routes.rs`** — Router: `/healthz`; `/api/v1` nest (`GET
+  /about`, `GET /me`, and `/auth/{register,login,google,logout}` behind a
+  20 req/min fixed-window rate limiter) with a JSON 404 fallback covering
+  everything under `/api`; all other paths serve static assets from the
+  configured static dir (`tower-http` `ServeDir`) with SPA fallback to
+  `index.html` — `server/static/` ships a placeholder landing page until
+  Phase 7.
+- **`server/src/auth.rs`** — Phase 2 auth: register (email normalization +
+  validation, ≥8-char passwords, argon2 hashing on `spawn_blocking`), login
+  (uniform 401 `invalid_credentials`; 256-bit hex bearer tokens, 30-day
+  sessions), Google sign-in (verifies via the `IdTokenVerifier` trait,
+  requires `email_verified`, creates or links the account by verified email),
+  logout, and the `AuthSession` extractor (`Authorization: Bearer` →
+  session + account) used by protected routes.
+- **`server/src/ratelimit.rs`** — In-memory fixed-window `RateLimiter` +
+  axum middleware, keyed by first `X-Forwarded-For` address, else peer IP.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
   seam; handlers can only reach the traits.
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
@@ -105,8 +121,15 @@ handles questions, answers, or vault crypto, and it must **never depend on
   `IdTokenVerifier` (+ `StoreError`/`MailerError`/`IdTokenError`, all
   `#[non_exhaustive]`); `memory.rs` in-memory fakes for all six (used by tests
   and the `memory` backend); `sqlite.rs` SQLite pool + embedded migration
-  runner over `server/migrations/`.
-- **`server/tests/http.rs`** — HTTP-level tests (tower `oneshot`, no socket).
+  runner over `server/migrations/` plus `SqliteAccountStore`/
+  `SqliteSessionStore` (uuids as TEXT, timestamps via sqlx-chrono, sessions
+  cascade on account delete); `google.rs` `GoogleIdTokenVerifier` (RS256
+  against Google's JWKS, cached with a 60 s refetch floor, issuer/audience/
+  expiry checks) and `NotConfiguredIdTokenVerifier`.
+- **`server/tests/`** — HTTP-level tests (tower `oneshot`, no socket):
+  `http.rs` (routing/static) and `auth.rs` (the Phase 2 gate: register →
+  login → `/me` → logout, Google new-account + link-to-existing against the
+  fake verifier, validation, rate limiting).
 
 ### Key Dependencies
 

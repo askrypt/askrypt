@@ -6,9 +6,9 @@
 //! | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data directory           |
 //! | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite`/`memory` |
 //! | `ASKRYPT_STATIC_DIR` | `server/static`  | Static asset directory (landing/SPA) |
+//! | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids accepted as ID-token audiences; empty disables Google sign-in |
 //!
 //! Logging is configured separately via the standard `RUST_LOG` filter.
-//! Secrets (e.g. Google OAuth client ids) join this struct in Phase 2.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -17,6 +17,7 @@ pub const ENV_BIND: &str = "ASKRYPT_BIND";
 pub const ENV_DATA_DIR: &str = "ASKRYPT_DATA_DIR";
 pub const ENV_BACKEND: &str = "ASKRYPT_BACKEND";
 pub const ENV_STATIC_DIR: &str = "ASKRYPT_STATIC_DIR";
+pub const ENV_GOOGLE_CLIENT_IDS: &str = "ASKRYPT_GOOGLE_CLIENT_IDS";
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_DATA_DIR: &str = "data";
@@ -45,6 +46,9 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub backend: Backend,
     pub static_dir: PathBuf,
+    /// Google OAuth client ids (web/desktop/mobile) accepted as ID-token
+    /// audiences; empty means Google sign-in is disabled.
+    pub google_client_ids: Vec<String>,
 }
 
 impl Config {
@@ -76,11 +80,20 @@ impl Config {
             std::env::var(ENV_STATIC_DIR).unwrap_or_else(|_| DEFAULT_STATIC_DIR.into()),
         );
 
+        let google_client_ids = std::env::var(ENV_GOOGLE_CLIENT_IDS)
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(String::from)
+            .collect();
+
         Ok(Config {
             bind,
             data_dir,
             backend,
             static_dir,
+            google_client_ids,
         })
     }
 

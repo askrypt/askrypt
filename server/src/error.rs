@@ -6,11 +6,13 @@
 //! errors via the `From` impls below.
 
 use axum::Json;
+use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-use crate::store::StoreError;
+use crate::store::{IdTokenError, StoreError};
 
 pub type ApiResult<T> = Result<T, ApiError>;
 
@@ -41,6 +43,14 @@ impl ApiError {
 
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, "conflict", message)
+    }
+
+    pub fn unauthorized() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "missing or invalid bearer token",
+        )
     }
 
     /// Internal errors get logged with detail but answer with a generic
@@ -86,6 +96,51 @@ impl From<StoreError> for ApiError {
                 tracing::error!(error = %other, "store backend error");
                 Self::internal()
             }
+        }
+    }
+}
+
+impl From<IdTokenError> for ApiError {
+    fn from(err: IdTokenError) -> Self {
+        match err {
+            IdTokenError::Invalid(msg) => Self::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid_google_token",
+                format!("Google sign-in failed: {msg}"),
+            ),
+            IdTokenError::NotConfigured => Self::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "google_signin_not_configured",
+                "Google sign-in is not configured on this server",
+            ),
+            other => {
+                tracing::error!(error = %other, "id token verifier error");
+                Self::internal()
+            }
+        }
+    }
+}
+
+/// Drop-in replacement for [`axum::Json`] as an extractor whose rejection
+/// (malformed/missing body) follows the JSON error envelope instead of
+/// axum's plain-text default.
+pub struct ApiJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for ApiJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(rejection) => Err(ApiError::new(
+                rejection.status(),
+                "bad_request",
+                rejection.body_text(),
+            )),
         }
     }
 }

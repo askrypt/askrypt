@@ -133,7 +133,12 @@ impl VaultMetaStore for MemoryVaultMetaStore {
         account_id: AccountId,
         vault_id: VaultId,
     ) -> Result<Option<VaultMeta>, StoreError> {
-        Ok(self.metas.lock().unwrap().get(&(account_id, vault_id)).cloned())
+        Ok(self
+            .metas
+            .lock()
+            .unwrap()
+            .get(&(account_id, vault_id))
+            .cloned())
     }
 
     async fn list_for_account(&self, account_id: AccountId) -> Result<Vec<VaultMeta>, StoreError> {
@@ -188,7 +193,12 @@ impl VaultBlobStore for MemoryVaultBlobStore {
         account_id: AccountId,
         vault_id: VaultId,
     ) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.blobs.lock().unwrap().get(&(account_id, vault_id)).cloned())
+        Ok(self
+            .blobs
+            .lock()
+            .unwrap()
+            .get(&(account_id, vault_id))
+            .cloned())
     }
 
     async fn delete(&self, account_id: AccountId, vault_id: VaultId) -> Result<(), StoreError> {
@@ -330,8 +340,14 @@ mod tests {
         let store = MemorySessionStore::default();
         let account_id = Uuid::new_v4();
         let other_account = Uuid::new_v4();
-        store.insert(new_session("tok-1", account_id)).await.unwrap();
-        store.insert(new_session("tok-2", account_id)).await.unwrap();
+        store
+            .insert(new_session("tok-1", account_id))
+            .await
+            .unwrap();
+        store
+            .insert(new_session("tok-2", account_id))
+            .await
+            .unwrap();
         store
             .insert(new_session("tok-other", other_account))
             .await
@@ -370,7 +386,10 @@ mod tests {
         let account_id = Uuid::new_v4();
         let meta = new_meta(account_id, "b.askrypt");
         store.upsert(meta.clone()).await.unwrap();
-        store.upsert(new_meta(account_id, "a.askrypt")).await.unwrap();
+        store
+            .upsert(new_meta(account_id, "a.askrypt"))
+            .await
+            .unwrap();
 
         assert_eq!(
             store.get(account_id, meta.id).await.unwrap(),
@@ -396,19 +415,16 @@ mod tests {
         let store = MemoryVaultBlobStore::default();
         let account_id = Uuid::new_v4();
         let vault_id = Uuid::new_v4();
-        store.put(account_id, vault_id, b"PK\x03\x04data").await.unwrap();
+        store
+            .put(account_id, vault_id, b"PK\x03\x04data")
+            .await
+            .unwrap();
         assert_eq!(
             store.get(account_id, vault_id).await.unwrap(),
             Some(b"PK\x03\x04data".to_vec())
         );
         // Another account cannot see it.
-        assert!(
-            store
-                .get(Uuid::new_v4(), vault_id)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(store.get(Uuid::new_v4(), vault_id).await.unwrap().is_none());
 
         store.delete(account_id, vault_id).await.unwrap();
         assert!(store.get(account_id, vault_id).await.unwrap().is_none());
@@ -421,7 +437,10 @@ mod tests {
     #[tokio::test]
     async fn mailer_records_sent_mail() {
         let mailer = MemoryMailer::default();
-        mailer.send("a@example.com", "Verify", "hello").await.unwrap();
+        mailer
+            .send("a@example.com", "Verify", "hello")
+            .await
+            .unwrap();
         assert_eq!(
             mailer.sent(),
             vec![SentMail {

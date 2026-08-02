@@ -115,7 +115,8 @@ askrypt/
   - Version/about endpoint.
   - Gate: landing reachable in a browser; API namespacing in place.
 
-- **Phase 2 — Auth: register & login.**
+- **Phase 2 — Auth: register & login.** ✅ *(done 2026-08-02; email
+  verification / password reset via `Mailer` still open, as planned)*
   - `AccountStore`: user records (id, email, argon2 password hash, timestamps);
     SQLite impl via migration.
   - Register endpoint with input validation (email format, password policy).

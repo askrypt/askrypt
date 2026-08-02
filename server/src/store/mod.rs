@@ -6,12 +6,15 @@
 //!
 //! - [`memory`] — in-memory fakes; used by integration tests and the
 //!   `memory` backend.
-//! - [`sqlite`] — SQLite pool + embedded migration runner (trait impls land
-//!   in Phase 2).
+//! - [`sqlite`] — SQLite pool + embedded migration runner, plus the SQLite
+//!   account/session store impls.
+//! - [`google`] — real Google ID-token verification against Google's
+//!   published JWKS.
 //!
 //! Handlers and middleware must depend only on these traits — no `sqlx`
 //! or `std::fs` types in handler code.
 
+pub mod google;
 pub mod memory;
 pub mod sqlite;
 
@@ -156,6 +159,9 @@ pub enum IdTokenError {
     /// The token failed validation (signature, issuer, audience, expiry).
     #[error("invalid id token: {0}")]
     Invalid(String),
+    /// Google sign-in is not configured on this server (no client IDs).
+    #[error("google sign-in not configured")]
+    NotConfigured,
     /// The verifier itself failed (e.g. could not fetch Google's keys).
     #[error("verifier error: {0}")]
     Backend(String),
@@ -172,8 +178,9 @@ pub struct VerifiedIdToken {
     pub email_verified: bool,
 }
 
-/// Validates Google ID tokens. The real impl (Phase 2) checks signature,
-/// issuer, audience and expiry against Google's published keys.
+/// Validates Google ID tokens. The real impl
+/// ([`google::GoogleIdTokenVerifier`]) checks signature, issuer, audience
+/// and expiry against Google's published keys.
 #[async_trait]
 pub trait IdTokenVerifier: Send + Sync {
     async fn verify(&self, id_token: &str) -> Result<VerifiedIdToken, IdTokenError>;

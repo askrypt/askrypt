@@ -24,9 +24,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// State wired entirely to the in-memory fakes. Used by tests, the
-    /// `memory` backend, and — until the SQLite store impls land in
-    /// Phase 2 — the `sqlite` backend too.
+    /// State wired entirely to the in-memory fakes. Used by tests and the
+    /// `memory` backend; `main` overrides individual seams (e.g. the Google
+    /// verifier) with struct-update syntax.
     pub fn in_memory() -> Self {
         Self {
             accounts: Arc::new(MemoryAccountStore::default()),

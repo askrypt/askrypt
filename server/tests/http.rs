@@ -35,7 +35,10 @@ async fn healthz_answers_ok() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_json(response).await, serde_json::json!({"status": "ok"}));
+    assert_eq!(
+        body_json(response).await,
+        serde_json::json!({"status": "ok"})
+    );
 }
 
 #[tokio::test]
@@ -85,7 +88,10 @@ async fn root_serves_landing_page() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
+    let content_type = response.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .to_string();
     assert!(content_type.starts_with("text/html"), "got {content_type}");
     assert!(body_text(response).await.contains("Askrypt"));
 }
@@ -93,12 +99,19 @@ async fn root_serves_landing_page() {
 #[tokio::test]
 async fn unknown_page_route_falls_back_to_spa_index() {
     let response = app()
-        .oneshot(Request::get("/profile/settings").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/profile/settings")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
+    let content_type = response.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .to_string();
     assert!(content_type.starts_with("text/html"), "got {content_type}");
     assert!(body_text(response).await.contains("Askrypt"));
 }
