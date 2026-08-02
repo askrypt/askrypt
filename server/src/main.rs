@@ -6,8 +6,11 @@ use askrypt_server::routes;
 use askrypt_server::state::AppState;
 use askrypt_server::store::IdTokenVerifier;
 use askrypt_server::store::google::{GoogleIdTokenVerifier, NotConfiguredIdTokenVerifier};
-use askrypt_server::store::memory::{MemoryMailer, MemoryVaultBlobStore, MemoryVaultMetaStore};
-use askrypt_server::store::sqlite::{self, SqliteAccountStore, SqliteSessionStore};
+use askrypt_server::store::disk::DiskVaultBlobStore;
+use askrypt_server::store::memory::MemoryMailer;
+use askrypt_server::store::sqlite::{
+    self, SqliteAccountStore, SqliteSessionStore, SqliteVaultMetaStore,
+};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -41,8 +44,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(GoogleIdTokenVerifier::new(config.google_client_ids.clone()))
     };
 
-    // Accounts and sessions persist in SQLite (Phase 2); the vault stores
-    // stay in-memory until Phase 4, the mailer until the email phase.
+    // Accounts, sessions and vault metadata persist in SQLite, vault bytes
+    // on disk (Phase 4); the mailer stays in-memory until the email phase.
     let state = match config.backend {
         Backend::Sqlite => {
             std::fs::create_dir_all(&config.data_dir)?;
@@ -50,9 +53,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             info!(db = %config.db_path().display(), "sqlite ready, migrations applied");
             AppState {
                 accounts: Arc::new(SqliteAccountStore::new(pool.clone())),
-                sessions: Arc::new(SqliteSessionStore::new(pool)),
-                vault_meta: Arc::new(MemoryVaultMetaStore::default()),
-                vault_blobs: Arc::new(MemoryVaultBlobStore::default()),
+                sessions: Arc::new(SqliteSessionStore::new(pool.clone())),
+                vault_meta: Arc::new(SqliteVaultMetaStore::new(pool)),
+                vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),
                 mailer: Arc::new(MemoryMailer::default()),
                 id_verifier,
             }

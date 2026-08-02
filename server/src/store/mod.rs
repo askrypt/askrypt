@@ -7,13 +7,15 @@
 //! - [`memory`] — in-memory fakes; used by integration tests and the
 //!   `memory` backend.
 //! - [`sqlite`] — SQLite pool + embedded migration runner, plus the SQLite
-//!   account/session store impls.
+//!   account/session/vault-metadata store impls.
+//! - [`disk`] — local-disk vault blob storage with atomic writes.
 //! - [`google`] — real Google ID-token verification against Google's
 //!   published JWKS.
 //!
 //! Handlers and middleware must depend only on these traits — no `sqlx`
 //! or `std::fs` types in handler code.
 
+pub mod disk;
 pub mod google;
 pub mod memory;
 pub mod sqlite;
@@ -110,6 +112,8 @@ pub struct VaultMeta {
 #[async_trait]
 pub trait VaultMetaStore: Send + Sync {
     /// Inserts or replaces the metadata record for `(account_id, id)`.
+    /// Names are unique per account (like files in a directory); reusing
+    /// another vault's name fails with [`StoreError::Conflict`].
     async fn upsert(&self, meta: VaultMeta) -> Result<(), StoreError>;
     async fn get(
         &self,

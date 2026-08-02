@@ -6,6 +6,7 @@
 //! errors via the `From` impls below.
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -141,6 +142,32 @@ where
                 "bad_request",
                 rejection.body_text(),
             )),
+        }
+    }
+}
+
+/// Raw-body counterpart of [`ApiJson`]: buffers the request body as
+/// [`Bytes`], with rejections (over the body limit, aborted transfers)
+/// following the JSON error envelope instead of axum's plain-text default.
+pub struct ApiBytes(pub Bytes);
+
+impl<S> FromRequest<S> for ApiBytes
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Bytes::from_request(req, state).await {
+            Ok(bytes) => Ok(Self(bytes)),
+            Err(rejection) => {
+                let code = if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    "payload_too_large"
+                } else {
+                    "bad_request"
+                };
+                Err(ApiError::new(rejection.status(), code, rejection.body_text()))
+            }
         }
     }
 }

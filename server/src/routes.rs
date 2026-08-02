@@ -13,6 +13,9 @@
 //! Profile (Phase 3): the `/api/v1/me` tree lives in [`crate::profile`]; the
 //! email/password mutation endpoints get their own rate limiter so a stolen
 //! bearer token can't brute-force the current password unthrottled.
+//!
+//! Vaults (Phase 4): the `/api/v1/vaults` tree lives in [`crate::vaults`];
+//! its routes carry a raised request-body limit sized to the max vault file.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,6 +23,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use serde::Serialize;
@@ -30,6 +34,7 @@ use crate::error::ApiError;
 use crate::profile;
 use crate::ratelimit::{self, RateLimiter};
 use crate::state::AppState;
+use crate::vaults;
 
 const AUTH_RATE_LIMIT: u32 = 20;
 const AUTH_RATE_WINDOW: Duration = Duration::from_secs(60);
@@ -55,6 +60,17 @@ pub fn router(state: AppState, static_dir: &Path) -> Router {
             ratelimit::middleware,
         ));
 
+    let vaults_api = Router::new()
+        .route("/", get(vaults::list).post(vaults::upload))
+        .route(
+            "/{id}",
+            get(vaults::download)
+                .put(vaults::replace)
+                .delete(vaults::remove),
+        )
+        .route("/{id}/name", put(vaults::rename))
+        .layer(DefaultBodyLimit::max(vaults::MAX_VAULT_BYTES));
+
     let api_v1 = Router::new()
         .route("/about", get(about))
         .route("/me", get(profile::me).delete(profile::delete_account))
@@ -62,6 +78,7 @@ pub fn router(state: AppState, static_dir: &Path) -> Router {
         .route("/me/sessions/{id}", delete(profile::revoke_session))
         .merge(profile_sensitive)
         .nest("/auth", auth_api)
+        .nest("/vaults", vaults_api)
         .fallback(api_fallback);
 
     let static_assets =

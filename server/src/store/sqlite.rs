@@ -1,6 +1,6 @@
 //! SQLite backend: connection pool, embedded migration runner, and the
-//! SQLite implementations of [`AccountStore`] and [`SessionStore`]
-//! (Phase 2). The vault-metadata impl arrives with Phase 4.
+//! SQLite implementations of [`AccountStore`], [`SessionStore`] (Phase 2)
+//! and [`VaultMetaStore`] (Phase 4).
 //!
 //! Uuids are stored as hyphenated TEXT, timestamps as TEXT via sqlx's
 //! chrono mapping. Migrations are embedded in the binary from
@@ -15,7 +15,10 @@ use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
-use super::{Account, AccountId, AccountStore, NewAccount, Session, SessionStore, StoreError};
+use super::{
+    Account, AccountId, AccountStore, NewAccount, Session, SessionStore, StoreError, VaultId,
+    VaultMeta, VaultMetaStore,
+};
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
@@ -264,6 +267,128 @@ impl SessionStore for SqliteSessionStore {
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct VaultMetaRow {
+    id: String,
+    account_id: String,
+    name: String,
+    size: i64,
+    etag: String,
+    updated_at: DateTime<Utc>,
+}
+
+impl VaultMetaRow {
+    fn into_meta(self) -> Result<VaultMeta, StoreError> {
+        Ok(VaultMeta {
+            id: parse_uuid(&self.id)?,
+            account_id: parse_uuid(&self.account_id)?,
+            name: self.name,
+            size: self.size as u64,
+            etag: self.etag,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteVaultMetaStore {
+    pool: SqlitePool,
+}
+
+impl SqliteVaultMetaStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+/// Maps the UNIQUE (account_id, name) violation to the conflict promised
+/// by the trait docs.
+fn vault_write_err(e: sqlx::Error) -> StoreError {
+    if let sqlx::Error::Database(db) = &e
+        && db.is_unique_violation()
+    {
+        return StoreError::Conflict("vault name already used".into());
+    }
+    backend_err(e)
+}
+
+#[async_trait]
+impl VaultMetaStore for SqliteVaultMetaStore {
+    async fn upsert(&self, meta: VaultMeta) -> Result<(), StoreError> {
+        // ON CONFLICT on the primary key only — a name collision must error
+        // out, not silently replace the other vault's row (as OR REPLACE
+        // would).
+        sqlx::query(
+            "INSERT INTO vaults (id, account_id, name, size, etag, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT (account_id, id) DO UPDATE SET \
+             name = excluded.name, size = excluded.size, etag = excluded.etag, \
+             updated_at = excluded.updated_at",
+        )
+        .bind(meta.id.to_string())
+        .bind(meta.account_id.to_string())
+        .bind(&meta.name)
+        .bind(meta.size as i64)
+        .bind(&meta.etag)
+        .bind(meta.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(vault_write_err)?;
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        account_id: AccountId,
+        vault_id: VaultId,
+    ) -> Result<Option<VaultMeta>, StoreError> {
+        let row: Option<VaultMetaRow> = sqlx::query_as(
+            "SELECT id, account_id, name, size, etag, updated_at FROM vaults \
+             WHERE account_id = ?1 AND id = ?2",
+        )
+        .bind(account_id.to_string())
+        .bind(vault_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(VaultMetaRow::into_meta).transpose()
+    }
+
+    async fn list_for_account(&self, account_id: AccountId) -> Result<Vec<VaultMeta>, StoreError> {
+        let rows: Vec<VaultMetaRow> = sqlx::query_as(
+            "SELECT id, account_id, name, size, etag, updated_at FROM vaults \
+             WHERE account_id = ?1 ORDER BY name",
+        )
+        .bind(account_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        rows.into_iter().map(VaultMetaRow::into_meta).collect()
+    }
+
+    async fn delete(&self, account_id: AccountId, vault_id: VaultId) -> Result<(), StoreError> {
+        let result = sqlx::query("DELETE FROM vaults WHERE account_id = ?1 AND id = ?2")
+            .bind(account_id.to_string())
+            .bind(vault_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn delete_for_account(&self, account_id: AccountId) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM vaults WHERE account_id = ?1")
+            .bind(account_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
@@ -295,7 +420,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(applied, 2);
+        assert_eq!(applied, 3);
 
         // Re-opening is idempotent: already-applied migrations are skipped.
         let pool2 = open(&db_path).await.unwrap();
@@ -405,5 +530,82 @@ mod tests {
         // Deleting the account cascades to its sessions (FK ON DELETE CASCADE).
         accounts.delete(other.id).await.unwrap();
         assert!(store.get("tok-other").await.unwrap().is_none());
+    }
+
+    fn new_meta(account_id: AccountId, name: &str) -> VaultMeta {
+        VaultMeta {
+            id: Uuid::new_v4(),
+            account_id,
+            name: name.to_string(),
+            size: 1234,
+            etag: "etag-1".to_string(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn vault_meta_lifecycle_and_account_cascade() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let store = SqliteVaultMetaStore::new(pool);
+        let account = accounts.create(new_account("a@example.com")).await.unwrap();
+        let other = accounts.create(new_account("b@example.com")).await.unwrap();
+
+        let meta = new_meta(account.id, "b.askrypt");
+        store.upsert(meta.clone()).await.unwrap();
+        store.upsert(new_meta(account.id, "a.askrypt")).await.unwrap();
+        let other_meta = new_meta(other.id, "other.askrypt");
+        store.upsert(other_meta.clone()).await.unwrap();
+
+        assert_eq!(store.get(account.id, meta.id).await.unwrap(), Some(meta.clone()));
+        // Scoped to the owner: another account's id does not resolve it.
+        assert_eq!(store.get(other.id, meta.id).await.unwrap(), None);
+        let listed = store.list_for_account(account.id).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].name, "a.askrypt"); // sorted by name
+
+        // Upsert with the same id updates in place (rename + new content).
+        let mut renamed = meta.clone();
+        renamed.name = "c.askrypt".to_string();
+        renamed.size = 4321;
+        renamed.etag = "etag-2".to_string();
+        store.upsert(renamed.clone()).await.unwrap();
+        assert_eq!(store.get(account.id, meta.id).await.unwrap(), Some(renamed));
+
+        store.delete(account.id, meta.id).await.unwrap();
+        assert!(store.get(account.id, meta.id).await.unwrap().is_none());
+        assert!(matches!(
+            store.delete(account.id, meta.id).await,
+            Err(StoreError::NotFound)
+        ));
+        store.delete_for_account(account.id).await.unwrap();
+        assert!(store.list_for_account(account.id).await.unwrap().is_empty());
+
+        // Deleting the account cascades to its vault rows (FK ON DELETE CASCADE).
+        accounts.delete(other.id).await.unwrap();
+        assert!(store.get(other.id, other_meta.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn vault_meta_duplicate_name_conflicts() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let store = SqliteVaultMetaStore::new(pool);
+        let account = accounts.create(new_account("a@example.com")).await.unwrap();
+        let other = accounts.create(new_account("b@example.com")).await.unwrap();
+
+        let meta = new_meta(account.id, "a.askrypt");
+        store.upsert(meta.clone()).await.unwrap();
+        // Re-upserting the same vault under its own name is fine.
+        store.upsert(meta.clone()).await.unwrap();
+        // A different vault taking the name conflicts...
+        assert!(matches!(
+            store.upsert(new_meta(account.id, "a.askrypt")).await,
+            Err(StoreError::Conflict(_))
+        ));
+        // ...and must not have clobbered the original row.
+        assert_eq!(store.get(account.id, meta.id).await.unwrap(), Some(meta));
+        // Another account may use the name freely.
+        store.upsert(new_meta(other.id, "a.askrypt")).await.unwrap();
     }
 }

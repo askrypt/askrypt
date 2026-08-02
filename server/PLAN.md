@@ -149,7 +149,8 @@ askrypt/
   - Delete account — cascades to all stored vault files.
   - Gate: profile CRUD integration-tested.
 
-- **Phase 4 — Vault cloud storage (file operations only).**
+- **Phase 4 — Vault cloud storage (file operations only).** ✅ *(done
+  2026-08-02)*
   - Per-user vault namespace; metadata (id, name, size, mtime, content
     hash/ETag) in `VaultMetaStore`, bytes in `VaultBlobStore`.
   - Endpoints: upload, download, list (metadata only), rename, delete —
@@ -163,6 +164,20 @@ askrypt/
     conflict behavior verified; the lifecycle also demonstrated end-to-end from
     a plain HTTP client (login → upload a real `vault.askrypt` → download it
     back byte-identical), proving desktop/mobile apps can drive it.
+  - **API summary** (all under `/api/v1`, bearer token required):
+
+    | Method | Path | Notes |
+    |--------|------|-------|
+    | `GET` | `/vaults` | list metadata, sorted by name |
+    | `POST` | `/vaults?name=<file name>` | upload new; raw bytes body; 201 + `ETag` |
+    | `GET` | `/vaults/{id}` | download raw bytes; `ETag`, honors `If-None-Match` (304) |
+    | `PUT` | `/vaults/{id}` | overwrite; **requires `If-Match`** (428 without, 412 on mismatch) |
+    | `PUT` | `/vaults/{id}/name` | rename (JSON `{"name": …}`); ETag is content-based, so unchanged |
+    | `DELETE` | `/vaults/{id}` | delete bytes + metadata |
+
+    ETags are the SHA-256 of the stored bytes, quoted in headers. Limits:
+    10 MiB per file (also the route body limit), 100 MiB and 100 files per
+    account, answered as 507 `quota_exceeded` / `vault_limit_reached`.
 
 - **Phase 5 — Hardening & deployment.**
   - Security headers; HTTPS story (reverse proxy, e.g. Caddy/nginx).

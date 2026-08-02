@@ -143,10 +143,15 @@ pub struct MemoryVaultMetaStore {
 #[async_trait]
 impl VaultMetaStore for MemoryVaultMetaStore {
     async fn upsert(&self, meta: VaultMeta) -> Result<(), StoreError> {
-        self.metas
-            .lock()
-            .unwrap()
-            .insert((meta.account_id, meta.id), meta);
+        let mut metas = self.metas.lock().unwrap();
+        // Mirrors the SQLite UNIQUE (account_id, name) constraint.
+        if metas
+            .values()
+            .any(|m| m.account_id == meta.account_id && m.name == meta.name && m.id != meta.id)
+        {
+            return Err(StoreError::Conflict("vault name already used".into()));
+        }
+        metas.insert((meta.account_id, meta.id), meta);
         Ok(())
     }
 
@@ -456,6 +461,27 @@ mod tests {
         assert!(store.get(account_id, meta.id).await.unwrap().is_none());
         store.delete_for_account(account_id).await.unwrap();
         assert!(store.list_for_account(account_id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn vault_meta_duplicate_name_conflicts() {
+        let store = MemoryVaultMetaStore::default();
+        let account_id = Uuid::new_v4();
+        let meta = new_meta(account_id, "a.askrypt");
+        store.upsert(meta.clone()).await.unwrap();
+
+        // Re-upserting the same vault under its own name is fine.
+        store.upsert(meta.clone()).await.unwrap();
+        // A different vault taking the name conflicts...
+        assert!(matches!(
+            store.upsert(new_meta(account_id, "a.askrypt")).await,
+            Err(StoreError::Conflict(_))
+        ));
+        // ...but another account may use it freely.
+        store
+            .upsert(new_meta(Uuid::new_v4(), "a.askrypt"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

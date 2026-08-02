@@ -79,15 +79,16 @@ sign-in) and cloud storage of vaults as **opaque encrypted files** — it never
 handles questions, answers, or vault crypto, and it must **never depend on
 `askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phases 0
 (scaffolding), 1 (landing page + API namespacing), 2 (auth: register, login,
-Google sign-in) and 3 (profile API) are done, Phase 4 (vault cloud storage)
-is next.
+Google sign-in), 3 (profile API) and 4 (vault cloud storage) are done,
+Phase 5 (hardening & deployment) is next.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
-  wires `SqliteAccountStore`/`SqliteSessionStore` (vault stores + mailer stay
-  in-memory until their phases); the Google verifier is real when
-  `ASKRYPT_GOOGLE_CLIENT_IDS` is set, else `NotConfiguredIdTokenVerifier`
-  (501). Serves with `ConnectInfo` so rate limiting can key on peer IPs.
+  wires `SqliteAccountStore`/`SqliteSessionStore`/`SqliteVaultMetaStore` plus
+  the on-disk `DiskVaultBlobStore` (only the mailer stays in-memory); the
+  Google verifier is real when `ASKRYPT_GOOGLE_CLIENT_IDS` is set, else
+  `NotConfiguredIdTokenVerifier` (501). Serves with `ConnectInfo` so rate
+  limiting can key on peer IPs.
 - **`server/src/config.rs`** — `Config::from_env()`: `ASKRYPT_BIND`
   (default `127.0.0.1:8080`), `ASKRYPT_DATA_DIR` (default `data`, gitignored),
   `ASKRYPT_BACKEND` (`sqlite` default | `memory`), `ASKRYPT_STATIC_DIR`
@@ -97,15 +98,16 @@ is next.
 - **`server/src/error.rs`** — Uniform JSON error convention: every API error is
   `{"error": {"code", "message"}}` via `ApiError` (`IntoResponse`), with
   `From<StoreError>`/`From<IdTokenError>`; internal details are logged, never
-  sent to clients. `ApiJson<T>` is the `Json` extractor variant whose
-  rejection keeps the envelope.
+  sent to clients. `ApiJson<T>` and `ApiBytes` are the `Json`/`Bytes`
+  extractor variants whose rejections keep the envelope.
 - **`server/src/routes.rs`** — Router: `/healthz`; `/api/v1` nest (`GET
-  /about`, the `/me` profile tree, and `/auth/{register,login,google,logout}`
-  behind a 20 req/min fixed-window rate limiter) with a JSON 404 fallback
-  covering everything under `/api`; all other paths serve static assets from the
-  configured static dir (`tower-http` `ServeDir`) with SPA fallback to
-  `index.html` — `server/static/` ships a placeholder landing page until
-  Phase 7.
+  /about`, the `/me` profile tree, the `/vaults` tree, and
+  `/auth/{register,login,google,logout}` behind a 20 req/min fixed-window
+  rate limiter) with a JSON 404 fallback covering everything under `/api`;
+  all other paths serve static assets from the configured static dir
+  (`tower-http` `ServeDir`) with SPA fallback to `index.html` —
+  `server/static/` ships a placeholder landing page until Phase 7. The vault
+  routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`.
 - **`server/src/auth.rs`** — Phase 2 auth: register (email normalization +
   validation, ≥8-char passwords, argon2 hashing on `spawn_blocking`), login
   (uniform 401 `invalid_credentials`; 256-bit hex bearer tokens, 30-day
@@ -122,6 +124,14 @@ is next.
   caller's), and `DELETE /me` (cascades vault blobs → vault metadata →
   sessions → account). The email/password mutations sit behind their own
   20 req/min rate limiter.
+- **`server/src/vaults.rs`** — Phase 4 vault file API under `/api/v1/vaults`:
+  list, upload (`POST ?name=`), download, overwrite (`PUT /{id}`), rename
+  (`PUT /{id}/name`) and delete, all scoped to the authenticated account.
+  Bytes stay opaque apart from a ZIP-magic check. ETags are the SHA-256 of
+  the stored bytes: downloads honor `If-None-Match` (304), overwrites
+  require `If-Match` (428 without it, 412 when stale) so multi-device sync
+  detects conflicts. Enforces `MAX_VAULT_BYTES` (10 MiB),
+  `ACCOUNT_QUOTA_BYTES` (100 MiB) and `MAX_VAULTS_PER_ACCOUNT` (100).
 - **`server/src/ratelimit.rs`** — In-memory fixed-window `RateLimiter` +
   axum middleware, keyed by first `X-Forwarded-For` address, else peer IP.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
@@ -132,16 +142,22 @@ is next.
   `#[non_exhaustive]`); `memory.rs` in-memory fakes for all six (used by tests
   and the `memory` backend); `sqlite.rs` SQLite pool + embedded migration
   runner over `server/migrations/` plus `SqliteAccountStore`/
-  `SqliteSessionStore` (uuids as TEXT, timestamps via sqlx-chrono, sessions
-  cascade on account delete); `google.rs` `GoogleIdTokenVerifier` (RS256
-  against Google's JWKS, cached with a 60 s refetch floor, issuer/audience/
-  expiry checks) and `NotConfiguredIdTokenVerifier`.
+  `SqliteSessionStore`/`SqliteVaultMetaStore` (uuids as TEXT, timestamps via
+  sqlx-chrono, sessions and vault rows cascade on account delete, vault names
+  unique per account); `disk.rs` `DiskVaultBlobStore` storing bytes at
+  `<data>/vaults/<account-id>/<vault-id>.askrypt` with atomic temp-file +
+  rename writes (path components are uuids, so no user string reaches the
+  filesystem); `google.rs` `GoogleIdTokenVerifier` (RS256 against Google's
+  JWKS, cached with a 60 s refetch floor, issuer/audience/expiry checks) and
+  `NotConfiguredIdTokenVerifier`.
 - **`server/tests/`** — HTTP-level tests (tower `oneshot`, no socket):
   `http.rs` (routing/static), `auth.rs` (the Phase 2 gate: register →
   login → `/me` → logout, Google new-account + link-to-existing against the
-  fake verifier, validation, rate limiting) and `profile.rs` (the Phase 3
+  fake verifier, validation, rate limiting), `profile.rs` (the Phase 3
   gate: providers, email update, change/set password, session list/revoke,
-  account-delete cascade incl. the vault stores).
+  account-delete cascade incl. the vault stores) and `vaults.rs` (the Phase 4
+  gate: upload → list → download → rename → delete, ETag conflict behavior,
+  per-account isolation, size/quota/count limits).
 
 ### Key Dependencies
 
