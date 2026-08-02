@@ -73,7 +73,8 @@ App ID `com.askrypt.app`, display name "Askrypt", `minSdk 26`. The `android/` an
 
 ### Server — `server/` (planned)
 
-A planned Rust (axum) server providing accounts (email + password) and cloud
+A planned Rust (axum) server providing accounts (email + password, plus
+Google sign-in) and cloud
 storage of vaults as **opaque encrypted files** — it never handles questions,
 answers, or vault crypto. No code exists yet; the phased plan lives in
 **`server/PLAN.md`**.

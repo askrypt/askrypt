@@ -21,6 +21,10 @@ Consequences for the API design:
 - Long-lived per-device sessions (refresh/re-login story) so apps don't force
   a password prompt on every sync; devices show up in the profile's session
   list and can be revoked there.
+- Google sign-in stays native-friendly: apps open the **system browser**
+  (authorization-code + PKCE, loopback redirect on desktop, app-scheme /
+  App Links on mobile — no embedded web views), then exchange the result at
+  the server for the same opaque bearer token used everywhere else.
 - Vault endpoints are plain file semantics over HTTP (raw bytes up/down,
   metadata list, ETag conflict detection) so both Rust and Dart clients can
   implement sync with a basic HTTP client — no SPA-only assumptions anywhere
@@ -29,8 +33,13 @@ Consequences for the API design:
 ## Stack decision
 
 - **Framework: axum** on tokio (tokio is already a workspace dependency).
-- **Auth: email + password** — argon2 password hashing, opaque session tokens.
-  Server auth is completely separate from vault security questions.
+- **Auth: email + password, plus "Sign in with Google"** — argon2 password
+  hashing, opaque session tokens. Google login is OIDC authorization-code +
+  PKCE; the server verifies Google's ID token and issues its **own** opaque
+  session token — Google tokens are never used as API credentials. Accounts
+  are keyed by verified email, so a Google login with the same address links
+  to the existing account rather than creating a duplicate. Server auth is
+  completely separate from vault security questions.
 - **Storage: SQLite + local disk** — accounts/sessions/vault-metadata in SQLite
   (`sqlx`, embedded migrations), vault blobs as files under a data directory.
   Single-binary, self-hostable v1.
@@ -91,8 +100,9 @@ askrypt/
   - Configuration (bind address, data dir, secrets) via env vars / config file.
   - Logging/tracing setup; uniform JSON error-response convention.
   - Define the backend **traits** (`AccountStore`, `SessionStore`,
-    `VaultMetaStore`, `VaultBlobStore`, `Mailer`) plus in-memory fakes; app
-    state holds trait objects, backends selected in `main` from config.
+    `VaultMetaStore`, `VaultBlobStore`, `Mailer`, `IdTokenVerifier` — the
+    last one validating Google ID tokens) plus in-memory fakes; app state
+    holds trait objects, backends selected in `main` from config.
   - SQLite pool + embedded migration runner behind the store traits; initial
     empty migration.
   - Gate: server boots, health check answers, `cargo test`/`clippy` clean;
@@ -111,16 +121,28 @@ askrypt/
   - Register endpoint with input validation (email format, password policy).
   - Login endpoint → opaque session token via `SessionStore`; logout endpoint.
   - Auth middleware/extractor for protected routes.
+  - **Google login**: OAuth config (Google client IDs for web/desktop/mobile)
+    via env/config; endpoint(s) under `/api/v1/auth/google` where clients
+    exchange the authorization result. The server verifies the Google ID
+    token (signature, issuer, audience, expiry, **email verified**) through
+    the `IdTokenVerifier` trait, then creates the account or links to the
+    existing one by verified email, and issues the normal opaque session
+    token via `SessionStore`.
   - Rate limiting on auth endpoints.
   - Later (optional, non-blocking): email verification, password reset (via
     the `Mailer` trait).
   - Gate: register → login → authenticated request → logout flow covered by
     integration tests running against the in-memory store fakes; the flow is
     exercised as a headless client would do it (bearer token, no cookies).
+    Google flow (new account + link-to-existing) integration-tested against
+    the fake `IdTokenVerifier`.
 
 - **Phase 3 — Profile page (API).**
-  - Get current user info.
+  - Get current user info, including linked login providers (password /
+    Google).
   - Update email; change password (requires current password re-auth).
+    Google-created accounts have no password — support **set password**
+    there; current-password re-auth applies only to accounts that have one.
   - List active sessions/devices; revoke a session.
   - Delete account — cascades to all stored vault files.
   - Gate: profile CRUD integration-tested.
@@ -166,6 +188,8 @@ askrypt/
 - Trigger points for adding the Postgres and S3 trait impls (the trait layer
   makes this additive — no handler changes).
 - Multiple vaults per user vs a single primary vault (API assumes multiple).
+- More OAuth providers (Apple, GitHub) and a provider unlink flow — additive
+  thanks to the `IdTokenVerifier` trait layer.
 
 ## Verification commands
 
