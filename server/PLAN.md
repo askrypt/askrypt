@@ -27,8 +27,11 @@ Consequences for the API design:
   the server for the same opaque bearer token used everywhere else.
 - Vault endpoints are plain file semantics over HTTP (raw bytes up/down,
   metadata list, ETag conflict detection) so both Rust and Dart clients can
-  implement sync with a basic HTTP client — no SPA-only assumptions anywhere
-  under `/api/v1`.
+  implement sync with a basic HTTP client — no browser-only assumptions
+  anywhere under `/api/v1`.
+- The website (Phase 7) is a *second* consumer, not the primary one: it is
+  server-rendered HTML with its own cookie session, and it must never force a
+  change on `/api/v1` that a headless client would have to work around.
 
 ## Stack decision
 
@@ -43,9 +46,26 @@ Consequences for the API design:
 - **Storage: SQLite + local disk** — accounts/sessions/vault-metadata in SQLite
   (`sqlx`, embedded migrations), vault blobs as files under a data directory.
   Single-binary, self-hostable v1.
-- **Frontend: JSON API only** (`/api/v1/...`); the landing/auth/profile UI is a
-  **separate SPA** built in a later phase and served by the server as static
-  assets. Desktop and mobile apps consume the same API for sync.
+- **Frontend: server-rendered HTML + htmx — no SPA, no JavaScript build.**
+  The website (landing, auth, profile, vault file manager) is rendered by axum
+  itself with **askama** templates (compile-time-checked `.html` files;
+  `maud` was the considered alternative — rejected because htmx pages are
+  mostly HTML with `hx-*` attributes, which reads better as real HTML than as
+  a Rust DSL). Interactivity is htmx returning HTML **fragments**; the only
+  static assets are a vendored `htmx.min.js` and a hand-written stylesheet —
+  no Node, npm, bundler, or CDN anywhere in the build.
+  - The HTML pages live at the root (`/`, `/login`, `/account`, `/vaults`, …)
+    and are **separate handlers** from `/api/v1`. The JSON API is unchanged
+    and remains the contract for desktop/mobile.
+  - Web sessions ride an **HttpOnly, Secure, SameSite=Lax cookie** holding the
+    same opaque token the `SessionStore` already issues — the web UI is just
+    another session, visible and revocable in the profile session list.
+    Browser-only concerns (cookie, CSRF, redirects, flash messages) stay in
+    the HTML layer and never leak into `/api/v1`.
+  - **The website is a file manager, not a vault client**: it can list,
+    upload, download, rename and delete encrypted vaults, but it never
+    unlocks one — no crypto in the browser, so the zero-knowledge property is
+    structural rather than a promise.
 - **Architecture rule — traits everywhere, no direct backend coupling.** Every
   external dependency is accessed through a trait defined by the server core;
   concrete backends are pluggable implementations chosen at startup:
@@ -69,7 +89,21 @@ Consequences for the API design:
   testability (in-memory fakes) and backend portability.
 - **(−) No server-side vault validation possible** (blobs are opaque) — at most
   a ZIP-magic sanity check on upload.
-- **(+) Single static binary, trivial deploy, no external services.**
+- **(−) Two auth surfaces** once the web UI lands: bearer tokens for
+  `/api/v1`, a session cookie for the HTML pages. Mitigated by having both
+  resolve the *same* `SessionStore` token — the difference is only how the
+  token is carried, plus CSRF protection on the cookie side.
+- **(−) The web UI can never open a vault** (no client-side crypto without a
+  JS/wasm port of `core`). Users unlock vaults in the desktop or mobile app;
+  the site only moves files. Accepted deliberately — see the Open decisions.
+- **(−) Richer client-side interactions cost server round-trips** (htmx
+  fragments) and page state must be rebuilt server-side. Fine for a handful
+  of forms and a file table; would hurt for a heavy app-like UI.
+- **(+) Single static binary, trivial deploy, no external services** — now
+  including the website: templates are compiled into the binary, the only
+  loose files are one CSS and one vendored JS.
+- **(+) No JavaScript toolchain in CI**; `cargo build` produces the whole
+  product, and the UI is covered by the same `cargo test` HTTP tests.
 - **(+) Zero-knowledge design: server code never links the crypto core.**
 
 ## Target repo layout
@@ -84,9 +118,13 @@ askrypt/
     ├── PLAN.md                # this file
     ├── Cargo.toml
     ├── migrations/            # sqlx migrations (SQLite backend)
-    ├── static/                # built SPA output (placeholder page until Phase 7)
+    ├── templates/             # askama HTML templates (Phase 7): pages + htmx fragments
+    ├── static/                # hand-written CSS + vendored htmx.min.js (no build step)
+    │                          #   placeholder index.html until Phase 7 replaces it
     └── src/                   # handlers depend on traits only; store/ holds the
-        └── store/             #   trait definitions + sqlite/, disk/, memory/ impls
+        ├── store/             #   trait definitions + sqlite/, disk/, memory/ impls
+        └── web/               # Phase 7: HTML handlers, cookie session, CSRF
+                               #   (JSON API under src/{auth,profile,vaults}.rs untouched)
 # Runtime data dir (configurable, not in repo):
 #   <data>/askrypt.db          # SQLite
 #   <data>/vaults/<user-id>/<vault-id>.askrypt
@@ -114,6 +152,11 @@ askrypt/
   - Clean separation: everything dynamic lives under `/api/v1`.
   - Version/about endpoint.
   - Gate: landing reachable in a browser; API namespacing in place.
+  - ⚠️ *Superseded by the Phase 7 decision (server-rendered HTML, not an SPA):*
+    the shipped `fallback_service` serves `index.html` for every unknown path.
+    Phase 7 replaces that with explicit HTML routes, `ServeDir` mounted at
+    `/assets` for the CSS/htmx files only, and a real 404 page — no
+    catch-all-to-index behaviour. Nothing to change before then.
 
 - **Phase 2 — Auth: register & login.** ✅ *(done 2026-08-02; email
   verification / password reset via `Mailer` still open, as planned)*
@@ -181,6 +224,11 @@ askrypt/
 
 - **Phase 5 — Hardening & deployment.**
   - Security headers; HTTPS story (reverse proxy, e.g. Caddy/nginx).
+    The CSP must be written so the Phase 7 pages fit it without loosening:
+    `script-src 'self'` only (htmx is vendored, so no CDN host and no
+    `unsafe-inline`) — which means **no inline `<script>` and no `hx-on:`
+    handlers** in templates. Cookies are set `Secure`, so the TLS terminator
+    is a prerequisite for the web UI, not just a nicety.
   - Request body limits, timeouts, backpressure.
   - Structured audit log for auth events (login/failed login/password change).
   - Backup story for the SQLite db + blob directory.
@@ -192,10 +240,73 @@ askrypt/
   - Release workflow: Linux server binary artifact.
   - Gate: CI green on push.
 
-- **Phase 7 — SPA frontend (separate track).**
-  - Landing, register/login, profile, and vault file-manager pages against the
-    `/api/v1` API; built output dropped into `server/static/`.
-  - Out of scope for the Rust-server phases above; stack chosen when started.
+- **Phase 7 — Website: server-rendered HTML + htmx.**
+  Rendered by the server itself (askama templates, htmx fragments) rather than
+  by a client-side app. New deps: `askama`, a cookie extractor
+  (`axum-extra` `cookie` feature or `tower-cookies`), `axum` `multipart` for
+  uploads. **No Node, no bundler, no CDN** — `htmx.min.js` is vendored into
+  `server/static/`.
+
+  - **7.1 — HTML layer foundations.**
+    - `src/web/` module tree: page handlers, a base layout template
+      (`templates/layout.html`), and a `WebError` type rendering an HTML error
+      page — the JSON `ApiError` envelope stays exclusive to `/api/v1`.
+    - Rework the root router: explicit HTML routes, `ServeDir` at `/assets`
+      for CSS + vendored JS, plain HTML 404 fallback (drops the Phase 1
+      SPA fallback; `/api/*` keeps its JSON 404).
+    - Convention: a request with `HX-Request` gets the fragment, a plain
+      request gets the full page, so every screen works with JS disabled.
+    - Gate: landing page renders from a template; `/assets` serves the
+      vendored files; unknown paths give an HTML 404 while `/api/x` stays JSON.
+
+  - **7.2 — Browser sessions & CSRF.**
+    - `WebSession` extractor: reads the session token from an `HttpOnly;
+      Secure; SameSite=Lax; Path=/` cookie and resolves it through the *same*
+      `SessionStore` as the bearer flow — one session model, one revocation
+      path, web logins listed in `/account` alongside devices.
+    - Login/register/logout **HTML form** handlers that reuse the Phase 2
+      account logic (shared functions, not HTTP self-calls), set/clear the
+      cookie, and redirect (POST-redirect-GET) with flash messages.
+    - **CSRF**: per-session token embedded in every mutating form and sent by
+      htmx via `hx-headers`; `Origin`/`Referer` checked as a backstop.
+      Applies to cookie-authenticated requests only — bearer requests are not
+      CSRF-able and must not be burdened with it.
+    - Google sign-in for the browser: server-side authorization-code + PKCE
+      with a `/auth/google/callback` redirect URI, ending in the same cookie
+      session. This is a *new* web flow beside the native
+      `/api/v1/auth/google` token exchange; both converge on the same
+      account-link-by-verified-email logic.
+    - Reuse the existing rate limiters on the HTML auth routes.
+    - Gate: register → login → protected page → logout in a browser and in
+      tests; a mutating POST without a valid CSRF token is rejected; the web
+      session appears in and can be killed from the session list.
+
+  - **7.3 — Profile pages.**
+    - `/account`: current email, linked providers, change email, change/set
+      password (current-password re-auth where one exists), session list with
+      per-row revoke (htmx `hx-delete` swapping the row out), and account
+      deletion behind a typed-confirmation form.
+    - Gate: every Phase 3 capability reachable from the browser; revoking the
+      *current* session logs the browser out cleanly.
+
+  - **7.4 — Vault file manager.**
+    - `/vaults`: table of vault metadata (name, size, modified, short ETag),
+      `multipart/form-data` upload (streamed into `VaultBlobStore`, honoring
+      `MAX_VAULT_BYTES`), download links, inline rename, delete with
+      confirmation, and quota/count usage display.
+    - Overwrite from the browser carries the current ETag in the form so the
+      Phase 4 `If-Match` conflict path applies; a stale ETag renders a
+      "changed on another device" fragment instead of a raw 412.
+    - Copy for users: explain that the site stores vaults but cannot open
+      them — unlocking happens in the desktop/mobile apps.
+    - Gate: upload → list → download (byte-identical) → rename → delete all
+      done from a browser; conflict message verified; oversized upload and
+      quota exhaustion render friendly errors, not stack traces.
+
+  - **Phase gate (whole phase):** the full product ships from `cargo build`
+    with no JS toolchain; HTML routes covered by `server/tests/web.rs` (tower
+    `oneshot`, asserting status, `Set-Cookie` attributes, CSRF rejection and
+    key markup); every page usable with JavaScript disabled.
 
 ## Open decisions (not blocking)
 
@@ -207,6 +318,15 @@ askrypt/
 - Multiple vaults per user vs a single primary vault (API assumes multiple).
 - More OAuth providers (Apple, GitHub) and a provider unlink flow — additive
   thanks to the `IdTokenVerifier` trait layer.
+- **In-browser vault unlock is out of scope** (decided with the Phase 7 stack:
+  the site never decrypts). Revisiting it means compiling `core/` to
+  `wasm32-unknown-unknown` and running PBKDF2 in a Web Worker — a genuinely
+  separate project, and one that would have to keep parity with the same
+  golden vectors as the Dart port. Not a reason to pick a JS framework now.
+- Web session cookie lifetime vs the 30-day API session lifetime (shorter,
+  with an idle timeout, seems right for a browser).
+- How web sessions are labelled in the session list (user agent string vs a
+  generic "Web browser") — a privacy/usefulness trade-off.
 
 ## Verification commands
 
