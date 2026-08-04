@@ -1,6 +1,9 @@
 //! HTTP-level tests against the router with in-memory backends — no socket,
 //! no SQLite. Static-asset tests use the real `server/static/` directory via
-//! `CARGO_MANIFEST_DIR`, so they exercise the shipped landing page.
+//! `CARGO_MANIFEST_DIR`, so they exercise the shipped assets.
+//!
+//! The website's own routes live in `web.rs`; this file covers the API
+//! namespacing and the boundary between the two.
 
 use std::path::Path;
 
@@ -85,7 +88,7 @@ async fn unknown_api_route_outside_v1_is_json_404() {
 }
 
 #[tokio::test]
-async fn root_serves_landing_page() {
+async fn root_serves_the_landing_page_from_a_template() {
     let response = app()
         .oneshot(Request::get("/").body(Body::empty()).unwrap())
         .await
@@ -100,8 +103,11 @@ async fn root_serves_landing_page() {
     assert!(body_text(response).await.contains("Askrypt"));
 }
 
+/// Phase 1 answered every unknown path with `index.html` so a client-side
+/// router could pick it up. The site is server-rendered, so a wrong URL is
+/// now simply wrong — while `/api/*` keeps its JSON 404.
 #[tokio::test]
-async fn unknown_page_route_falls_back_to_spa_index() {
+async fn unknown_page_is_an_html_404_and_the_api_stays_json() {
     let response = app()
         .oneshot(
             Request::get("/profile/settings")
@@ -111,11 +117,17 @@ async fn unknown_page_route_falls_back_to_spa_index() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let content_type = response.headers()[header::CONTENT_TYPE]
         .to_str()
         .unwrap()
         .to_string();
     assert!(content_type.starts_with("text/html"), "got {content_type}");
-    assert!(body_text(response).await.contains("Askrypt"));
+
+    let response = app()
+        .oneshot(Request::get("/api/profile").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_json(response).await["error"]["code"], "not_found");
 }

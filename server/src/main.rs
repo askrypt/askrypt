@@ -105,11 +105,17 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         },
     };
 
-    if !config.static_dir.join("index.html").is_file() {
-        tracing::warn!(
-            static_dir = %config.static_dir.display(),
-            "no index.html in static dir; landing page will 404 (set ASKRYPT_STATIC_DIR)"
-        );
+    // The pages themselves are compiled into the binary; only the stylesheet
+    // and the vendored htmx are loose files, served at /assets.
+    for asset in ["style.css", "htmx.min.js"] {
+        if !config.static_dir.join(asset).is_file() {
+            tracing::warn!(
+                static_dir = %config.static_dir.display(),
+                asset,
+                "asset missing; the site will render unstyled or without htmx \
+                 (set ASKRYPT_STATIC_DIR)"
+            );
+        }
     }
     if !config.hsts {
         info!("HSTS disabled (set ASKRYPT_HSTS=1 once TLS terminates in front)");

@@ -121,12 +121,12 @@ askrypt/
     ├── Dockerfile             # multi-stage; build from the repo root
     ├── deploy/                # docker-compose, Caddyfile, systemd unit, backup.sh
     ├── migrations/            # sqlx migrations (SQLite backend)
-    ├── templates/             # askama HTML templates (Phase 7): pages + htmx fragments
-    ├── static/                # hand-written CSS + vendored htmx.min.js (no build step)
-    │                          #   placeholder index.html until Phase 7 replaces it
+    ├── templates/             # askama HTML templates: pages + fragments/
+    ├── static/                # served at /assets: style.css + vendored htmx.min.js
+    │                          #   (no build step, no index.html — pages are templates)
     └── src/                   # handlers depend on traits only; store/ holds the
         ├── store/             #   trait definitions + sqlite/, disk/, memory/ impls
-        └── web/               # Phase 7: HTML handlers, cookie session, CSRF
+        └── web/               # HTML handlers, cookie session, CSRF, flashes
                                #   (JSON API under src/{auth,profile,vaults}.rs untouched)
 # Runtime data dir (configurable, not in repo):
 #   <data>/askrypt.db          # SQLite
@@ -155,11 +155,9 @@ askrypt/
   - Clean separation: everything dynamic lives under `/api/v1`.
   - Version/about endpoint.
   - Gate: landing reachable in a browser; API namespacing in place.
-  - ⚠️ *Superseded by the Phase 7 decision (server-rendered HTML, not an SPA):*
-    the shipped `fallback_service` serves `index.html` for every unknown path.
-    Phase 7 replaces that with explicit HTML routes, `ServeDir` mounted at
-    `/assets` for the CSS/htmx files only, and a real 404 page — no
-    catch-all-to-index behaviour. Nothing to change before then.
+  - ⚠️ *Superseded by Phase 7.1, which shipped:* the SPA `fallback_service`
+    and the placeholder `static/index.html` are gone, replaced by explicit
+    HTML routes, `ServeDir` at `/assets`, and an HTML 404.
 
 - **Phase 2 — Auth: register & login.** ✅ *(done 2026-08-02; email
   verification / password reset via `Mailer` still open, as planned)*
@@ -287,7 +285,7 @@ askrypt/
   uploads. **No Node, no bundler, no CDN** — `htmx.min.js` is vendored into
   `server/static/`.
 
-  - **7.1 — HTML layer foundations.**
+  - **7.1 — HTML layer foundations.** ✅ *(done 2026-08-04)*
     - `src/web/` module tree: page handlers, a base layout template
       (`templates/layout.html`), and a `WebError` type rendering an HTML error
       page — the JSON `ApiError` envelope stays exclusive to `/api/v1`.
@@ -299,7 +297,8 @@ askrypt/
     - Gate: landing page renders from a template; `/assets` serves the
       vendored files; unknown paths give an HTML 404 while `/api/x` stays JSON.
 
-  - **7.2 — Browser sessions & CSRF.**
+  - **7.2 — Browser sessions & CSRF.** ✅ *(done 2026-08-04; browser Google
+    sign-in deferred — see below)*
     - `WebSession` extractor: reads the session token from an `HttpOnly;
       Secure; SameSite=Lax; Path=/` cookie and resolves it through the *same*
       `SessionStore` as the bearer flow — one session model, one revocation
@@ -307,19 +306,75 @@ askrypt/
     - Login/register/logout **HTML form** handlers that reuse the Phase 2
       account logic (shared functions, not HTTP self-calls), set/clear the
       cookie, and redirect (POST-redirect-GET) with flash messages.
-    - **CSRF**: per-session token embedded in every mutating form and sent by
-      htmx via `hx-headers`; `Origin`/`Referer` checked as a backstop.
-      Applies to cookie-authenticated requests only — bearer requests are not
-      CSRF-able and must not be burdened with it.
-    - Google sign-in for the browser: server-side authorization-code + PKCE
-      with a `/auth/google/callback` redirect URI, ending in the same cookie
-      session. This is a *new* web flow beside the native
-      `/api/v1/auth/google` token exchange; both converge on the same
-      account-link-by-verified-email logic.
+    - **CSRF**: token embedded in every mutating form; `Origin`/`Referer`
+      checked as a backstop. Applies to cookie-authenticated requests only —
+      bearer requests are not CSRF-able and must not be burdened with it.
     - Reuse the existing rate limiters on the HTML auth routes.
     - Gate: register → login → protected page → logout in a browser and in
       tests; a mutating POST without a valid CSRF token is rejected; the web
       session appears in and can be killed from the session list.
+
+  **What shipped in 7.1 + 7.2**, and where it differs from the bullets above:
+
+  - **`src/auth.rs` was split handler-from-logic.** `authenticate`,
+    `register_account`, `issue_session`, `resolve_session`,
+    `revoke_session_token` and `upsert_google_account` are now `pub(crate)`
+    free functions over `AppState`; the `/api/v1` handlers are thin wrappers
+    and the HTML handlers call the same functions. No behaviour changed. The
+    one that mattered: `authenticate` carries the `DUMMY_PASSWORD_HASH`
+    timing equalization, which a second implementation would have quietly
+    dropped. `upsert_google_account` was extracted with no second caller yet,
+    so the browser code flow lands on the identical link-or-create rules.
+  - **CSRF is a random double-submit cookie, not a token derived from the
+    session.** The obvious derivation (`sha256(session_token)`) is exactly
+    what `profile::session_id` already computes *and publishes* in the device
+    list, so it would have handed out valid CSRF tokens. Instead: 256 random
+    bits in `askrypt_csrf`, echoed in a hidden field, compared in constant
+    time, rotated on sign-in and sign-out. It protects the signed-*out* forms
+    too. `web::csrf::CsrfForm<T>` is the only way to read a form body, so a
+    mutating route cannot forget the check.
+  - **No cookie crate.** `axum-extra`'s `cookie` feature was dropped again
+    once it turned out to be one `CookieJar` call: `web::session` reads the
+    `Cookie` header and formats its three `Set-Cookie` values directly, which
+    keeps the exact attribute string readable and unit-tested. Added deps are
+    just `askama` and `serde_urlencoded`.
+  - **Web sessions last 7 days** (API: 30) and are labelled `"Web browser"` —
+    no user-agent string is stored. Resolves two of the open decisions below.
+  - **`no_store` now covers the HTML routes too**, so no signed-in page can
+    land in a shared cache; `/assets` sits outside it and caches normally.
+  - **The HTML auth routes share the `/api/v1/auth` rate limiter instance**,
+    so alternating between the form and the JSON endpoint doesn't double an
+    attacker's budget. `web::rate_limit` is an HTML-rendering twin of
+    `ratelimit::middleware` over the same `RateLimiter`.
+  - **`static/index.html` is gone**; the landing page is a template and
+    `static/` now holds only `style.css` and the vendored `htmx.min.js`
+    (2.0.10). `ASKRYPT_STATIC_DIR` keeps its name but now means "the
+    directory served at `/assets`".
+  - **`/account` is a stub**: email, sign-in method, session lifetime, and a
+    note that the rest arrives in 7.3/7.4. It exists to prove the session
+    round-trip, not to be the profile page.
+  - Gate evidence: `tests/web.rs` (17 tests) — cookie attributes, the CSRF
+    rejections (missing token, foreign token, foreign `Origin`), the fragment
+    vs. full-page split, an unknown address rejected byte-identically to a
+    wrong password, and the whole 7.2 gate as one test: register in the
+    browser → find the session in `GET /api/v1/me/sessions` → revoke it there
+    → the browser is signed out. Plus a test asserting no page carries an
+    inline `<script>`, `<style>` or `hx-on:`, so the CSP can't drift.
+
+  **⏭ Deferred: browser Google sign-in.** The native
+  `POST /api/v1/auth/google` ID-token exchange is unchanged and still works;
+  what the *website* lacks is the redirect flow. It needs, none of which
+  exists today: a distinguished web client id and a client secret
+  (`ASKRYPT_GOOGLE_CLIENT_IDS` is only a list of accepted audiences), a
+  public base URL to build the `redirect_uri` from, an `OAuthCodeExchanger`
+  trait + in-memory fake for the token-endpoint call, PKCE verifier and
+  `state` parked in a short-lived cookie, and `nonce` validation (which
+  `store/google.rs` neither parses nor checks). The convergence point is
+  already in place: exchange the code, hand the `id_token` to the existing
+  `IdTokenVerifier`, then call `auth::upsert_google_account`. One caveat for
+  whoever builds it — the sign-in entry point must be a link, not a form
+  POST, because `form-action 'self'` blocks a redirect out to
+  `accounts.google.com` after a form submission.
 
   - **7.3 — Profile pages.**
     - `/account`: current email, linked providers, change email, change/set
@@ -363,10 +418,11 @@ askrypt/
   `wasm32-unknown-unknown` and running PBKDF2 in a Web Worker — a genuinely
   separate project, and one that would have to keep parity with the same
   golden vectors as the Dart port. Not a reason to pick a JS framework now.
-- Web session cookie lifetime vs the 30-day API session lifetime (shorter,
-  with an idle timeout, seems right for a browser).
-- How web sessions are labelled in the session list (user agent string vs a
-  generic "Web browser") — a privacy/usefulness trade-off.
+- ~~Web session cookie lifetime~~ — **decided in 7.2: 7 days**, against the
+  API's 30. An *idle* timeout is still open; `SessionStore` has no
+  last-seen column, so it would be a schema change rather than a constant.
+- ~~How web sessions are labelled~~ — **decided in 7.2: `"Web browser"`**,
+  with no user-agent string stored.
 
 ## Verification commands
 

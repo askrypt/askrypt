@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ title }} &middot; Askrypt{% endblock %}
+
+{% block content %}
+<section class="card error-page">
+  <p class="status">{{ status }}</p>
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <p class="cta"><a class="button" href="/">Back to the start</a></p>
+</section>
+{% endblock %}

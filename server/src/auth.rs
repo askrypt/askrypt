@@ -5,7 +5,17 @@
 //! with argon2 on the blocking pool so the async executor is never stalled;
 //! sessions are opaque random bearer tokens persisted via the
 //! `SessionStore` trait — no cookies, so native apps drive the same flow
-//! as the SPA.
+//! as the website.
+//!
+//! ## Handlers are wrappers; the logic lives in free functions
+//!
+//! Everything security-relevant — [`authenticate`]'s timing equalization,
+//! [`upsert_google_account`]'s link-or-create rules, [`resolve_session`]'s
+//! expiry handling — is a plain `async fn` over [`AppState`], with the
+//! `/api/v1` handler below it doing nothing but extraction and JSON
+//! shaping. The Phase 7 HTML handlers in [`crate::web`] call the *same*
+//! functions rather than making HTTP calls back into the API, so there is
+//! exactly one implementation of each rule and one set of audit events.
 
 use std::sync::LazyLock;
 
@@ -22,10 +32,11 @@ use tokio::sync::Semaphore;
 use crate::audit::{self, ClientInfo};
 use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
-use crate::store::{Account, AccountId, NewAccount, Session, StoreError};
+use crate::store::{Account, AccountId, NewAccount, Session, StoreError, VerifiedIdToken};
 
-/// How long a login session stays valid. Long-lived per-device sessions per
-/// the plan's client-access rule; clients re-login after expiry.
+/// How long an API login session stays valid. Long-lived per-device sessions
+/// per the plan's client-access rule; clients re-login after expiry. Browser
+/// sessions are shorter — see [`crate::web::session::WEB_SESSION_TTL_DAYS`].
 const SESSION_TTL_DAYS: i64 = 30;
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 512;
@@ -101,35 +112,23 @@ pub struct SessionResponse {
     pub account: AccountInfo,
 }
 
+impl SessionResponse {
+    fn new(session: Session, account: &Account) -> Self {
+        Self {
+            token: session.token,
+            expires_at: session.expires_at,
+            account: AccountInfo::from(account),
+        }
+    }
+}
+
 /// `POST /api/v1/auth/register` — create an email+password account.
 pub async fn register(
     State(state): State<AppState>,
     client: ClientInfo,
     ApiJson(req): ApiJson<RegisterRequest>,
 ) -> ApiResult<(StatusCode, Json<AccountInfo>)> {
-    let email = validate_email(&req.email).inspect_err(|err| {
-        audit::emit(audit::REGISTER_DENIED, &client, None, err.code);
-    })?;
-    validate_password(&req.password).inspect_err(|err| {
-        audit::emit(audit::REGISTER_DENIED, &client, None, err.code);
-    })?;
-    let password_hash = hash_password(req.password).await?;
-    let account = state
-        .accounts
-        .create(NewAccount {
-            email,
-            password_hash: Some(password_hash),
-            google_sub: None,
-        })
-        .await
-        // Matched rather than `?`-ed so a taken email is audited: it is the
-        // signal that someone is probing which addresses exist.
-        .inspect_err(|err| {
-            if matches!(err, StoreError::Conflict(_)) {
-                audit::emit(audit::REGISTER_DENIED, &client, None, "email_taken");
-            }
-        })?;
-    audit::emit(audit::REGISTER_OK, &client, Some(account.id), &account.email);
+    let account = register_account(&state, &client, &req.email, req.password).await?;
     Ok((StatusCode::CREATED, Json(AccountInfo::from(&account))))
 }
 
@@ -139,45 +138,10 @@ pub async fn login(
     client: ClientInfo,
     ApiJson(req): ApiJson<LoginRequest>,
 ) -> ApiResult<Json<SessionResponse>> {
-    let email = req.email.trim().to_ascii_lowercase();
-    // Unknown email, password-less (Google-only) account, and wrong password
-    // all answer the same 401 so responses don't reveal which emails are
-    // registered — and the two account-less paths still pay for an argon2
-    // verify against DUMMY_PASSWORD_HASH so the *timing* doesn't reveal it
-    // either. The failure reason goes to the audit log, never to the client.
-    let account = match state.accounts.find_by_email(&email).await? {
-        Some(account) => account,
-        None => {
-            let _ = verify_password(DUMMY_PASSWORD_HASH.to_string(), req.password).await;
-            audit::emit(audit::LOGIN_FAILED, &client, None, "unknown_email");
-            return Err(invalid_credentials());
-        }
-    };
-    let hash = match account.password_hash.clone() {
-        Some(hash) => hash,
-        None => {
-            let _ = verify_password(DUMMY_PASSWORD_HASH.to_string(), req.password).await;
-            audit::emit(
-                audit::LOGIN_FAILED,
-                &client,
-                Some(account.id),
-                "no_password",
-            );
-            return Err(invalid_credentials());
-        }
-    };
-    if !verify_password(hash, req.password).await? {
-        audit::emit(
-            audit::LOGIN_FAILED,
-            &client,
-            Some(account.id),
-            "bad_password",
-        );
-        return Err(invalid_credentials());
-    }
-    let response = create_session(&state, &account, req.device_label).await?;
+    let account = authenticate(&state, &client, &req.email, req.password).await?;
+    let session = issue_session(&state, &account, req.device_label, SESSION_TTL_DAYS).await?;
     audit::emit(audit::LOGIN_OK, &client, Some(account.id), "password");
-    Ok(Json(response))
+    Ok(Json(SessionResponse::new(session, &account)))
 }
 
 /// `POST /api/v1/auth/google` — exchange a verified Google ID token for the
@@ -196,10 +160,124 @@ pub async fn google_login(
         .inspect_err(|_| {
             audit::emit(audit::LOGIN_GOOGLE_DENIED, &client, None, "invalid_token");
         })?;
+    let (account, outcome) = upsert_google_account(&state, &client, claims).await?;
+    let session = issue_session(&state, &account, req.device_label, SESSION_TTL_DAYS).await?;
+    audit::emit(audit::LOGIN_GOOGLE_OK, &client, Some(account.id), outcome);
+    Ok(Json(SessionResponse::new(session, &account)))
+}
+
+/// `POST /api/v1/auth/logout` — revoke the presented session token.
+pub async fn logout(
+    State(state): State<AppState>,
+    client: ClientInfo,
+    auth: AuthSession,
+) -> ApiResult<StatusCode> {
+    revoke_session_token(&state, &client, &auth.session, auth.account.id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Creates an email+password account, auditing every rejection.
+///
+/// Shared with the HTML register form, which must not re-derive the
+/// validation or the "email taken" audit.
+pub(crate) async fn register_account(
+    state: &AppState,
+    client: &ClientInfo,
+    raw_email: &str,
+    password: String,
+) -> ApiResult<Account> {
+    let email = validate_email(raw_email).inspect_err(|err| {
+        audit::emit(audit::REGISTER_DENIED, client, None, err.code);
+    })?;
+    validate_password(&password).inspect_err(|err| {
+        audit::emit(audit::REGISTER_DENIED, client, None, err.code);
+    })?;
+    let password_hash = hash_password(password).await?;
+    let account = state
+        .accounts
+        .create(NewAccount {
+            email,
+            password_hash: Some(password_hash),
+            google_sub: None,
+        })
+        .await
+        // Matched rather than `?`-ed so a taken email is audited: it is the
+        // signal that someone is probing which addresses exist.
+        .inspect_err(|err| {
+            if matches!(err, StoreError::Conflict(_)) {
+                audit::emit(audit::REGISTER_DENIED, client, None, "email_taken");
+            }
+        })?;
+    audit::emit(audit::REGISTER_OK, client, Some(account.id), &account.email);
+    Ok(account)
+}
+
+/// Checks an email+password pair, returning the account on success.
+///
+/// Audits every *failure* itself; the caller emits [`audit::LOGIN_OK`] once
+/// it has actually issued a session, so a store failure between the two
+/// doesn't log a login that never happened.
+///
+/// Reimplementing this in the HTML layer would be the easy way to lose the
+/// timing defense below, which is why it lives here.
+pub(crate) async fn authenticate(
+    state: &AppState,
+    client: &ClientInfo,
+    raw_email: &str,
+    password: String,
+) -> ApiResult<Account> {
+    // Normalized, not validated: a malformed address must fail the same way
+    // as a well-formed unknown one.
+    let email = raw_email.trim().to_ascii_lowercase();
+    // Unknown email, password-less (Google-only) account, and wrong password
+    // all answer the same 401 so responses don't reveal which emails are
+    // registered — and the two account-less paths still pay for an argon2
+    // verify against DUMMY_PASSWORD_HASH so the *timing* doesn't reveal it
+    // either. The failure reason goes to the audit log, never to the client.
+    let account = match state.accounts.find_by_email(&email).await? {
+        Some(account) => account,
+        None => {
+            let _ = verify_password(DUMMY_PASSWORD_HASH.to_string(), password).await;
+            audit::emit(audit::LOGIN_FAILED, client, None, "unknown_email");
+            return Err(invalid_credentials());
+        }
+    };
+    let hash = match account.password_hash.clone() {
+        Some(hash) => hash,
+        None => {
+            let _ = verify_password(DUMMY_PASSWORD_HASH.to_string(), password).await;
+            audit::emit(audit::LOGIN_FAILED, client, Some(account.id), "no_password");
+            return Err(invalid_credentials());
+        }
+    };
+    if !verify_password(hash, password).await? {
+        audit::emit(
+            audit::LOGIN_FAILED,
+            client,
+            Some(account.id),
+            "bad_password",
+        );
+        return Err(invalid_credentials());
+    }
+    Ok(account)
+}
+
+/// Creates or links the account behind a *verified* Google ID token,
+/// returning it plus the audit outcome (`existing` / `linked` /
+/// `new_account`) for the caller to emit alongside its own event.
+///
+/// The browser authorization-code flow will land here too, so the
+/// link-or-create rules — including the 409 when the address is already tied
+/// to a different Google account — stay in one place.
+pub(crate) async fn upsert_google_account(
+    state: &AppState,
+    client: &ClientInfo,
+    claims: VerifiedIdToken,
+) -> ApiResult<(Account, &'static str)> {
     if !claims.email_verified {
         audit::emit(
             audit::LOGIN_GOOGLE_DENIED,
-            &client,
+            client,
             None,
             "email_not_verified",
         );
@@ -219,7 +297,7 @@ pub async fn google_login(
             Some(_) => {
                 audit::emit(
                     audit::LOGIN_GOOGLE_DENIED,
-                    &client,
+                    client,
                     Some(account.id),
                     "linked_to_other_google_account",
                 );
@@ -246,26 +324,27 @@ pub async fn google_login(
                 .await?
         }
     };
-    let response = create_session(&state, &account, req.device_label).await?;
-    audit::emit(audit::LOGIN_GOOGLE_OK, &client, Some(account.id), outcome);
-    Ok(Json(response))
+    Ok((account, outcome))
 }
 
-/// `POST /api/v1/auth/logout` — revoke the presented session token.
-pub async fn logout(
-    State(state): State<AppState>,
-    client: ClientInfo,
-    auth: AuthSession,
-) -> ApiResult<StatusCode> {
-    match state.sessions.delete(&auth.session.token).await {
+/// Revokes one session, tolerating a token that is already gone, and audits
+/// the logout. Shared with the HTML sign-out form, which additionally clears
+/// the browser cookie.
+pub(crate) async fn revoke_session_token(
+    state: &AppState,
+    client: &ClientInfo,
+    session: &Session,
+    account_id: AccountId,
+) -> ApiResult<()> {
+    match state.sessions.delete(&session.token).await {
         Ok(()) | Err(StoreError::NotFound) => {
             audit::emit(
                 audit::LOGOUT,
-                &client,
-                Some(auth.account.id),
-                auth.session.label.as_deref().unwrap_or("-"),
+                client,
+                Some(account_id),
+                session.label.as_deref().unwrap_or("-"),
             );
-            Ok(StatusCode::NO_CONTENT)
+            Ok(())
         }
         Err(other) => Err(other.into()),
     }
@@ -291,44 +370,59 @@ impl FromRequestParts<AppState> for AuthSession {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or_else(ApiError::unauthorized)?;
-        let session = state
-            .sessions
-            .get(token)
-            .await?
-            .ok_or_else(ApiError::unauthorized)?;
-        if session.expires_at <= Utc::now() {
-            // Best-effort cleanup; the token is rejected either way.
-            let _ = state.sessions.delete(token).await;
-            return Err(ApiError::unauthorized());
-        }
-        let account = state
-            .accounts
-            .get(session.account_id)
-            .await?
-            .ok_or_else(ApiError::unauthorized)?;
+        let (account, session) = resolve_session(state, token).await?;
         Ok(AuthSession { account, session })
     }
 }
 
-async fn create_session(
+/// Resolves an opaque session token to its session and owning account,
+/// rejecting expired ones.
+///
+/// Shared with the cookie-based `WebSession` extractor, which carries the
+/// same token by a different means and needs identical expiry semantics but
+/// a redirect instead of a 401.
+pub(crate) async fn resolve_session(
+    state: &AppState,
+    token: &str,
+) -> ApiResult<(Account, Session)> {
+    let session = state
+        .sessions
+        .get(token)
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+    if session.expires_at <= Utc::now() {
+        // Best-effort cleanup; the token is rejected either way.
+        let _ = state.sessions.delete(token).await;
+        return Err(ApiError::unauthorized());
+    }
+    let account = state
+        .accounts
+        .get(session.account_id)
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+    Ok((account, session))
+}
+
+/// Mints and persists a session token.
+///
+/// `ttl_days` is a parameter rather than [`SESSION_TTL_DAYS`] because
+/// browser sessions are deliberately shorter than API ones.
+pub(crate) async fn issue_session(
     state: &AppState,
     account: &Account,
     label: Option<String>,
-) -> ApiResult<SessionResponse> {
+    ttl_days: i64,
+) -> ApiResult<Session> {
     let now = Utc::now();
     let session = Session {
         token: new_session_token(),
         account_id: account.id,
         label,
         created_at: now,
-        expires_at: now + Duration::days(SESSION_TTL_DAYS),
+        expires_at: now + Duration::days(ttl_days),
     };
     state.sessions.insert(session.clone()).await?;
-    Ok(SessionResponse {
-        token: session.token,
-        expires_at: session.expires_at,
-        account: AccountInfo::from(account),
-    })
+    Ok(session)
 }
 
 /// 256 bits from the OS RNG, hex-encoded.

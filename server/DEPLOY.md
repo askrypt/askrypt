@@ -6,16 +6,21 @@ exposes encrypted blobs and account metadata, never plaintext. That property
 is structural (the server never links `askrypt-core`), so hardening here is
 about protecting accounts and availability, not vault secrets.
 
-Everything ships in one binary: templates, migrations and the API. The only
-loose files are the static assets in `server/static/`.
+Everything ships in one binary: the website's templates, the migrations and
+the API. The only loose files are the static assets in `server/static/` — a
+stylesheet and a vendored copy of **htmx 2.0.10**, served at `/assets`. There
+is no JavaScript toolchain anywhere in the build; `cargo build` produces the
+whole product.
 
 ---
 
 ## 1. Prerequisites
 
 - A TLS terminator in front. **This is required, not optional**: sessions are
-  bearer tokens, and the Phase 7 web UI will set `Secure` cookies. Do not
-  expose the server's own port.
+  bearer tokens, and the web UI sets `Secure` cookies — without TLS, browsers
+  will refuse to send them back and nobody will stay signed in. (Browsers
+  make an exception for `localhost`, which is why `cargo run` works in
+  development.) Do not expose the server's own port.
 - A data directory on persistent storage. It holds `askrypt.db` (SQLite, WAL
   mode) and `vaults/<account-id>/<vault-id>.askrypt`.
 
@@ -30,7 +35,7 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_BIND` | `127.0.0.1:8080` | Listen address. Keep it on loopback (or a private network) behind the proxy |
 | `ASKRYPT_DATA_DIR` | `data` | SQLite db + vault blobs. Set an absolute path in production |
 | `ASKRYPT_BACKEND` | `sqlite` | `sqlite` or `memory` (nothing persisted — dev only) |
-| `ASKRYPT_STATIC_DIR` | `server/static` | Static assets. The default is relative to the working directory |
+| `ASKRYPT_STATIC_DIR` | `server/static` | Assets served at `/assets` (stylesheet + vendored htmx). The default is relative to the working directory |
 | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated OAuth client ids accepted as ID-token audiences. Empty disables Google sign-in (501) |
 | `ASKRYPT_TRUST_PROXY` | `false` | Believe `X-Real-IP` / `X-Forwarded-For`. **Only when the proxy is the sole route in** |
 | `ASKRYPT_HSTS` | `false` | Send `Strict-Transport-Security`. Enable once TLS is confirmed |
@@ -98,13 +103,25 @@ binary, `systemctl restart askrypt-server`.
 Applied to every response by `src/hardening.rs`:
 
 - `Content-Security-Policy: default-src 'self'; script-src 'self'; …` — no
-  `unsafe-inline`, no `unsafe-eval`, `frame-ancestors 'none'`. The Phase 7
+  `unsafe-inline`, no `unsafe-eval`, `frame-ancestors 'none'`. The website's
   pages are written to fit this, not the other way round.
 - `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   `X-Frame-Options: DENY`, `Permissions-Policy`, COOP/CORP `same-origin`,
   and HSTS when enabled.
-- `Cache-Control: no-store` on `/api/v1` (vault downloads use
-  `private, no-cache` so `ETag` revalidation still works).
+- `Cache-Control: no-store` on `/api/v1` and on every HTML page (vault
+  downloads use `private, no-cache` so `ETag` revalidation still works;
+  `/assets` caches normally).
+
+The browser session:
+
+- The web session cookie is `HttpOnly; Secure; SameSite=Lax; Path=/` and
+  holds the same opaque token the API issues — one session model, so a
+  browser shows up in `GET /api/v1/me/sessions` as "Web browser" and can be
+  revoked from any device. Browser sessions last **7 days**; API sessions
+  last 30.
+- Every mutating form carries a CSRF token matching an `askrypt_csrf` cookie,
+  with `Origin`/`Referer` checked as a backstop. This applies to cookie
+  requests only — bearer requests are not CSRF-able.
 
 Limits and backpressure:
 

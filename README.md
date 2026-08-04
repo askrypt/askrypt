@@ -100,7 +100,7 @@ cargo run -p askrypt-core --example gen_vectors
 ### Server (Rust)
 
 ```sh
-cargo run -p askrypt-server   # http://127.0.0.1:8080 — landing page at /, API under /api/v1
+cargo run -p askrypt-server   # http://127.0.0.1:8080 — website at /, API under /api/v1
 ```
 
 Run it from the repository root (the default static-asset path is relative to it). Smoke checks:
@@ -109,6 +109,12 @@ Run it from the repository root (the default static-asset path is relative to it
 curl http://127.0.0.1:8080/healthz        # {"status":"ok"}
 curl http://127.0.0.1:8080/api/v1/about   # {"name":"askrypt-server","version":"..."}
 ```
+
+The website is server-rendered HTML (askama templates compiled into the binary)
+with [htmx](https://htmx.org) 2.0.10 vendored into `server/static/` — no Node,
+no bundler, no CDN, and every page works with JavaScript disabled. It can sign
+you in and out; the profile pages and the vault file manager are still to come.
+It can never open a vault: there is no crypto in the browser, by design.
 
 A consistent snapshot of the database, safe to take against a running server
 (never `cp` the live file — it is in WAL mode):
@@ -124,7 +130,7 @@ Configuration via environment variables (all optional):
 | `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on              |
 | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data dir (SQLite db, vault blobs)|
 | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite` or `memory`    |
-| `ASKRYPT_STATIC_DIR` | `server/static`  | Static asset directory (landing page)    |
+| `ASKRYPT_STATIC_DIR` | `server/static`  | Assets served at `/assets` (CSS + htmx)  |
 | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids; empty disables Google sign-in |
 | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For`; only behind a reverse proxy |
 | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security` (enable once TLS is in front) |

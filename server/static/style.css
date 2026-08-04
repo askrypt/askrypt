@@ -1,3 +1,8 @@
+/*
+ * The site's only stylesheet. It lives here rather than in a <style> block
+ * because the CSP is `style-src 'self'` with no `unsafe-inline`; see
+ * server/src/hardening.rs. Served from /assets/style.css.
+ */
 :root {
   color-scheme: light dark;
   --fg: #1c1c1e;
@@ -5,6 +10,9 @@
   --accent: #3a7bd5;
   --bg: #f5f5f7;
   --card: #ffffff;
+  --line: #e0e0e5;
+  --danger: #b3261e;
+  --ok: #1c6b3c;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -13,34 +21,174 @@
     --accent: #6ea8ff;
     --bg: #111114;
     --card: #1b1b1f;
+    --line: #2c2c33;
+    --danger: #f2b8b5;
+    --ok: #7fd1a0;
   }
 }
+
 * { box-sizing: border-box; }
+
 body {
   margin: 0;
   min-height: 100vh;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   background: var(--bg);
   color: var(--fg);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.55;
 }
-main {
+
+/* ---------- chrome ---------- */
+
+header.site {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem clamp(1rem, 5vw, 3rem);
+  border-bottom: 1px solid var(--line);
   background: var(--card);
-  border-radius: 12px;
-  padding: 3rem 3.5rem;
-  max-width: 26rem;
-  text-align: center;
-  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.08);
 }
-h1 {
-  margin: 0 0 0.5rem;
-  font-size: 2rem;
+.brand {
+  font-size: 1.15rem;
+  font-weight: 600;
   letter-spacing: 0.02em;
+  text-decoration: none;
+  color: inherit;
 }
-h1 .lock { color: var(--accent); }
-p { margin: 0.5rem 0; color: var(--muted); line-height: 1.5; }
+.brand .lock { color: var(--accent); }
+header nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+header nav a { color: var(--fg); text-decoration: none; }
+header nav a:hover { text-decoration: underline; }
+
+main {
+  flex: 1;
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3rem) clamp(1rem, 5vw, 3rem);
+}
+
+footer {
+  border-top: 1px solid var(--line);
+  padding: 1.25rem clamp(1rem, 5vw, 3rem);
+}
+footer p {
+  max-width: 48rem;
+  margin: 0 auto;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+/* ---------- content ---------- */
+
+h1 { margin: 0 0 0.75rem; font-size: 1.9rem; letter-spacing: 0.01em; }
+h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+p { margin: 0.6rem 0; }
+.lead { font-size: 1.1rem; color: var(--muted); max-width: 42rem; }
+.hint { color: var(--muted); font-size: 0.875rem; }
+
+.hero { margin-bottom: 2.5rem; }
+.cta { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+}
+.cards article {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+}
+.cards p { color: var(--muted); margin-bottom: 0; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: clamp(1.5rem, 4vw, 2.25rem);
+  margin-bottom: 1.5rem;
+}
+
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1.5rem; margin: 1rem 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+
+/* ---------- forms ---------- */
+
+.form { max-width: 24rem; }
+.form label { display: block; margin-top: 1rem; font-size: 0.9rem; color: var(--muted); }
+.form input[type="email"],
+.form input[type="password"],
+.form input[type="text"] {
+  width: 100%;
+  margin-top: 0.3rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+.form .button { margin-top: 1.25rem; width: 100%; }
+.form .alt { margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
+
+.button {
+  display: inline-block;
+  padding: 0.55rem 1.1rem;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+.button:hover { filter: brightness(1.08); }
+
+form.inline { display: inline; margin: 0; }
+.linklike {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.linklike:hover { text-decoration: underline; }
+
+/* ---------- messages ---------- */
+
+.flash, .error {
+  margin: 0 0 1.25rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+.flash { border: 1px solid var(--ok); color: var(--ok); }
+.error { border: 1px solid var(--danger); color: var(--danger); }
+
+.error-page { max-width: 32rem; }
+.error-page .status {
+  margin: 0;
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--muted);
+  line-height: 1;
+}
+
 code {
   font-family: ui-monospace, "Cascadia Code", monospace;
   font-size: 0.9em;

@@ -75,13 +75,15 @@ App ID `com.askrypt.app`, display name "Askrypt", `minSdk 26`. The `android/` an
 ### Server — `server/` (`askrypt-server`)
 
 A Rust (axum) server providing accounts (email + password, plus Google
-sign-in) and cloud storage of vaults as **opaque encrypted files** — it never
-handles questions, answers, or vault crypto, and it must **never depend on
-`askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phases 0
-(scaffolding), 1 (landing page + API namespacing), 2 (auth: register, login,
-Google sign-in), 3 (profile API), 4 (vault cloud storage) and 5 (hardening &
-deployment) are done, Phase 6 (CI/CD) is next. Self-hosting is documented in
-**`server/DEPLOY.md`**.
+sign-in), cloud storage of vaults as **opaque encrypted files**, and a
+server-rendered website — it never handles questions, answers, or vault
+crypto, and it must **never depend on `askrypt-core`**. The phased plan lives
+in **`server/PLAN.md`**; Phases 0 (scaffolding), 1 (landing page + API
+namespacing), 2 (auth: register, login, Google sign-in), 3 (profile API), 4
+(vault cloud storage), 5 (hardening & deployment) and 7.1 + 7.2 (website
+foundations + browser sessions/CSRF) are done. Still open: Phase 6 (CI/CD),
+7.3 (profile pages), 7.4 (vault file manager), and browser Google sign-in.
+Self-hosting is documented in **`server/DEPLOY.md`**.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
@@ -116,10 +118,10 @@ deployment) are done, Phase 6 (CI/CD) is next. Self-hosting is documented in
   nest (`GET /about`, the `/me` profile tree, the `/vaults` tree, and
   `/auth/{register,login,google,logout}` behind a 20 req/min fixed-window
   rate limiter) with a JSON 404 fallback covering everything under `/api`;
-  all other paths serve static assets from the configured static dir
-  (`tower-http` `ServeDir`) with SPA fallback to `index.html` —
-  `server/static/` ships a placeholder landing page until Phase 7. The vault
-  routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`, which
+  the HTML routes from `web::routes` at the root; the configured static dir
+  mounted at `/assets` (`tower-http` `ServeDir`); and an HTML 404 fallback.
+  The Phase 1 SPA fallback (`index.html` for every unknown path) is gone. The
+  vault routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`, which
   overrides the outer global limit because it is layered *inside* it. The
   Phase 5 layer stack is declared innermost-first at the bottom of `router`
   (body limit → `ClientIpPolicy` extension → timeout → shedding → security
@@ -157,7 +159,13 @@ deployment) are done, Phase 6 (CI/CD) is next. Self-hosting is documented in
   login timing can't enumerate accounts (a unit test guards its argon2 cost
   params), and `ARGON2_SLOTS` caps concurrent hashes
   (`ASKRYPT_ARGON2_PARALLELISM`, default = CPU count) because each holds
-  ~19 MiB and tokio's blocking pool would otherwise run 512 of them.
+  ~19 MiB and tokio's blocking pool would otherwise run 512 of them. Phase 7
+  split logic out of the handlers: `authenticate`, `register_account`,
+  `issue_session` (TTL is a parameter — browser sessions are shorter),
+  `resolve_session`, `revoke_session_token` and `upsert_google_account` are
+  `pub(crate)` free functions over `AppState`, and both the JSON handlers and
+  `web/` call them. **Never re-implement a rule in `web/`** — in particular
+  `authenticate` is where the login timing equalization lives.
 - **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`:
   `GET /me` (full profile incl. linked providers), `PUT /me/email`,
   `PUT /me/password` (current-password re-auth when one exists; sets the
@@ -181,7 +189,28 @@ deployment) are done, Phase 6 (CI/CD) is next. Self-hosting is documented in
   Downloads set `Cache-Control: private, no-cache` so they opt out of the
   blanket `no-store` without losing ETag revalidation.
 - **`server/src/ratelimit.rs`** — In-memory fixed-window `RateLimiter` +
-  axum middleware, keyed via `clientip::client_ip`; 429s carry `Retry-After`.
+  axum middleware, keyed via `clientip::client_ip` (`client_key` is
+  `pub(crate)` so `web` can bucket identically); 429s carry `Retry-After`.
+- **`server/src/web/`** — The website (Phase 7): server-rendered HTML with
+  askama templates from `server/templates/`, htmx as a progressive
+  enhancement. `mod.rs` builds the HTML router and holds `rate_limit`, an
+  HTML-rendering twin of `ratelimit::middleware` sharing the *same*
+  `RateLimiter` instance as `/api/v1/auth`; `render.rs` has `Page<T>`
+  (askama 0.16 has no axum integration), `is_htmx`, and `Chrome`/`Shell`
+  (the layout's data plus the cookies a response owes); `error.rs` `WebError`
+  with `From<ApiError>` — 5xx messages are replaced, never forwarded;
+  `session.rs` the `WebSession`/`MaybeWebSession` cookie extractors (7-day
+  sessions labelled `"Web browser"`, rejecting with a 303 to `/login` or an
+  `HX-Redirect`) plus hand-formatted `Set-Cookie` values (`HttpOnly; Secure;
+  SameSite=Lax; Path=/`); `csrf.rs` a random double-submit cookie —
+  **deliberately not derived from the session token, because
+  `profile::session_id` is `sha256(token)` and is published in the device
+  list** — enforced by the `CsrfForm<T>` extractor, the only way to read a
+  form body; `flash.rs` one-shot messages stored as *codes*, never text;
+  `auth.rs` the login/register/logout forms; `pages.rs` landing, the
+  `/account` stub and the HTML 404. Templates must not contain inline
+  `<script>`/`<style>`, `hx-on:` or `js:` htmx expressions — the CSP forbids
+  them and `tests/web.rs` guards it.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
   seam; handlers can only reach the traits.
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
@@ -209,8 +238,19 @@ deployment) are done, Phase 6 (CI/CD) is next. Self-hosting is documented in
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing). Middleware needing a slow or parked handler
-  (timeout, shedding) is unit-tested inside `src/hardening.rs` instead.
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7.1/7.2 gate: template
+  rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie attributes,
+  the three CSRF rejections, fragment vs. full page, and register-in-browser
+  → find the session in `GET /api/v1/me/sessions` → revoke → signed out).
+  Middleware needing a slow or parked handler (timeout, shedding) is
+  unit-tested inside `src/hardening.rs` instead.
+- **`server/templates/` + `server/static/`** — The website's markup and its
+  only loose files. Templates (`layout.html`, `landing.html`,
+  `auth_page.html`, `account.html`, `error.html`, `fragments/auth_form.html`)
+  compile into the binary; every page template carries a `chrome: Chrome`
+  field because `layout.html` reads it. `static/` holds just `style.css` and
+  the vendored `htmx.min.js` (2.0.10), served at `/assets` — there is no
+  `index.html` any more. No Node, no bundler, no CDN.
 - **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts:
   multi-stage image (build from the **repo root** — cargo validates every
   workspace member's target paths, and `sqlx::migrate!` embeds
@@ -233,6 +273,7 @@ deployment) are done, Phase 6 (CI/CD) is next. Self-hosting is documented in
 | `rfd` | Native file open/save dialogs |
 | `rand` | Random number generation |
 | `tokio` | `spawn_blocking` for off-main-thread vault decryption |
+| `askama` | Server-rendered HTML templates, compiled into the server binary |
 
 ### Build & Test
 

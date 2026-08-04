@@ -2,10 +2,15 @@
 //!
 //! Namespacing (Phase 1): everything dynamic lives under `/api/v1`, which
 //! answers unknown paths with a JSON 404 per the error convention in
-//! [`crate::error`]. Everything else falls back to the static assets in the
-//! configured static dir, with unknown paths served `index.html` (SPA
-//! fallback routing) so client-side routes work after Phase 7. `/healthz`
-//! stays at the root as an infrastructure endpoint.
+//! [`crate::error`]. `/healthz` stays at the root as an infrastructure
+//! endpoint.
+//!
+//! Website (Phase 7): the HTML pages in [`crate::web`] are explicit routes at
+//! the root, the configured static dir is mounted at `/assets` for the
+//! stylesheet and the vendored htmx, and unknown paths get an HTML 404. The
+//! Phase 1 SPA fallback (every unknown path served `index.html`) is gone —
+//! the site is server-rendered, so there are no client-side routes to
+//! rescue.
 //!
 //! Auth (Phase 2): the handlers live in [`crate::auth`]; everything under
 //! `/api/v1/auth` shares one fixed-window rate limiter.
@@ -31,7 +36,7 @@ use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use serde::Serialize;
 use tokio::sync::Semaphore;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 
 use crate::auth;
 use crate::clientip::ClientIpPolicy;
@@ -42,6 +47,7 @@ use crate::profile;
 use crate::ratelimit::{self, RateLimiter};
 use crate::state::AppState;
 use crate::vaults;
+use crate::web;
 
 const AUTH_RATE_LIMIT: u32 = 20;
 const AUTH_RATE_WINDOW: Duration = Duration::from_secs(60);
@@ -54,7 +60,7 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .route("/google", post(auth::google_login))
         .route("/logout", post(auth::logout))
         .route_layer(middleware::from_fn_with_state(
-            auth_limiter,
+            Arc::clone(&auth_limiter),
             ratelimit::middleware,
         ));
 
@@ -90,15 +96,16 @@ pub fn router(state: AppState, config: &Config) -> Router {
         // After every nest/fallback, so it covers the whole API surface.
         .layer(middleware::from_fn(hardening::no_store));
 
-    let static_assets = ServeDir::new(&config.static_dir)
-        .fallback(ServeFile::new(config.static_dir.join("index.html")));
-
     Router::new()
         .route("/healthz", get(healthz))
         .nest("/api/v1", api_v1)
         // Anything else under /api is not a page — keep 404s JSON there too.
         .route("/api/{*rest}", get(api_fallback).fallback(api_fallback))
-        .fallback_service(static_assets)
+        // The stylesheet and the vendored htmx, and nothing else: templates
+        // are compiled into the binary.
+        .nest_service("/assets", ServeDir::new(&config.static_dir))
+        .merge(web::routes(auth_limiter))
+        .fallback(web::not_found)
         // Layers wrap what was declared before them, so the LAST `.layer`
         // call is the FIRST middleware a request meets. Listed innermost
         // first:

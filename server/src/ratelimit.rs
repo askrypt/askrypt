@@ -84,7 +84,10 @@ pub async fn middleware(
     Ok(next.run(request).await)
 }
 
-fn client_key(request: &Request) -> String {
+/// Bucket key for a request. Shared with [`crate::web`], whose HTML auth
+/// routes hit the *same* limiter instance as `/api/v1/auth` so a browser and
+/// an API client can't be used to double an attacker's budget.
+pub(crate) fn client_key(request: &Request) -> String {
     let extensions = request.extensions();
     clientip::client_ip(
         request.headers(),

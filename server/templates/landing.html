@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<section class="hero">
+  <h1>Your vaults, backed up. Still unreadable to us.</h1>
+  <p class="lead">Askrypt is a password manager with no master password: you
+  unlock a vault by answering your own security questions. This site keeps
+  your encrypted vault files safe across devices.</p>
+{%- if chrome.email.is_none() %}
+  <p class="cta">
+    <a class="button" href="/register">Create account</a>
+    <a href="/login">or sign in</a>
+  </p>
+{%- else %}
+  <p class="cta"><a class="button" href="/account">Go to your account</a></p>
+{%- endif %}
+</section>
+
+<section class="cards">
+  <article>
+    <h2>Encrypted before it leaves your device</h2>
+    <p>Vaults are AES-256 encrypted by the app you run. The server stores
+    opaque bytes and a file name &mdash; nothing else.</p>
+  </article>
+  <article>
+    <h2>The website cannot open a vault</h2>
+    <p>There is no decryption in the browser, by design. Uploading, renaming
+    and downloading is all this site can do; unlocking happens in the desktop
+    or mobile app.</p>
+  </article>
+  <article>
+    <h2>Same account everywhere</h2>
+    <p>Desktop and mobile sign in with these credentials through the
+    <code>/api/v1</code> API. Every signed-in device shows up in your account
+    and can be revoked from there.</p>
+  </article>
+</section>
+{% endblock %}

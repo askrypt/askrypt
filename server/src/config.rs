@@ -5,7 +5,7 @@
 //! | `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on      |
 //! | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data directory           |
 //! | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite`/`memory` |
-//! | `ASKRYPT_STATIC_DIR` | `server/static`  | Static asset directory (landing/SPA) |
+//! | `ASKRYPT_STATIC_DIR` | `server/static`  | Assets served at `/assets` (CSS + htmx) |
 //! | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids accepted as ID-token audiences; empty disables Google sign-in |
 //! | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For` for the client address. Only when a reverse proxy is the *only* way to reach the listener |
 //! | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security`. Enable once TLS terminates in front |

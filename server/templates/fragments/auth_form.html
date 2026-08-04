@@ -1,0 +1,26 @@
+{#-
+  The sign-in / create-account form, rendered on its own for an `HX-Request`
+  and embedded in `auth_page.html` otherwise. `hx-post` targets the form
+  itself, so a failed submit swaps in this same fragment with the error
+  filled in; with JavaScript disabled the plain POST re-renders the whole
+  page instead, which is why nothing here depends on htmx.
+-#}
+<form id="auth-form" class="card form" method="post" action="{{ action }}"
+      hx-post="{{ action }}" hx-target="this" hx-swap="outerHTML">
+  <h1>{{ heading }}</h1>
+{%- if let Some(error) = error.as_deref() %}
+  <p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" value="{{ email }}"
+         autocomplete="username" required autofocus>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password"
+         autocomplete="{{ password_autocomplete }}" required>
+{%- if let Some(hint) = password_hint %}
+  <p class="hint">{{ hint }}</p>
+{%- endif %}
+  <button class="button" type="submit">{{ submit }}</button>
+  <p class="alt">{{ alt_prompt }} <a href="{{ alt_href }}">{{ alt_link }}</a></p>
+</form>

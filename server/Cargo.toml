@@ -30,6 +30,14 @@ getrandom = "0.3"
 sha2 = "0.10"
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Website (Phase 7). Templates compile into the binary, so there is no
+# template directory to ship and no JS toolchain anywhere in the build.
+askama = "0.16"
+# The CSRF extractor parses a form body twice: once for the token field,
+# once for the handler's own DTO. No cookie crate: `web::session` formats
+# the three `Set-Cookie` values it needs by hand, which keeps the exact
+# attribute string visible and under test.
+serde_urlencoded = "0.7"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

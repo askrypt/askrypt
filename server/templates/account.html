@@ -1,0 +1,23 @@
+{% extends "layout.html" %}
+
+{% block title %}Account &middot; Askrypt{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h1>Account</h1>
+  <dl class="facts">
+    <dt>Email</dt><dd>{{ email }}</dd>
+    <dt>Sign-in</dt><dd>{{ providers }}</dd>
+    <dt>This browser</dt><dd>signs out automatically after {{ session_days }} days</dd>
+  </dl>
+  <p class="hint">This browser is listed as a device on your account and can
+  be signed out from any of your apps.</p>
+</section>
+
+<section class="card">
+  <h2>Coming next</h2>
+  <p>Changing your email or password, reviewing signed-in devices, and
+  managing your vault files land here in the next release. Until then, the
+  desktop and mobile apps do all of it through the API.</p>
+</section>
+{% endblock %}

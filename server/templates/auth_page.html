@@ -1,0 +1,8 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ form.heading }} &middot; Askrypt{% endblock %}
+
+{% block content %}
+{#- The fragment renders itself; `safe` because it is already escaped HTML. -#}
+{{ form|safe }}
+{% endblock %}
