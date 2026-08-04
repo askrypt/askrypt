@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::memory::FakeIdTokenVerifier;
@@ -32,9 +33,12 @@ fn test_app() -> TestApp {
         id_verifier: verifier.clone(),
         ..AppState::in_memory()
     };
-    let static_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("static");
+    let config = Config {
+        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
+        ..Config::default()
+    };
     TestApp {
-        app: router(state.clone(), &static_dir),
+        app: router(state.clone(), &config),
         state,
         verifier,
     }

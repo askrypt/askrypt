@@ -116,7 +116,10 @@ askrypt/
 ├── app/                       # mobile app (unchanged)
 └── server/                    # askrypt-server (axum binary)
     ├── PLAN.md                # this file
+    ├── DEPLOY.md              # self-hosting: TLS, config, backups, checklist
     ├── Cargo.toml
+    ├── Dockerfile             # multi-stage; build from the repo root
+    ├── deploy/                # docker-compose, Caddyfile, systemd unit, backup.sh
     ├── migrations/            # sqlx migrations (SQLite backend)
     ├── templates/             # askama HTML templates (Phase 7): pages + htmx fragments
     ├── static/                # hand-written CSS + vendored htmx.min.js (no build step)
@@ -222,7 +225,7 @@ askrypt/
     10 MiB per file (also the route body limit), 100 MiB and 100 files per
     account, answered as 507 `quota_exceeded` / `vault_limit_reached`.
 
-- **Phase 5 — Hardening & deployment.**
+- **Phase 5 — Hardening & deployment.** ✅ *(done 2026-08-04)*
   - Security headers; HTTPS story (reverse proxy, e.g. Caddy/nginx).
     The CSP must be written so the Phase 7 pages fit it without loosening:
     `script-src 'self'` only (htmx is vendored, so no CDN host and no
@@ -234,6 +237,43 @@ askrypt/
   - Backup story for the SQLite db + blob directory.
   - Dockerfile and/or systemd unit for self-hosting.
   - Gate: deployment checklist complete; server runs behind TLS end-to-end.
+
+  **What shipped**, beyond the bullets above:
+
+  - `src/hardening.rs` — hand-rolled `from_fn` middleware (security headers +
+    the committed `CSP` const, `no-store` on `/api/v1`, a request timeout, and
+    a semaphore-based load shedder) rather than `tower-http` layers, so every
+    short-circuit keeps the `{"error": {code, message}}` envelope. Body limit
+    is 64 KiB globally, with the vault routes' 10 MiB layered inside it.
+  - `src/clientip.rs` — `X-Forwarded-For`/`X-Real-IP` are believed only under
+    `ASKRYPT_TRUST_PROXY`, and the **last** XFF element is taken, not the
+    first: proxies append, so the first element is client-supplied. This
+    closes the spoofing hole the Phase 2 rate limiter shipped with.
+  - `src/audit.rs` — events on the `askrypt_server::audit` tracing target,
+    with a `ClientInfo` extractor. No tokens, no passwords, and no email on a
+    *failed* login (that would build a list of registered addresses).
+  - **Login timing equalized**: unknown-email and password-less accounts now
+    verify against a fixed dummy argon2 hash, closing the enumeration side
+    channel the Phase 2 code documented as deferred.
+  - **argon2 concurrency cap** (`ASKRYPT_ARGON2_PARALLELISM`): each hash holds
+    ~19 MiB and tokio's blocking pool would run 512 of them. Bounding the
+    hashes, not the requests, is what actually caps memory under a flood.
+  - ⚠️ **Behaviour change — changing an existing password now revokes every
+    other session** (the caller's survives). Desktop and mobile must handle a
+    401 after a password change by re-logging in. Setting a *first* password
+    on a Google account does not revoke anything.
+  - `askrypt-server backup <path>` (`VACUUM INTO`) plus `deploy/backup.sh`,
+    which snapshots the database **before** archiving blobs — uploads write
+    bytes then metadata, so that order can only orphan a blob, never strand a
+    metadata row. Deletes invert the hazard, hence `--quiesce`.
+  - `Dockerfile` + `deploy/{docker-compose.yml,Caddyfile,askrypt-server.service,backup.sh}`
+    and `DEPLOY.md` (checklist, restore drill, sizing).
+  - `server/static/index.html`'s inline `<style>` moved to `style.css`, since
+    `style-src 'self'` would otherwise blank the shipped landing page.
+  - Gate evidence: `tests/hardening.rs` (8 tests) plus the container run —
+    non-root, private data dir, persistence across restart, graceful SIGTERM,
+    and an audit record showing the proxy-observed IP rather than the forged
+    one.
 
 - **Phase 6 — CI/CD.**
   - Extend `.github/workflows/ci.yml`: build, test, clippy for `server/`.

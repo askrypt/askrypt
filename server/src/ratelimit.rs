@@ -1,21 +1,24 @@
 //! Fixed-window, per-client rate limiting for the auth endpoints (Phase 2).
 //!
 //! Deliberately simple: an in-memory counter per client key, good enough to
-//! blunt credential stuffing on a single-node deployment. The client key is
-//! the first `X-Forwarded-For` address when present (the expected reverse-
-//! proxy setup — spoofable if the server is exposed directly, a Phase 5
-//! hardening concern), else the peer address.
+//! blunt credential stuffing on a single-node deployment. The client key
+//! comes from [`crate::clientip`], which only believes proxy headers when
+//! the deployment says a proxy is in front (Phase 5); otherwise the peer
+//! address is used, so the buckets can't be forged.
+//!
+//! Counters live in process memory: they reset on restart, and a multi-node
+//! deployment would need a shared store.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 
+use crate::clientip;
 use crate::error::ApiError;
 
 pub struct RateLimiter {
@@ -58,6 +61,11 @@ impl RateLimiter {
         entry.count += 1;
         entry.count <= self.max_per_window
     }
+
+    /// Window length, sent as the `Retry-After` hint on a 429.
+    pub fn window_secs(&self) -> u64 {
+        self.window.as_secs().max(1)
+    }
 }
 
 pub async fn middleware(
@@ -70,26 +78,19 @@ pub async fn middleware(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
             "too many requests; try again later",
-        ));
+        )
+        .with_retry_after(limiter.window_secs()));
     }
     Ok(next.run(request).await)
 }
 
 fn client_key(request: &Request) -> String {
-    request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(|ip| ip.trim().to_string())
-        .filter(|ip| !ip.is_empty())
-        .or_else(|| {
-            request
-                .extensions()
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|info| info.0.ip().to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
+    let extensions = request.extensions();
+    clientip::client_ip(
+        request.headers(),
+        extensions,
+        clientip::policy_of(extensions),
+    )
 }
 
 #[cfg(test)]

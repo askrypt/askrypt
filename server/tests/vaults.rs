@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::VaultMeta;
@@ -29,9 +30,12 @@ struct TestApp {
 
 fn test_app() -> TestApp {
     let state = AppState::in_memory();
-    let static_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("static");
+    let config = Config {
+        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
+        ..Config::default()
+    };
     TestApp {
-        app: router(state.clone(), &static_dir),
+        app: router(state.clone(), &config),
         state,
     }
 }

@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::audit::{self, ClientInfo};
 use crate::auth::{self, AuthSession};
 use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
@@ -63,14 +64,23 @@ pub struct UpdateEmailRequest {
 /// validated like registration; 409 if another account already uses it).
 pub async fn update_email(
     State(state): State<AppState>,
+    client: ClientInfo,
     auth: AuthSession,
     ApiJson(req): ApiJson<UpdateEmailRequest>,
 ) -> ApiResult<Json<Profile>> {
     let email = auth::validate_email(&req.email)?;
     let mut account = auth.account;
     if account.email != email {
-        account.email = email;
+        // Captured before the move: the audit record has to show what the
+        // address was, since the new one is where recovery mail now goes.
+        let previous = std::mem::replace(&mut account.email, email);
         state.accounts.update(&account).await?;
+        audit::emit(
+            audit::EMAIL_CHANGED,
+            &client,
+            Some(account.id),
+            &format!("{previous} -> {}", account.email),
+        );
     }
     Ok(Json(Profile::from(&account)))
 }
@@ -87,13 +97,21 @@ pub struct ChangePasswordRequest {
 /// `PUT /api/v1/me/password` — change the password, or set the first one on
 /// a Google-created account. Re-auth with the current password applies only
 /// to accounts that have one.
+///
+/// Changing an existing password also revokes every *other* session: a
+/// password change is how a user reacts to a suspected compromise, so
+/// leaving the attacker's bearer token alive would defeat the point. The
+/// caller's own session survives, so the device doing the change stays
+/// logged in; other devices must sign in again.
 pub async fn change_password(
     State(state): State<AppState>,
+    client: ClientInfo,
     auth: AuthSession,
     ApiJson(req): ApiJson<ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
     auth::validate_password(&req.new_password)?;
     let mut account = auth.account;
+    let had_password = account.password_hash.is_some();
     if let Some(hash) = account.password_hash.clone() {
         let Some(current) = req.current_password else {
             return Err(ApiError::new(
@@ -103,6 +121,13 @@ pub async fn change_password(
             ));
         };
         if !auth::verify_password(hash, current).await? {
+            // Someone holding a stolen bearer token guessing the password.
+            audit::emit(
+                audit::PASSWORD_REAUTH_FAILED,
+                &client,
+                Some(account.id),
+                "invalid_current_password",
+            );
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
                 "invalid_current_password",
@@ -112,7 +137,48 @@ pub async fn change_password(
     }
     account.password_hash = Some(auth::hash_password(req.new_password).await?);
     state.accounts.update(&account).await?;
+    audit::emit(
+        if had_password {
+            audit::PASSWORD_CHANGED
+        } else {
+            audit::PASSWORD_SET
+        },
+        &client,
+        Some(account.id),
+        "",
+    );
+    if had_password {
+        let revoked = revoke_other_sessions(&state, account.id, &auth.session.token).await?;
+        if revoked > 0 {
+            audit::emit(
+                audit::SESSIONS_REVOKED_BULK,
+                &client,
+                Some(account.id),
+                &revoked.to_string(),
+            );
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes every session of the account except `keep`, returning how many
+/// went. Best-effort per session: one already-gone token must not fail the
+/// password change that has already been committed.
+async fn revoke_other_sessions(
+    state: &AppState,
+    account: AccountId,
+    keep: &str,
+) -> ApiResult<usize> {
+    let sessions = state.sessions.list_for_account(account).await?;
+    let mut revoked = 0;
+    for session in sessions.into_iter().filter(|s| s.token != keep) {
+        match state.sessions.delete(&session.token).await {
+            Ok(()) => revoked += 1,
+            Err(StoreError::NotFound) => {}
+            Err(other) => return Err(other.into()),
+        }
+    }
+    Ok(revoked)
 }
 
 /// One entry in the `GET /api/v1/me/sessions` device list.
@@ -153,6 +219,7 @@ pub async fn list_sessions(
 /// (including, like logout, the current one).
 pub async fn revoke_session(
     State(state): State<AppState>,
+    client: ClientInfo,
     auth: AuthSession,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
@@ -161,7 +228,11 @@ pub async fn revoke_session(
         return Err(ApiError::not_found("no such session"));
     };
     match state.sessions.delete(&target.token).await {
-        Ok(()) | Err(StoreError::NotFound) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) | Err(StoreError::NotFound) => {
+            // The digest, never the token itself.
+            audit::emit(audit::SESSION_REVOKED, &client, Some(auth.account.id), &id);
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(other) => Err(other.into()),
     }
 }
@@ -170,16 +241,28 @@ pub async fn revoke_session(
 /// bytes, vault metadata, and all sessions.
 pub async fn delete_account(
     State(state): State<AppState>,
+    client: ClientInfo,
     auth: AuthSession,
 ) -> ApiResult<StatusCode> {
     let id = auth.account.id;
+    // Logged before and after: the cascade is irreversible, and a failure
+    // part-way leaves a half-deleted account that only the log explains.
+    audit::emit(
+        audit::ACCOUNT_DELETE_STARTED,
+        &client,
+        Some(id),
+        &auth.account.email,
+    );
     // Owned data first, account record last, so a failure part-way never
     // leaves orphaned vaults behind a deleted account.
     state.vault_blobs.delete_for_account(id).await?;
     state.vault_meta.delete_for_account(id).await?;
     state.sessions.delete_for_account(id).await?;
     match state.accounts.delete(id).await {
-        Ok(()) | Err(StoreError::NotFound) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) | Err(StoreError::NotFound) => {
+            audit::emit(audit::ACCOUNT_DELETED, &client, Some(id), "");
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(other) => Err(other.into()),
     }
 }

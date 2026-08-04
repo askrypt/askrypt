@@ -8,7 +8,7 @@
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, Request};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -23,6 +23,9 @@ pub struct ApiError {
     /// Stable machine-readable code (snake_case), independent of the message.
     pub code: &'static str,
     pub message: String,
+    /// Emitted as `Retry-After: <seconds>`; set on the throttling and
+    /// overload responses so clients back off instead of hammering.
+    pub retry_after: Option<u64>,
 }
 
 impl ApiError {
@@ -31,7 +34,14 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            retry_after: None,
         }
+    }
+
+    /// Attaches a `Retry-After` hint (seconds) to the response.
+    pub fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after = Some(seconds);
+        self
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {
@@ -78,13 +88,27 @@ struct ErrorDetail<'a> {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // Destructured up front: the body borrows `message` while `status`
+        // moves into the response tuple.
+        let ApiError {
+            status,
+            code,
+            message,
+            retry_after,
+        } = self;
         let body = Json(ErrorBody {
             error: ErrorDetail {
-                code: self.code,
-                message: &self.message,
+                code,
+                message: &message,
             },
         });
-        (self.status, body).into_response()
+        let mut response = (status, body).into_response();
+        if let Some(seconds) = retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+        }
+        response
     }
 }
 
@@ -139,7 +163,7 @@ where
             Ok(Json(value)) => Ok(Self(value)),
             Err(rejection) => Err(ApiError::new(
                 rejection.status(),
-                "bad_request",
+                body_error_code(rejection.status()),
                 rejection.body_text(),
             )),
         }
@@ -160,14 +184,21 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match Bytes::from_request(req, state).await {
             Ok(bytes) => Ok(Self(bytes)),
-            Err(rejection) => {
-                let code = if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                    "payload_too_large"
-                } else {
-                    "bad_request"
-                };
-                Err(ApiError::new(rejection.status(), code, rejection.body_text()))
-            }
+            Err(rejection) => Err(ApiError::new(
+                rejection.status(),
+                body_error_code(rejection.status()),
+                rejection.body_text(),
+            )),
         }
+    }
+}
+
+/// Error code for a body-extractor rejection. Requests over the body limit
+/// get their own code so clients can tell "too big" from "malformed".
+fn body_error_code(status: StatusCode) -> &'static str {
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "payload_too_large"
+    } else {
+        "bad_request"
     }
 }

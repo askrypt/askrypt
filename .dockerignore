@@ -1,0 +1,12 @@
+# Build context for server/Dockerfile. Cargo.toml, Cargo.lock, src/, core/
+# and server/ must all stay: cargo validates every workspace member's target
+# paths, and sqlx embeds server/migrations/ at compile time.
+target/
+.git/
+.github/
+app/
+data/
+docs/
+scripts/
+.idea/
+*.md

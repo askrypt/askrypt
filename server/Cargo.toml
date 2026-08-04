@@ -11,9 +11,12 @@ publish = false
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+# `time` for the request-timeout middleware, `sync` for the concurrency and
+# argon2 semaphores (Phase 5 hardening).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# `json` backs ASKRYPT_LOG_FORMAT=json, so audit events ship as structured logs.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"

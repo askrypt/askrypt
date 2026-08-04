@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::VerifiedIdToken;
@@ -28,9 +29,12 @@ fn test_app() -> TestApp {
         id_verifier: verifier.clone(),
         ..AppState::in_memory()
     };
-    let static_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("static");
+    let config = Config {
+        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
+        ..Config::default()
+    };
     TestApp {
-        app: router(state, &static_dir),
+        app: router(state, &config),
         verifier,
     }
 }
@@ -343,15 +347,29 @@ async fn google_login_rejects_unverified_invalid_and_mismatched() {
 #[tokio::test]
 async fn auth_endpoints_are_rate_limited() {
     let t = test_app();
-    // Unknown-email logins are cheap (no argon2), so hammer those. The
-    // limiter allows 20/min per client; everything after that answers 429.
+    // Hammers token-less logout: the limiter is a `route_layer`, so it
+    // counts the request before the (cheap) auth rejection. Logins would
+    // cost a full argon2 verify each — unknown emails included, since
+    // Phase 5 equalized that timing.
+    let unauthed_logout = || {
+        send(
+            &t.app,
+            Request::post("/api/v1/auth/logout").body(Body::empty()).unwrap(),
+        )
+    };
+    // The limiter allows 20/min per client; everything after that is 429.
     for _ in 0..20 {
-        let (status, _) = login(&t.app, "unknown@example.com", "whatever pass").await;
+        let (status, _) = unauthed_logout().await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
-    let (status, body) = login(&t.app, "unknown@example.com", "whatever pass").await;
+    let (status, body) = unauthed_logout().await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body["error"]["code"], "rate_limited");
+    // Every request in the test shares one bucket: with no ConnectInfo
+    // under `oneshot` and proxy headers untrusted by default, the client
+    // key is the same for all of them.
+    let (status, _) = login(&t.app, "unknown@example.com", "whatever pass").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
     // Unauthenticated /me is not under the auth limiter.
     let (status, _) = send(

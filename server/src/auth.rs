@@ -7,6 +7,8 @@
 //! `SessionStore` trait — no cookies, so native apps drive the same flow
 //! as the SPA.
 
+use std::sync::LazyLock;
+
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::Json;
@@ -15,7 +17,9 @@ use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
+use crate::audit::{self, ClientInfo};
 use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
 use crate::store::{Account, AccountId, NewAccount, Session, StoreError};
@@ -26,6 +30,32 @@ const SESSION_TTL_DAYS: i64 = 30;
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 512;
 const MAX_EMAIL_LEN: usize = 254;
+
+/// A real argon2id hash of a throwaway password, verified against when no
+/// usable account hash exists so that unknown-email and wrong-password
+/// logins cost the same. A `const` rather than a lazily computed hash: the
+/// latter would charge one unlucky request ~19 MiB and a full hash.
+///
+/// Its parameters must match `Argon2::default()` — see the unit test.
+const DUMMY_PASSWORD_HASH: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$YXNrcnlwdC1kdW1teS0wMQ$+wPV+26MRHinLIfLssyqlAinHuesHKQihpFRfjuueMM";
+
+/// Concurrent argon2 operations.
+///
+/// Each hash holds ~19 MiB (`Params::DEFAULT`'s `m_cost`) for its duration,
+/// and tokio's blocking pool would happily run 512 of them — about 10 GB —
+/// under a login flood. Bounding the *hashes* rather than the requests is
+/// what actually caps that; waiters queue, and the request timeout
+/// ([`crate::hardening::request_timeout`]) bounds the wait.
+static ARGON2_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| {
+    let permits = std::env::var("ASKRYPT_ARGON2_PARALLELISM")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|permits| *permits > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+    tracing::debug!(permits, "argon2 concurrency limit");
+    Semaphore::new(permits)
+});
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -74,10 +104,15 @@ pub struct SessionResponse {
 /// `POST /api/v1/auth/register` — create an email+password account.
 pub async fn register(
     State(state): State<AppState>,
+    client: ClientInfo,
     ApiJson(req): ApiJson<RegisterRequest>,
 ) -> ApiResult<(StatusCode, Json<AccountInfo>)> {
-    let email = validate_email(&req.email)?;
-    validate_password(&req.password)?;
+    let email = validate_email(&req.email).inspect_err(|err| {
+        audit::emit(audit::REGISTER_DENIED, &client, None, err.code);
+    })?;
+    validate_password(&req.password).inspect_err(|err| {
+        audit::emit(audit::REGISTER_DENIED, &client, None, err.code);
+    })?;
     let password_hash = hash_password(req.password).await?;
     let account = state
         .accounts
@@ -86,29 +121,62 @@ pub async fn register(
             password_hash: Some(password_hash),
             google_sub: None,
         })
-        .await?;
+        .await
+        // Matched rather than `?`-ed so a taken email is audited: it is the
+        // signal that someone is probing which addresses exist.
+        .inspect_err(|err| {
+            if matches!(err, StoreError::Conflict(_)) {
+                audit::emit(audit::REGISTER_DENIED, &client, None, "email_taken");
+            }
+        })?;
+    audit::emit(audit::REGISTER_OK, &client, Some(account.id), &account.email);
     Ok((StatusCode::CREATED, Json(AccountInfo::from(&account))))
 }
 
 /// `POST /api/v1/auth/login` — email+password login returning a bearer token.
 pub async fn login(
     State(state): State<AppState>,
+    client: ClientInfo,
     ApiJson(req): ApiJson<LoginRequest>,
 ) -> ApiResult<Json<SessionResponse>> {
     let email = req.email.trim().to_ascii_lowercase();
     // Unknown email, password-less (Google-only) account, and wrong password
     // all answer the same 401 so responses don't reveal which emails are
-    // registered. (Timing still differs — equalizing is a Phase 5 concern.)
-    let Some(account) = state.accounts.find_by_email(&email).await? else {
-        return Err(invalid_credentials());
+    // registered — and the two account-less paths still pay for an argon2
+    // verify against DUMMY_PASSWORD_HASH so the *timing* doesn't reveal it
+    // either. The failure reason goes to the audit log, never to the client.
+    let account = match state.accounts.find_by_email(&email).await? {
+        Some(account) => account,
+        None => {
+            let _ = verify_password(DUMMY_PASSWORD_HASH.to_string(), req.password).await;
+            audit::emit(audit::LOGIN_FAILED, &client, None, "unknown_email");
+            return Err(invalid_credentials());
+        }
     };
-    let Some(hash) = account.password_hash.clone() else {
-        return Err(invalid_credentials());
+    let hash = match account.password_hash.clone() {
+        Some(hash) => hash,
+        None => {
+            let _ = verify_password(DUMMY_PASSWORD_HASH.to_string(), req.password).await;
+            audit::emit(
+                audit::LOGIN_FAILED,
+                &client,
+                Some(account.id),
+                "no_password",
+            );
+            return Err(invalid_credentials());
+        }
     };
     if !verify_password(hash, req.password).await? {
+        audit::emit(
+            audit::LOGIN_FAILED,
+            &client,
+            Some(account.id),
+            "bad_password",
+        );
         return Err(invalid_credentials());
     }
     let response = create_session(&state, &account, req.device_label).await?;
+    audit::emit(audit::LOGIN_OK, &client, Some(account.id), "password");
     Ok(Json(response))
 }
 
@@ -118,10 +186,23 @@ pub async fn login(
 /// email.
 pub async fn google_login(
     State(state): State<AppState>,
+    client: ClientInfo,
     ApiJson(req): ApiJson<GoogleLoginRequest>,
 ) -> ApiResult<Json<SessionResponse>> {
-    let claims = state.id_verifier.verify(&req.id_token).await?;
+    let claims = state
+        .id_verifier
+        .verify(&req.id_token)
+        .await
+        .inspect_err(|_| {
+            audit::emit(audit::LOGIN_GOOGLE_DENIED, &client, None, "invalid_token");
+        })?;
     if !claims.email_verified {
+        audit::emit(
+            audit::LOGIN_GOOGLE_DENIED,
+            &client,
+            None,
+            "email_not_verified",
+        );
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "email_not_verified",
@@ -129,10 +210,19 @@ pub async fn google_login(
         ));
     }
     let email = claims.email.trim().to_ascii_lowercase();
+    // Distinguishes first-time linking and account creation in the log:
+    // both change what a compromised Google account can reach.
+    let mut outcome = "existing";
     let account = match state.accounts.find_by_email(&email).await? {
         Some(mut account) => match account.google_sub.as_deref() {
             Some(sub) if sub == claims.subject => account,
             Some(_) => {
+                audit::emit(
+                    audit::LOGIN_GOOGLE_DENIED,
+                    &client,
+                    Some(account.id),
+                    "linked_to_other_google_account",
+                );
                 return Err(ApiError::conflict(
                     "this email is already linked to a different Google account",
                 ));
@@ -140,10 +230,12 @@ pub async fn google_login(
             None => {
                 account.google_sub = Some(claims.subject);
                 state.accounts.update(&account).await?;
+                outcome = "linked";
                 account
             }
         },
         None => {
+            outcome = "new_account";
             state
                 .accounts
                 .create(NewAccount {
@@ -155,13 +247,26 @@ pub async fn google_login(
         }
     };
     let response = create_session(&state, &account, req.device_label).await?;
+    audit::emit(audit::LOGIN_GOOGLE_OK, &client, Some(account.id), outcome);
     Ok(Json(response))
 }
 
 /// `POST /api/v1/auth/logout` — revoke the presented session token.
-pub async fn logout(State(state): State<AppState>, auth: AuthSession) -> ApiResult<StatusCode> {
+pub async fn logout(
+    State(state): State<AppState>,
+    client: ClientInfo,
+    auth: AuthSession,
+) -> ApiResult<StatusCode> {
     match state.sessions.delete(&auth.session.token).await {
-        Ok(()) | Err(StoreError::NotFound) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) | Err(StoreError::NotFound) => {
+            audit::emit(
+                audit::LOGOUT,
+                &client,
+                Some(auth.account.id),
+                auth.session.label.as_deref().unwrap_or("-"),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(other) => Err(other.into()),
     }
 }
@@ -284,6 +389,7 @@ pub(crate) fn validate_password(password: &str) -> Result<(), ApiError> {
 }
 
 pub(crate) async fn hash_password(password: String) -> ApiResult<String> {
+    let _slot = argon2_slot().await;
     tokio::task::spawn_blocking(move || {
         let mut salt_bytes = [0u8; 16];
         getrandom::fill(&mut salt_bytes).expect("OS RNG unavailable");
@@ -301,6 +407,7 @@ pub(crate) async fn hash_password(password: String) -> ApiResult<String> {
 }
 
 pub(crate) async fn verify_password(hash: String, password: String) -> ApiResult<bool> {
+    let _slot = argon2_slot().await;
     tokio::task::spawn_blocking(move || {
         let parsed = PasswordHash::new(&hash).map_err(|e| e.to_string())?;
         Ok(Argon2::default()
@@ -313,6 +420,15 @@ pub(crate) async fn verify_password(hash: String, password: String) -> ApiResult
         tracing::error!(error = %e, "stored password hash is unparseable");
         ApiError::internal()
     })
+}
+
+/// Reserves one of the [`ARGON2_SLOTS`]. The permit is held by the caller
+/// for as long as its binding lives, i.e. across the `spawn_blocking`.
+async fn argon2_slot() -> tokio::sync::SemaphorePermit<'static> {
+    ARGON2_SLOTS
+        .acquire()
+        .await
+        .expect("argon2 semaphore is never closed")
 }
 
 fn join_err(e: tokio::task::JoinError) -> ApiError {
@@ -347,6 +463,33 @@ mod tests {
         let a = new_session_token();
         assert_eq!(a.len(), 64);
         assert_ne!(a, new_session_token());
+    }
+
+    #[test]
+    fn dummy_hash_matches_the_default_argon2_params() {
+        // If the defaults ever move, the dummy verify would cost less than
+        // a real one and the login timing signal would come back. Only the
+        // three cost knobs matter here; `output_len` is `Some(32)` when
+        // parsed from a PHC string and `None` (meaning the same 32) in the
+        // defaults, which is not a cost difference.
+        let parsed = PasswordHash::new(DUMMY_PASSWORD_HASH).unwrap();
+        let params = argon2::Params::try_from(&parsed).unwrap();
+        let defaults = argon2::Params::DEFAULT;
+        assert_eq!(params.m_cost(), defaults.m_cost());
+        assert_eq!(params.t_cost(), defaults.t_cost());
+        assert_eq!(params.p_cost(), defaults.p_cost());
+        assert_eq!(parsed.algorithm.as_str(), "argon2id");
+    }
+
+    #[tokio::test]
+    async fn dummy_hash_verifies_as_a_failure_not_an_error() {
+        // The unknown-email path relies on this: a parse error there would
+        // turn a 401 into a 500.
+        assert!(
+            !verify_password(DUMMY_PASSWORD_HASH.to_string(), "anything".into())
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

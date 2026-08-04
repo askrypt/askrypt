@@ -1,0 +1,48 @@
+# Self-hosting stack: askrypt-server behind Caddy for TLS.
+#
+#   docker compose -f server/deploy/docker-compose.yml up -d --build
+#
+# Run it from the repository root: the server image builds from the whole
+# workspace (see server/Dockerfile).
+
+services:
+  askrypt-server:
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    # No published ports: only Caddy may reach it, which is what makes
+    # ASKRYPT_TRUST_PROXY=1 (baked into the image) safe.
+    expose:
+      - "8080"
+    environment:
+      # Set to the OAuth client ids of the web/desktop/mobile apps to enable
+      # Google sign-in; leave unset to disable it.
+      ASKRYPT_GOOGLE_CLIENT_IDS: "${ASKRYPT_GOOGLE_CLIENT_IDS:-}"
+    volumes:
+      - askrypt-data:/var/lib/askrypt
+    healthcheck:
+      # No curl in the runtime image; the server answers /healthz and the
+      # orchestrator can probe it from outside if preferred.
+      test: ["CMD", "/usr/local/bin/askrypt-server", "--help"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - askrypt-server
+
+volumes:
+  askrypt-data:
+  caddy-data:
+  caddy-config:

@@ -46,6 +46,13 @@ tray-item = { version = "0.10.0", features = ["ksni"] }
 [profile.release]
 strip = true  # Automatically strips symbols and debuginfo in release builds
 
+# The server's auth tests run real argon2 hashes (including the dummy hash that
+# equalizes login timing); unoptimized argon2 makes `cargo test` crawl.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.deb]
 inherits = "release"
 

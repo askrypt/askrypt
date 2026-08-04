@@ -79,8 +79,9 @@ sign-in) and cloud storage of vaults as **opaque encrypted files** — it never
 handles questions, answers, or vault crypto, and it must **never depend on
 `askrypt-core`**. The phased plan lives in **`server/PLAN.md`**; Phases 0
 (scaffolding), 1 (landing page + API namespacing), 2 (auth: register, login,
-Google sign-in), 3 (profile API) and 4 (vault cloud storage) are done,
-Phase 5 (hardening & deployment) is next.
+Google sign-in), 3 (profile API), 4 (vault cloud storage) and 5 (hardening &
+deployment) are done, Phase 6 (CI/CD) is next. Self-hosting is documented in
+**`server/DEPLOY.md`**.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
@@ -88,33 +89,75 @@ Phase 5 (hardening & deployment) is next.
   the on-disk `DiskVaultBlobStore` (only the mailer stays in-memory); the
   Google verifier is real when `ASKRYPT_GOOGLE_CLIENT_IDS` is set, else
   `NotConfiguredIdTokenVerifier` (501). Serves with `ConnectInfo` so rate
-  limiting can key on peer IPs.
-- **`server/src/config.rs`** — `Config::from_env()`: `ASKRYPT_BIND`
+  limiting and the audit log can key on peer IPs. Config is read *before*
+  tracing init (it selects `ASKRYPT_LOG_FORMAT`), and `std::env::args()`
+  dispatches the `backup <path>` subcommand (`VACUUM INTO`, refuses to
+  clobber or to run on the `memory` backend) — no `clap` dependency.
+- **`server/src/config.rs`** — `Config::from_env()`, layered over
+  `Config::default()` (which tests use directly): `ASKRYPT_BIND`
   (default `127.0.0.1:8080`), `ASKRYPT_DATA_DIR` (default `data`, gitignored),
   `ASKRYPT_BACKEND` (`sqlite` default | `memory`), `ASKRYPT_STATIC_DIR`
   (default `server/static`, i.e. `cargo run` from the workspace root),
   `ASKRYPT_GOOGLE_CLIENT_IDS` (comma-separated ID-token audiences; empty
-  disables Google sign-in).
+  disables Google sign-in), plus the Phase 5 knobs `ASKRYPT_TRUST_PROXY`
+  (default **false** — fail closed), `ASKRYPT_HSTS` (default false),
+  `ASKRYPT_REQUEST_TIMEOUT_SECS` (60), `ASKRYPT_MAX_CONCURRENT` (256),
+  `ASKRYPT_MAX_BODY_BYTES` (64 KiB) and `ASKRYPT_LOG_FORMAT` (`text`|`json`).
+  The same table lives in `README.md` and `server/DEPLOY.md` — keep all three
+  in sync.
 - **`server/src/error.rs`** — Uniform JSON error convention: every API error is
   `{"error": {"code", "message"}}` via `ApiError` (`IntoResponse`), with
   `From<StoreError>`/`From<IdTokenError>`; internal details are logged, never
   sent to clients. `ApiJson<T>` and `ApiBytes` are the `Json`/`Bytes`
-  extractor variants whose rejections keep the envelope.
-- **`server/src/routes.rs`** — Router: `/healthz`; `/api/v1` nest (`GET
-  /about`, the `/me` profile tree, the `/vaults` tree, and
+  extractor variants whose rejections keep the envelope (413s get
+  `payload_too_large`). `ApiError::with_retry_after` adds the `Retry-After`
+  header used by the 429/503 responses.
+- **`server/src/routes.rs`** — `router(state, &Config)`: `/healthz`; `/api/v1`
+  nest (`GET /about`, the `/me` profile tree, the `/vaults` tree, and
   `/auth/{register,login,google,logout}` behind a 20 req/min fixed-window
   rate limiter) with a JSON 404 fallback covering everything under `/api`;
   all other paths serve static assets from the configured static dir
   (`tower-http` `ServeDir`) with SPA fallback to `index.html` —
   `server/static/` ships a placeholder landing page until Phase 7. The vault
-  routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`.
+  routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`, which
+  overrides the outer global limit because it is layered *inside* it. The
+  Phase 5 layer stack is declared innermost-first at the bottom of `router`
+  (body limit → `ClientIpPolicy` extension → timeout → shedding → security
+  headers), since the last `.layer()` call is the first middleware to run.
+- **`server/src/hardening.rs`** — Phase 5 cross-cutting middleware, written as
+  plain `from_fn` handlers returning `ApiError` so short-circuits keep the
+  JSON envelope (`tower-http`'s `TimeoutLayer` returns a bodyless 408;
+  `tower`'s load-shed needs `HandleErrorLayer`): `security_headers` (the
+  exported `CSP` const + nosniff/Referrer-Policy/X-Frame-Options/
+  Permissions-Policy/COOP/CORP, HSTS when configured), `no_store`
+  (`or_insert`, so `vaults::download`'s `private, no-cache` survives for ETag
+  revalidation), `request_timeout` (`tokio::time::timeout` → 504; does not
+  bound streaming response bodies — that's the proxy's job) and
+  `concurrency_limit` (`Semaphore::try_acquire_owned` → 503 + `Retry-After`,
+  `/healthz` exempt). **The `CSP` is a commitment to Phase 7**: no inline
+  `<script>`/`<style>`, no `hx-on:`, no `js:`-prefixed htmx attributes.
+- **`server/src/clientip.rs`** — Shared client-address resolution for
+  `ratelimit` and `audit`. Proxy headers are trusted only under
+  `ASKRYPT_TRUST_PROXY` (installed as a `ClientIpPolicy` request extension),
+  preferring `X-Real-IP` and otherwise taking the **last** `X-Forwarded-For`
+  element — proxies append, so the first element is client-supplied.
+- **`server/src/audit.rs`** — Structured account-security events on the
+  `askrypt_server::audit` tracing target (register/login/Google/logout,
+  password set/change + failed re-auth, email change, session revocation,
+  account deletion), plus the infallible `ClientInfo` extractor (IP + capped
+  user agent). Never logs tokens, passwords, or the email on a *failed* login.
 - **`server/src/auth.rs`** — Phase 2 auth: register (email normalization +
   validation, ≥8-char passwords, argon2 hashing on `spawn_blocking`), login
   (uniform 401 `invalid_credentials`; 256-bit hex bearer tokens, 30-day
   sessions), Google sign-in (verifies via the `IdTokenVerifier` trait,
   requires `email_verified`, creates or links the account by verified email),
   logout, and the `AuthSession` extractor (`Authorization: Bearer` →
-  session + account) used by protected routes.
+  session + account) used by protected routes. Phase 5 added: unknown-email
+  and password-less logins verify against the fixed `DUMMY_PASSWORD_HASH` so
+  login timing can't enumerate accounts (a unit test guards its argon2 cost
+  params), and `ARGON2_SLOTS` caps concurrent hashes
+  (`ASKRYPT_ARGON2_PARALLELISM`, default = CPU count) because each holds
+  ~19 MiB and tokio's blocking pool would otherwise run 512 of them.
 - **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`:
   `GET /me` (full profile incl. linked providers), `PUT /me/email`,
   `PUT /me/password` (current-password re-auth when one exists; sets the
@@ -123,7 +166,10 @@ Phase 5 (hardening & deployment) is next.
   the bearer token so listings never leak tokens; `current` flags the
   caller's), and `DELETE /me` (cascades vault blobs → vault metadata →
   sessions → account). The email/password mutations sit behind their own
-  20 req/min rate limiter.
+  20 req/min rate limiter. **Changing an existing password revokes every
+  other session** (`revoke_other_sessions`, the caller's survives) — desktop
+  and mobile must re-login on the other devices; setting a *first* password
+  on a Google account revokes nothing.
 - **`server/src/vaults.rs`** — Phase 4 vault file API under `/api/v1/vaults`:
   list, upload (`POST ?name=`), download, overwrite (`PUT /{id}`), rename
   (`PUT /{id}/name`) and delete, all scoped to the authenticated account.
@@ -132,8 +178,10 @@ Phase 5 (hardening & deployment) is next.
   require `If-Match` (428 without it, 412 when stale) so multi-device sync
   detects conflicts. Enforces `MAX_VAULT_BYTES` (10 MiB),
   `ACCOUNT_QUOTA_BYTES` (100 MiB) and `MAX_VAULTS_PER_ACCOUNT` (100).
+  Downloads set `Cache-Control: private, no-cache` so they opt out of the
+  blanket `no-store` without losing ETag revalidation.
 - **`server/src/ratelimit.rs`** — In-memory fixed-window `RateLimiter` +
-  axum middleware, keyed by first `X-Forwarded-For` address, else peer IP.
+  axum middleware, keyed via `clientip::client_ip`; 429s carry `Retry-After`.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
   seam; handlers can only reach the traits.
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
@@ -155,9 +203,23 @@ Phase 5 (hardening & deployment) is next.
   login → `/me` → logout, Google new-account + link-to-existing against the
   fake verifier, validation, rate limiting), `profile.rs` (the Phase 3
   gate: providers, email update, change/set password, session list/revoke,
-  account-delete cascade incl. the vault stores) and `vaults.rs` (the Phase 4
+  account-delete cascade incl. the vault stores), `vaults.rs` (the Phase 4
   gate: upload → list → download → rename → delete, ETag conflict behavior,
-  per-account isolation, size/quota/count limits).
+  per-account isolation, size/quota/count limits) and `hardening.rs` (the
+  Phase 5 gate: security headers on every response shape, HSTS per config,
+  cache directives, the 64 KiB/10 MiB body-limit split — the regression test
+  for the layer ordering — `Retry-After`, and forged-vs-trusted
+  `X-Forwarded-For` bucketing). Middleware needing a slow or parked handler
+  (timeout, shedding) is unit-tested inside `src/hardening.rs` instead.
+- **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts:
+  multi-stage image (build from the **repo root** — cargo validates every
+  workspace member's target paths, and `sqlx::migrate!` embeds
+  `server/migrations/`), `docker-compose.yml` (server + Caddy),
+  `Caddyfile` (TLS; *overwrites* `X-Forwarded-For`/`X-Real-IP` rather than
+  appending), a sandboxed `askrypt-server.service`, and `backup.sh` (calls
+  `askrypt-server backup`, a `VACUUM INTO` snapshot, **before** tarring the
+  blobs — uploads write bytes then metadata, so that order can only orphan a
+  blob; `--quiesce` for an exact snapshot). Checklist in `server/DEPLOY.md`.
 
 ### Key Dependencies
 
@@ -183,6 +245,8 @@ cargo build -p askrypt
 cargo run -p askrypt-core --example gen_vectors
 # Server (also covered by the --workspace commands above):
 cargo run -p askrypt-server      # then curl /healthz
+cargo run -p askrypt-server -- backup /path/snap.db   # VACUUM INTO snapshot
+docker build -f server/Dockerfile -t askrypt-server . # from the repo root
 
 # Mobile (Flutter) — SDK at /home/ruslan/Apps/flutter (add bin to PATH)
 cd app && flutter test       # crypto parity + session + passgen + widget tests

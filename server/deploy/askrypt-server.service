@@ -1,0 +1,80 @@
+# systemd unit for a non-container deployment.
+#
+#   sudo useradd --system --home-dir /var/lib/askrypt askrypt
+#   sudo install -m 755 target/release/askrypt-server /usr/local/bin/
+#   sudo cp -r server/static /usr/local/share/askrypt/static
+#   sudo cp server/deploy/askrypt-server.service /etc/systemd/system/
+#   sudo systemctl enable --now askrypt-server
+#
+# Put a TLS terminator (Caddy, nginx) in front — see Caddyfile in this
+# directory. The listener stays on loopback so nothing else can reach it.
+
+[Unit]
+Description=Askrypt server (accounts + encrypted vault storage)
+Documentation=https://github.com/askrypt/askrypt
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=askrypt
+Group=askrypt
+
+# /var/lib/askrypt, created with these permissions if missing.
+StateDirectory=askrypt
+StateDirectoryMode=0700
+# The SQLite db holds argon2 hashes and live session tokens; keep the files
+# it creates unreadable to other local users.
+UMask=0077
+
+Environment=ASKRYPT_BIND=127.0.0.1:8080
+Environment=ASKRYPT_DATA_DIR=/var/lib/askrypt
+Environment=ASKRYPT_STATIC_DIR=/usr/local/share/askrypt/static
+Environment=ASKRYPT_BACKEND=sqlite
+# The proxy is the only route in, so its client-address headers are
+# trustworthy. Drop this if the port is ever exposed directly.
+Environment=ASKRYPT_TRUST_PROXY=1
+Environment=ASKRYPT_HSTS=1
+Environment=ASKRYPT_LOG_FORMAT=json
+# Must keep askrypt_server at info or lower: the audit log rides that target.
+Environment=RUST_LOG=askrypt_server=info,info
+# Google sign-in: set to the accepted OAuth client ids, or leave unset.
+#Environment=ASKRYPT_GOOGLE_CLIENT_IDS=
+
+ExecStart=/usr/local/bin/askrypt-server
+Restart=on-failure
+RestartSec=5s
+# The server drains in-flight requests on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Sandboxing. The process needs nothing but its state directory and a socket.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/askrypt
+
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

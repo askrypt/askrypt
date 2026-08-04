@@ -110,6 +110,13 @@ curl http://127.0.0.1:8080/healthz        # {"status":"ok"}
 curl http://127.0.0.1:8080/api/v1/about   # {"name":"askrypt-server","version":"..."}
 ```
 
+A consistent snapshot of the database, safe to take against a running server
+(never `cp` the live file — it is in WAL mode):
+
+```sh
+cargo run -p askrypt-server -- backup /var/backups/askrypt-$(date -u +%Y%m%d).db
+```
+
 Configuration via environment variables (all optional):
 
 | Variable             | Default          | Meaning                                  |
@@ -118,9 +125,21 @@ Configuration via environment variables (all optional):
 | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data dir (SQLite db, vault blobs)|
 | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite` or `memory`    |
 | `ASKRYPT_STATIC_DIR` | `server/static`  | Static asset directory (landing page)    |
+| `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids; empty disables Google sign-in |
+| `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For`; only behind a reverse proxy |
+| `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security` (enable once TLS is in front) |
+| `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60`   | Handler timeout (`0` disables)           |
+| `ASKRYPT_MAX_CONCURRENT` | `256`        | In-flight requests before 503 (`0` disables) |
+| `ASKRYPT_MAX_BODY_BYTES` | `65536`      | Body limit outside the vault routes (those allow 10 MiB) |
+| `ASKRYPT_ARGON2_PARALLELISM` | *(cpus)* | Concurrent argon2 hashes (~19 MiB each)  |
+| `ASKRYPT_LOG_FORMAT` | `text`           | `text` or `json`                         |
 
-Logging uses the standard `RUST_LOG` filter. The server crate is covered by the
+Logging uses the standard `RUST_LOG` filter; keep `askrypt_server` at `info` or
+lower, since the audit log rides that target. The server crate is covered by the
 `cargo test --workspace` / `cargo clippy --workspace` commands above.
+
+Self-hosting (Docker or systemd, TLS, backups, the deployment checklist) is
+documented in **[`server/DEPLOY.md`](server/DEPLOY.md)**.
 
 ### Mobile (Flutter)
 

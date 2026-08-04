@@ -35,6 +35,11 @@ pub const ACCOUNT_QUOTA_BYTES: u64 = 100 * 1024 * 1024;
 /// Maximum number of vault files per account.
 pub const MAX_VAULTS_PER_ACCOUNT: usize = 100;
 const MAX_NAME_BYTES: usize = 255;
+/// Vault downloads opt out of the blanket `no-store`
+/// ([`crate::hardening::no_store`]): the bytes are encrypted, and
+/// `no-cache` still forces revalidation while letting the `ETag` round-trip
+/// save a re-download. `private` keeps shared caches out of it.
+const CACHE_CONTROL_VAULT: &str = "private, no-cache";
 
 /// One vault's metadata as answered by the list/upload/rename endpoints.
 #[derive(Serialize)]
@@ -137,7 +142,10 @@ pub async fn download(
     {
         return Ok((
             StatusCode::NOT_MODIFIED,
-            [(header::ETAG, http_etag(&meta.etag))],
+            [
+                (header::ETAG, http_etag(&meta.etag)),
+                (header::CACHE_CONTROL, CACHE_CONTROL_VAULT.to_string()),
+            ],
         )
             .into_response());
     }
@@ -150,6 +158,7 @@ pub async fn download(
         [
             (header::ETAG, http_etag(&meta.etag)),
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CACHE_CONTROL, CACHE_CONTROL_VAULT.to_string()),
         ],
         bytes,
     )

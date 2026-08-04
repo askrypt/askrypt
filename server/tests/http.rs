@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use axum::Router;
@@ -13,8 +14,11 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 fn app() -> Router {
-    let static_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("static");
-    router(AppState::in_memory(), &static_dir)
+    let config = Config {
+        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
+        ..Config::default()
+    };
+    router(AppState::in_memory(), &config)
 }
 
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
