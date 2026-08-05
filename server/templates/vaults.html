@@ -1,0 +1,14 @@
+{% extends "layout.html" %}
+
+{% block title %}Vaults &middot; Askrypt{% endblock %}
+
+{% block content %}
+<h1>Your vaults</h1>
+<p class="lead">Encrypted vault files, stored so your devices can reach them.
+This site can hold them, hand them back and delete them &mdash; it cannot
+open one. Unlocking happens only in the desktop and mobile apps, with your
+security answers, which never leave your device.</p>
+
+{{ upload|safe }}
+{{ listing|safe }}
+{% endblock %}

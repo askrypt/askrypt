@@ -1,0 +1,39 @@
+{#-
+  Signed-in devices: this browser plus every app session, the same list
+  `GET /api/v1/me/sessions` answers. Each row posts its own revoke form and
+  swaps this whole section back, so the list stays current after a removal.
+-#}
+<section class="card" id="devices">
+  <h2>Signed-in devices</h2>
+{%- if let Some(error) = error.as_deref() %}
+  <p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+  <div class="table-scroll">
+    <table class="listing">
+      <thead>
+        <tr><th>Device</th><th>Signed in</th><th>Expires</th><th></th></tr>
+      </thead>
+      <tbody>
+{%- for device in devices %}
+        <tr>
+          <td>{{ device.label }}{% if device.current %} <span class="tag">this browser</span>{% endif %}</td>
+          <td>{{ device.created }}</td>
+          <td>{{ device.expires }}</td>
+          <td class="row-actions">
+            <form method="post" action="/account/devices/{{ device.id }}"
+                  hx-post="/account/devices/{{ device.id }}"
+                  hx-target="#devices" hx-swap="outerHTML">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="linklike danger" type="submit">
+                {% if device.current %}Sign out{% else %}Revoke{% endif %}
+              </button>
+            </form>
+          </td>
+        </tr>
+{%- endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">Revoking a device makes its saved login stop working; the
+  app asks for your password again. Your vaults are unaffected.</p>
+</section>

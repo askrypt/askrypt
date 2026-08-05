@@ -278,11 +278,12 @@ askrypt/
   - Release workflow: Linux server binary artifact.
   - Gate: CI green on push.
 
-- **Phase 7 — Website: server-rendered HTML + htmx.**
+- **Phase 7 — Website: server-rendered HTML + htmx.** ✅ *(7.1–7.4 done;
+  browser Google sign-in deferred)*
   Rendered by the server itself (askama templates, htmx fragments) rather than
-  by a client-side app. New deps: `askama`, a cookie extractor
-  (`axum-extra` `cookie` feature or `tower-cookies`), `axum` `multipart` for
-  uploads. **No Node, no bundler, no CDN** — `htmx.min.js` is vendored into
+  by a client-side app. New deps as built: `askama`, `serde_urlencoded` and
+  `axum`'s `multipart` feature — no cookie crate in the end (see 7.2).
+  **No Node, no bundler, no CDN** — `htmx.min.js` is vendored into
   `server/static/`.
 
   - **7.1 — HTML layer foundations.** ✅ *(done 2026-08-04)*
@@ -376,19 +377,18 @@ askrypt/
   POST, because `form-action 'self'` blocks a redirect out to
   `accounts.google.com` after a form submission.
 
-  - **7.3 — Profile pages.**
+  - **7.3 — Profile pages.** ✅ *(done 2026-08-05)*
     - `/account`: current email, linked providers, change email, change/set
       password (current-password re-auth where one exists), session list with
-      per-row revoke (htmx `hx-delete` swapping the row out), and account
-      deletion behind a typed-confirmation form.
+      per-row revoke, and account deletion behind a typed-confirmation form.
     - Gate: every Phase 3 capability reachable from the browser; revoking the
       *current* session logs the browser out cleanly.
 
-  - **7.4 — Vault file manager.**
+  - **7.4 — Vault file manager.** ✅ *(done 2026-08-05)*
     - `/vaults`: table of vault metadata (name, size, modified, short ETag),
-      `multipart/form-data` upload (streamed into `VaultBlobStore`, honoring
-      `MAX_VAULT_BYTES`), download links, inline rename, delete with
-      confirmation, and quota/count usage display.
+      `multipart/form-data` upload honoring `MAX_VAULT_BYTES`, download
+      links, inline rename, delete with confirmation, and quota/count usage
+      display.
     - Overwrite from the browser carries the current ETag in the form so the
       Phase 4 `If-Match` conflict path applies; a stale ETag renders a
       "changed on another device" fragment instead of a raw 412.
@@ -398,10 +398,64 @@ askrypt/
       done from a browser; conflict message verified; oversized upload and
       quota exhaustion render friendly errors, not stack traces.
 
-  - **Phase gate (whole phase):** the full product ships from `cargo build`
-    with no JS toolchain; HTML routes covered by `server/tests/web.rs` (tower
-    `oneshot`, asserting status, `Set-Cookie` attributes, CSRF rejection and
-    key markup); every page usable with JavaScript disabled.
+  **What shipped in 7.3 + 7.4**, and where it differs from the bullets above:
+
+  - **`src/profile.rs` and `src/vaults.rs` were split handler-from-logic**,
+    exactly as `src/auth.rs` was in 7.2, and for the same reason: `web/` must
+    never re-derive a rule. `profile::{set_email, set_password,
+    active_sessions, revoke_session_id, delete_account_data}` and
+    `vaults::{list_for, create, overwrite, set_name, destroy, read}` are
+    `pub(crate)` free functions over `AppState`; the `/api/v1` handlers and
+    the HTML handlers both call them. The ones that mattered: `set_password`
+    carries the re-auth *and* the revoke-every-other-session rule (the
+    caller's token is a parameter), and `overwrite` carries the `If-Match`
+    comparison — a second copy in `web/` would have quietly become an
+    unconditional overwrite.
+  - **Revoking a device is a form POST, not `hx-delete`.** htmx 2 does not
+    serialize the enclosing form for a request fired from a button inside it,
+    and the CSRF token lives in that form. `hx-post` on the form itself keeps
+    `CsrfForm` the only door into a mutating route, at the cost of swapping
+    the whole device list instead of one row — which is what the vault table
+    does too, since a change moves the quota figures as well as the row.
+  - **`web::csrf::CsrfMultipart`** is the upload's twin of `CsrfForm`, and the
+    only way to read a multipart body. It checks the token *as it walks the
+    parts* and requires it to arrive first (the templates put the hidden
+    input before the file input), so a forged cross-origin upload is refused
+    before its megabytes are buffered. `axum`'s `multipart` feature is the
+    only new dependency in these two sub-phases.
+  - **`GET /vaults/{id}/download` is a second download route**, cookie-authed,
+    beside the API's bearer one: a browser cannot put an `Authorization`
+    header on a plain link. Same bytes, plus a `Content-Disposition` filename.
+  - **Confirmation steps are `<details>` disclosures**, not scripted dialogs —
+    the CSP forbids the inline handler a `confirm()` would need, and a
+    disclosure still works with JavaScript off. Account deletion additionally
+    requires typing the account's own email address.
+  - **Errors are explained, not forwarded.** `web::vaults::explain` rewrites
+    the four `ApiError` codes a visitor can actually hit (`precondition_failed`,
+    `quota_exceeded`, `vault_limit_reached`, `invalid_vault_file`, plus
+    `payload_too_large`) into sentences; anything 5xx goes through `WebError`,
+    which replaces the wording wholesale, so no backend detail can reach a
+    page.
+  - **The web vault routes carry their own `DefaultBodyLimit`**
+    (`MAX_VAULT_BYTES` + 64 KiB for the multipart envelope), declared inside
+    the router's global limit exactly like the API's vault routes. An
+    oversized upload surfaces as a readable HTML 413, not a bodyless one.
+  - **The HTML email/password forms share the `/api/v1/me` profile rate
+    limiter instance**, as the auth forms already share the auth one.
+  - Gate evidence: `tests/web.rs` grew to 30 tests — the two 7.3 gates
+    (every profile capability from the browser; revoking the current session
+    signs it out cleanly), a browser password change killing an app's bearer
+    token, the delete cascade behind the typed confirmation, the 7.4 round
+    trip (upload → list → byte-identical download → rename → delete), the
+    stale-ETag conflict message, per-account isolation, a multipart upload
+    with a missing/foreign/cross-origin token, and the oversize 413 page. The
+    CSP-drift test now covers the signed-in pages too.
+
+  - **Phase gate (whole phase):** ✅ *(met 2026-08-05, except browser Google
+    sign-in)* the full product ships from `cargo build` with no JS toolchain;
+    HTML routes covered by `server/tests/web.rs` (tower `oneshot`, asserting
+    status, `Set-Cookie` attributes, CSRF rejection and key markup); every
+    page usable with JavaScript disabled.
 
 ## Open decisions (not blocking)
 

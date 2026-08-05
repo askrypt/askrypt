@@ -1,4 +1,4 @@
-//! The Phase 7.1/7.2 gate: the server-rendered website.
+//! The Phase 7.1–7.4 gate: the server-rendered website.
 //!
 //! Runs over `tower`'s `oneshot` against the in-memory fakes — no socket, no
 //! SQLite, no browser. What is asserted here is exactly what a browser
@@ -122,10 +122,99 @@ fn jar(previous: &str, headers: &HeaderMap) -> String {
 }
 
 fn csrf_field(html: &str) -> String {
-    let marker = "name=\"csrf\" value=\"";
-    let start = html.find(marker).expect("no csrf field in the form") + marker.len();
+    field_value(html, "csrf").expect("no csrf field in the form")
+}
+
+/// The value of the first hidden/text input named `name`.
+fn field_value(html: &str, name: &str) -> Option<String> {
+    let marker = format!("name=\"{name}\" value=\"");
+    let start = html.find(&marker)? + marker.len();
     let rest = &html[start..];
-    rest[..rest.find('"').unwrap()].to_string()
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// The id of the first vault in the table, read out of its rename form's
+/// action — the same way a browser would find it.
+fn first_vault_id(html: &str) -> String {
+    let marker = "action=\"/vaults/";
+    let start = html.find(marker).expect("no vault row in the page") + marker.len();
+    let rest = &html[start..];
+    rest[..rest.find('/').unwrap()].to_string()
+}
+
+/// A form POST with an `HX-Request` header, i.e. what htmx sends.
+fn post_form_htmx(uri: &str, cookies: &str, body: &str) -> Request<Body> {
+    let mut request = post_form(uri, cookies, body);
+    request
+        .headers_mut()
+        .insert("hx-request", "true".parse().unwrap());
+    request
+}
+
+const BOUNDARY: &str = "askrypttestboundary";
+
+/// A `multipart/form-data` POST as the upload forms make it: the CSRF token
+/// first, then the other text fields, then the file.
+fn post_multipart(
+    uri: &str,
+    cookies: &str,
+    csrf: &str,
+    fields: &[(&str, &str)],
+    file: Option<(&str, &[u8])>,
+) -> Request<Body> {
+    let mut body: Vec<u8> = Vec::new();
+    let mut part = |name: &str, value: &[u8], filename: Option<&str>| {
+        body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+        match filename {
+            Some(filename) => body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n\
+                     Content-Type: application/octet-stream\r\n\r\n"
+                )
+                .as_bytes(),
+            ),
+            None => body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            ),
+        }
+        body.extend_from_slice(value);
+        body.extend_from_slice(b"\r\n");
+    };
+    part("csrf", csrf.as_bytes(), None);
+    for (name, value) in fields {
+        part(name, value.as_bytes(), None);
+    }
+    if let Some((filename, bytes)) = file {
+        part("file", bytes, Some(filename));
+    }
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+
+    Request::post(uri)
+        .header(header::HOST, HOST)
+        .header(header::ORIGIN, format!("https://{HOST}"))
+        .header(header::COOKIE, cookies)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Bytes that pass the ZIP-magic check. The server never looks further in —
+/// a real vault is an encrypted archive it has no key for.
+fn vault_bytes(marker: u8) -> Vec<u8> {
+    let mut bytes = b"PK\x03\x04askrypt-test-vault".to_vec();
+    bytes.push(marker);
+    bytes
+}
+
+/// Signs in through the browser and returns the jar plus the `/vaults` page.
+async fn with_vaults_page(app: &Router, email: &str) -> (String, String) {
+    let cookies = register(app, email).await;
+    let (status, headers, html) = send(app, get_with_cookies("/vaults", &cookies)).await;
+    assert_eq!(status, StatusCode::OK);
+    (jar(&cookies, &headers), html)
 }
 
 /// A signed-out browser that has loaded `path`: its cookie jar plus the CSRF
@@ -188,12 +277,50 @@ async fn the_vendored_assets_are_served_under_assets() {
 #[tokio::test]
 async fn no_page_carries_an_inline_script_or_style() {
     let app = app();
-    for path in ["/", "/login", "/register", "/nope"] {
-        let (_, _, html) = send(&app, get(path)).await;
+    let cookies = register(&app, "csp@example.com").await;
+    let signed_out = ["/", "/login", "/register", "/nope"];
+    let signed_in = ["/account", "/vaults"];
+    for (path, jar) in signed_out
+        .iter()
+        .map(|p| (*p, ""))
+        .chain(signed_in.iter().map(|p| (*p, cookies.as_str())))
+    {
+        let (_, _, html) = send(&app, get_with_cookies(path, jar)).await;
         assert!(!html.contains("<script>"), "inline <script> on {path}");
         assert!(!html.contains("<style"), "inline <style> on {path}");
         assert!(!html.contains("hx-on:"), "hx-on: handler on {path}");
+        // htmx evaluates `js:`/`javascript:` expressions, which the CSP
+        // forbids just as firmly as an inline handler.
+        assert!(!html.contains("\"js:"), "js: expression on {path}");
     }
+}
+
+/// The upload route's own body limit sits inside the global one; a file over
+/// it has to come back as a page a person can read.
+#[tokio::test]
+async fn an_oversized_upload_is_refused_with_a_readable_page() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "toobig@example.com").await;
+    let mut huge = vault_bytes(1);
+    huge.resize(11 * 1024 * 1024, b'x');
+
+    let (status, _, body) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "huge.askrypt")],
+            Some(("huge.askrypt", &huge)),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(body.starts_with("<!doctype html>"), "not an HTML page");
+    assert!(body.contains("too large"), "{body}");
+    // The JSON envelope belongs to /api/v1 and must not surface on a page.
+    assert!(!body.contains("\"error\""), "{body}");
 }
 
 // ---------------------------------------------------------------- 7.2
@@ -489,6 +616,550 @@ async fn an_already_signed_in_visitor_is_sent_on_from_the_auth_pages() {
         assert_eq!(status, StatusCode::SEE_OTHER, "{path}");
         assert_eq!(headers[header::LOCATION], "/account", "{path}");
     }
+}
+
+// ---------------------------------------------------------------- 7.3
+
+/// The Phase 7.3 gate, part one: every Phase 3 capability except deletion
+/// (its own test) driven from the browser, end to end.
+#[tokio::test]
+async fn the_profile_page_can_change_the_email_and_the_password() {
+    let app = app();
+    let cookies = register(&app, "profile@example.com").await;
+
+    let (status, headers, html) = send(&app, get_with_cookies("/account", &cookies)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("/account/email"), "no email form");
+    assert!(html.contains("/account/password"), "no password form");
+    assert!(html.contains("Web browser"), "the device list is missing");
+    let cookies = jar(&cookies, &headers);
+    let token = csrf_field(&html);
+
+    // Email.
+    let (status, headers, _) = send(
+        &app,
+        post_form(
+            "/account/email",
+            &cookies,
+            &format!("csrf={token}&email=moved@example.com"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/account");
+    // The redirect carries the flash cookie; a browser sends it back on the
+    // GET that follows.
+    let cookies = jar(&cookies, &headers);
+    let (_, _, html) = send(&app, get_with_cookies("/account", &cookies)).await;
+    assert!(html.contains("moved@example.com"), "{html}");
+    assert!(html.contains("email address has been updated"));
+
+    // Password: the wrong current password is refused...
+    let body = format!(
+        "csrf={token}&current_password=notitnotit&new_password=freshpassword\
+         &confirm_password=freshpassword"
+    );
+    let (status, _, html) = send(&app, post_form("/account/password", &cookies, &body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("current password is incorrect"), "{html}");
+
+    // ...and so is a mistyped confirmation.
+    let body = format!(
+        "csrf={token}&current_password={PASSWORD}&new_password=freshpassword\
+         &confirm_password=freshpasswerd"
+    );
+    let (_, _, html) = send(&app, post_form("/account/password", &cookies, &body)).await;
+    assert!(html.contains("do not match"), "{html}");
+
+    // The real change goes through, and the new password is the one that works.
+    let body = format!(
+        "csrf={token}&current_password={PASSWORD}&new_password=freshpassword\
+         &confirm_password=freshpassword"
+    );
+    let (status, _, _) = send(&app, post_form("/account/password", &cookies, &body)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    let (fresh, token) = visit(&app, "/login").await;
+    let (status, _, _) = send(
+        &app,
+        post_form(
+            "/login",
+            &fresh,
+            &format!("csrf={token}&email=moved@example.com&password=freshpassword"),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "the new password should work"
+    );
+}
+
+/// A password change is how someone reacts to a suspected compromise, so the
+/// browser form has to revoke the other devices exactly as the API does.
+#[tokio::test]
+async fn changing_the_password_in_the_browser_signs_the_other_devices_out() {
+    let app = app();
+    let cookies = register(&app, "shared@example.com").await;
+
+    let request = Request::post("/api/v1/auth/login")
+        .header(header::HOST, HOST)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({"email": "shared@example.com", "password": PASSWORD}).to_string(),
+        ))
+        .unwrap();
+    let (status, _, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    let session: Value = serde_json::from_str(&body).unwrap();
+    let device_token = session["token"].as_str().unwrap().to_string();
+
+    let (_, _, html) = send(&app, get_with_cookies("/account", &cookies)).await;
+    let body = format!(
+        "csrf={}&current_password={PASSWORD}&new_password=brandnewpassword\
+         &confirm_password=brandnewpassword",
+        csrf_field(&html)
+    );
+    let (status, _, _) = send(&app, post_form("/account/password", &cookies, &body)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    // The app's bearer token is dead; the browser that made the change is not.
+    let request = Request::get("/api/v1/me")
+        .header(header::HOST, HOST)
+        .header(header::AUTHORIZATION, format!("Bearer {device_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&app, request).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _, _) = send(&app, get_with_cookies("/account", &cookies)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// The Phase 7.3 gate, part two: revoking the *current* session from the
+/// device list signs this browser out cleanly rather than leaving it holding
+/// a dead cookie.
+#[tokio::test]
+async fn revoking_this_browser_from_the_device_list_signs_it_out() {
+    let app = app();
+    let cookies = register(&app, "devices@example.com").await;
+    let (_, _, html) = send(&app, get_with_cookies("/account", &cookies)).await;
+    assert!(html.contains("this browser"), "{html}");
+
+    // The revoke form's action carries the session's published digest.
+    let marker = "action=\"/account/devices/";
+    let start = html.find(marker).expect("no revoke form") + marker.len();
+    let id = &html[start..][..64];
+
+    let (status, headers, _) = send(
+        &app,
+        post_form(
+            &format!("/account/devices/{id}"),
+            &cookies,
+            &format!("csrf={}", csrf_field(&html)),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/");
+    assert!(
+        set_cookies(&headers)
+            .iter()
+            .any(|c| c.starts_with("askrypt_session=") && c.contains("Max-Age=0"))
+    );
+    let (status, _, _) = send(&app, get_with_cookies("/account", &cookies)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "the session should be gone");
+}
+
+#[tokio::test]
+async fn deleting_the_account_needs_the_typed_email_and_takes_the_vaults_with_it() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "doomed@example.com").await;
+    let (status, _, _) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "doomed.askrypt")],
+            Some(("doomed.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    let (_, _, html) = send(&app, get_with_cookies("/account", &cookies)).await;
+    let token = csrf_field(&html);
+
+    // A confirmation that isn't the address changes nothing.
+    let (status, _, html) = send(
+        &app,
+        post_form(
+            "/account/delete",
+            &cookies,
+            &format!("csrf={token}&confirm=yes"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("Type your email address exactly"), "{html}");
+    let (status, _, _) = send(&app, get_with_cookies("/account", &cookies)).await;
+    assert_eq!(status, StatusCode::OK, "the account should still be there");
+
+    let (status, headers, _) = send(
+        &app,
+        post_form(
+            "/account/delete",
+            &cookies,
+            &format!("csrf={token}&confirm=doomed@example.com"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/");
+    assert!(
+        set_cookies(&headers)
+            .iter()
+            .any(|c| c.starts_with("askrypt_session=") && c.contains("Max-Age=0"))
+    );
+
+    // Gone for good: the address is free to register again, which it would
+    // not be if the account row had survived.
+    let (fresh, token) = visit(&app, "/register").await;
+    let (status, _, _) = send(
+        &app,
+        post_form(
+            "/register",
+            &fresh,
+            &format!("csrf={token}&email=doomed@example.com&password={PASSWORD}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn a_refused_profile_form_swaps_back_only_that_section() {
+    let app = app();
+    let cookies = register(&app, "swapback@example.com").await;
+    let (_, _, html) = send(&app, get_with_cookies("/account", &cookies)).await;
+
+    let (status, _, fragment) = send(
+        &app,
+        post_form_htmx(
+            "/account/email",
+            &cookies,
+            &format!("csrf={}&email=not-an-address", csrf_field(&html)),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(!fragment.contains("<!doctype"), "fragment was a full page");
+    assert!(fragment.trim_start().starts_with("<section"), "{fragment}");
+    assert!(fragment.contains("not a valid email address"), "{fragment}");
+    // The other sections stayed where they were.
+    assert!(!fragment.contains("/account/password"), "{fragment}");
+}
+
+// ---------------------------------------------------------------- 7.4
+
+/// The Phase 7.4 gate: upload → list → download (byte-identical) → rename →
+/// delete, all from the browser.
+#[tokio::test]
+async fn a_vault_can_be_uploaded_listed_downloaded_renamed_and_deleted() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "files@example.com").await;
+    assert!(html.contains("No vault files yet"), "{html}");
+    let token = csrf_field(&html);
+    let bytes = vault_bytes(7);
+
+    let (status, headers, _) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &token,
+            &[("name", "")],
+            Some(("personal.askrypt", &bytes)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/vaults");
+
+    let cookies = jar(&cookies, &headers);
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    // The file's own name is the default, and the size and version show.
+    assert!(html.contains("value=\"personal.askrypt\""), "{html}");
+    assert!(html.contains("Vault uploaded"));
+    assert!(html.contains(&format!("{} B", bytes.len())), "{html}");
+    let id = first_vault_id(&html);
+    let token = csrf_field(&html);
+
+    // Download: the same bytes back, as a file.
+    let (status, headers, _) = send(
+        &app,
+        get_with_cookies(&format!("/vaults/{id}/download"), &cookies),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"personal.askrypt\""
+    );
+    let downloaded = app
+        .clone()
+        .oneshot(get_with_cookies(
+            &format!("/vaults/{id}/download"),
+            &cookies,
+        ))
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(downloaded.as_ref(), bytes.as_slice(), "bytes changed");
+
+    // Rename.
+    let (status, _, _) = send(
+        &app,
+        post_form(
+            &format!("/vaults/{id}/name"),
+            &cookies,
+            &format!("csrf={token}&name=work.askrypt"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    assert!(html.contains("value=\"work.askrypt\""), "{html}");
+
+    // Delete.
+    let (status, _, _) = send(
+        &app,
+        post_form(
+            &format!("/vaults/{id}/delete"),
+            &cookies,
+            &format!("csrf={token}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    assert!(html.contains("No vault files yet"), "{html}");
+}
+
+/// Replacing carries the row's ETag, so the Phase 4 `If-Match` path applies:
+/// a version that moved on elsewhere is explained, not shown as a raw 412.
+#[tokio::test]
+async fn replacing_a_vault_that_changed_elsewhere_explains_the_conflict() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "conflict@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "shared.askrypt")],
+            Some(("shared.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = first_vault_id(&html);
+    let token = csrf_field(&html);
+    let stale_etag = field_value(&html, "etag").expect("no etag in the replace form");
+
+    // Another device gets there first, through the API.
+    send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &token,
+            &[("etag", &stale_etag)],
+            Some(("shared.askrypt", &vault_bytes(2))),
+        ),
+    )
+    .await;
+
+    // This page still holds the version from before that.
+    let (status, _, html) = send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &token,
+            &[("etag", &stale_etag)],
+            Some(("shared.askrypt", &vault_bytes(3))),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "a conflict is a page, not a 412");
+    assert!(html.contains("changed on another device"), "{html}");
+    assert!(!html.contains("412"), "{html}");
+
+    // And the file kept the version that won.
+    let (_, _, bytes) = send(
+        &app,
+        get_with_cookies(&format!("/vaults/{id}/download"), &cookies),
+    )
+    .await;
+    assert_eq!(bytes.as_bytes(), vault_bytes(2).as_slice());
+}
+
+#[tokio::test]
+async fn a_file_that_is_not_a_vault_is_refused_in_plain_words() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "notazip@example.com").await;
+
+    let (status, _, html) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "notes.txt")],
+            Some(("notes.txt", b"just some text")),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("is not an Askrypt vault"), "{html}");
+    assert!(!html.contains("invalid_vault_file"), "raw API code leaked");
+    assert!(html.starts_with("<!doctype html>"), "expected a full page");
+}
+
+/// The listing shows what is left of the quota; the count limit and the byte
+/// quota themselves are the API suite's gate.
+#[tokio::test]
+async fn the_listing_shows_quota_usage() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "usage@example.com").await;
+    assert!(html.contains("0 B of 100.0 MB"), "{html}");
+    assert!(html.contains("0 of 100 files"), "{html}");
+
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "one.askrypt")],
+            Some(("one.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    assert!(html.contains("1 of 100 files"), "{html}");
+}
+
+/// An upload that skips the token is refused, and so is a `multipart` body
+/// that puts the token after the file — the check has to happen before the
+/// bytes are taken.
+#[tokio::test]
+async fn a_multipart_upload_without_a_valid_csrf_token_is_refused() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "forged@example.com").await;
+    let token = csrf_field(&html);
+
+    for bad_token in ["", &"0".repeat(64)] {
+        let (status, _, _) = send(
+            &app,
+            post_multipart(
+                "/vaults",
+                &cookies,
+                bad_token,
+                &[("name", "x.askrypt")],
+                Some(("x.askrypt", &vault_bytes(1))),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "token {bad_token:?}");
+    }
+
+    let mut request = post_multipart(
+        "/vaults",
+        &cookies,
+        &token,
+        &[("name", "x.askrypt")],
+        Some(("x.askrypt", &vault_bytes(1))),
+    );
+    request
+        .headers_mut()
+        .insert(header::ORIGIN, "https://evil.example".parse().unwrap());
+    let (status, _, _) = send(&app, request).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    assert!(html.contains("No vault files yet"), "nothing may be stored");
+}
+
+#[tokio::test]
+async fn the_vault_pages_need_a_session() {
+    let app = app();
+    for path in [
+        "/vaults",
+        "/vaults/00000000-0000-0000-0000-000000000000/download",
+    ] {
+        let (status, headers, _) = send(&app, get(path)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{path}");
+        assert_eq!(headers[header::LOCATION], "/login", "{path}");
+    }
+}
+
+/// One account may never see another's files, whichever door it comes
+/// through.
+#[tokio::test]
+async fn vaults_are_invisible_to_another_account() {
+    let app = app();
+    let (owner, html) = with_vaults_page(&app, "owner@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &owner,
+            &csrf_field(&html),
+            &[("name", "private.askrypt")],
+            Some(("private.askrypt", &vault_bytes(9))),
+        ),
+    )
+    .await;
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &owner)).await;
+    let id = first_vault_id(&html);
+
+    let (stranger, html) = with_vaults_page(&app, "stranger@example.com").await;
+    assert!(html.contains("No vault files yet"), "{html}");
+
+    let (status, _, _) = send(
+        &app,
+        get_with_cookies(&format!("/vaults/{id}/download"), &stranger),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _, _) = send(
+        &app,
+        post_form(
+            &format!("/vaults/{id}/delete"),
+            &stranger,
+            &format!("csrf={}", csrf_field(&html)),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a 404 renders as a page here");
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &owner)).await;
+    assert!(html.contains("private.askrypt"), "the file must survive");
 }
 
 #[tokio::test]

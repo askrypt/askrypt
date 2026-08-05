@@ -6,13 +6,19 @@
 
 use askama::Template;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
+use chrono::{DateTime, Utc};
 
 use crate::web::csrf;
 use crate::web::flash;
 
 /// Set by htmx on every request it makes.
 pub const HX_REQUEST: HeaderName = HeaderName::from_static("hx-request");
+
+/// Tells htmx to navigate the whole window. Used where a swap would leave
+/// stale chrome behind — a changed email in the nav, or a session that no
+/// longer exists.
+pub const HX_REDIRECT: HeaderName = HeaderName::from_static("hx-redirect");
 
 const HTML: HeaderValue = HeaderValue::from_static("text/html; charset=utf-8");
 
@@ -128,6 +134,36 @@ impl Shell {
     pub fn finish(self, response: impl IntoResponse) -> Response {
         with_cookies(response.into_response(), self.cookies)
     }
+}
+
+/// Sends the browser to `location`, whether or not htmx made the request.
+///
+/// A plain POST gets the usual POST-redirect-GET 303. htmx gets `HX-Redirect`
+/// instead: a 303 would be followed by `fetch` and the whole page swapped
+/// into whatever slot the fragment was headed for. Used after any change the
+/// surrounding chrome depends on.
+pub fn redirect_either_way(
+    headers: &HeaderMap,
+    location: &'static str,
+    cookies: Vec<String>,
+) -> Response {
+    let response = if is_htmx(headers) {
+        let mut response = StatusCode::OK.into_response();
+        response
+            .headers_mut()
+            .insert(HX_REDIRECT, HeaderValue::from_static(location));
+        response
+    } else {
+        Redirect::to(location).into_response()
+    };
+    with_cookies(response, cookies)
+}
+
+/// Timestamps as the pages show them: UTC, to the minute. No locale
+/// handling, and deliberately no client-side clock code — the CSP forbids
+/// the script that would do it.
+pub fn timestamp(at: DateTime<Utc>) -> String {
+    at.format("%Y-%m-%d %H:%M UTC").to_string()
 }
 
 /// Appends `Set-Cookie` headers to a finished response.

@@ -19,6 +19,15 @@ pub enum Flash {
     AccountCreated,
     SignedOut,
     AlreadySignedIn,
+    EmailChanged,
+    PasswordChanged,
+    PasswordSet,
+    SessionRevoked,
+    AccountDeleted,
+    VaultUploaded,
+    VaultReplaced,
+    VaultRenamed,
+    VaultDeleted,
 }
 
 impl Flash {
@@ -27,6 +36,15 @@ impl Flash {
             Self::AccountCreated => "created",
             Self::SignedOut => "out",
             Self::AlreadySignedIn => "in",
+            Self::EmailChanged => "email",
+            Self::PasswordChanged => "pwchanged",
+            Self::PasswordSet => "pwset",
+            Self::SessionRevoked => "revoked",
+            Self::AccountDeleted => "gone",
+            Self::VaultUploaded => "vup",
+            Self::VaultReplaced => "vrep",
+            Self::VaultRenamed => "vren",
+            Self::VaultDeleted => "vdel",
         }
     }
 
@@ -35,6 +53,15 @@ impl Flash {
             "created" => Some(Self::AccountCreated),
             "out" => Some(Self::SignedOut),
             "in" => Some(Self::AlreadySignedIn),
+            "email" => Some(Self::EmailChanged),
+            "pwchanged" => Some(Self::PasswordChanged),
+            "pwset" => Some(Self::PasswordSet),
+            "revoked" => Some(Self::SessionRevoked),
+            "gone" => Some(Self::AccountDeleted),
+            "vup" => Some(Self::VaultUploaded),
+            "vrep" => Some(Self::VaultReplaced),
+            "vren" => Some(Self::VaultRenamed),
+            "vdel" => Some(Self::VaultDeleted),
             _ => None,
         }
     }
@@ -44,6 +71,17 @@ impl Flash {
             Self::AccountCreated => "Account created. You're signed in.",
             Self::SignedOut => "You're signed out.",
             Self::AlreadySignedIn => "You're already signed in.",
+            Self::EmailChanged => "Your email address has been updated.",
+            Self::PasswordChanged => {
+                "Password changed. Every other signed-in device has been signed out."
+            }
+            Self::PasswordSet => "Password set. You can now sign in with it.",
+            Self::SessionRevoked => "That device has been signed out.",
+            Self::AccountDeleted => "Your account and every stored vault have been deleted.",
+            Self::VaultUploaded => "Vault uploaded.",
+            Self::VaultReplaced => "Vault updated.",
+            Self::VaultRenamed => "Vault renamed.",
+            Self::VaultDeleted => "Vault deleted.",
         }
     }
 }
@@ -75,13 +113,29 @@ mod tests {
 
     #[test]
     fn every_variant_round_trips_through_its_code() {
-        for flash in [
+        let all = [
             Flash::AccountCreated,
             Flash::SignedOut,
             Flash::AlreadySignedIn,
-        ] {
+            Flash::EmailChanged,
+            Flash::PasswordChanged,
+            Flash::PasswordSet,
+            Flash::SessionRevoked,
+            Flash::AccountDeleted,
+            Flash::VaultUploaded,
+            Flash::VaultReplaced,
+            Flash::VaultRenamed,
+            Flash::VaultDeleted,
+        ];
+        for flash in all {
             assert_eq!(Flash::from_code(flash.code()), Some(flash));
         }
+        // Two variants sharing a code would silently show the wrong message.
+        let mut codes: Vec<&str> = all.iter().map(|f| f.code()).collect();
+        codes.sort_unstable();
+        let unique = codes.len();
+        codes.dedup();
+        assert_eq!(codes.len(), unique, "duplicate flash code");
     }
 
     #[test]

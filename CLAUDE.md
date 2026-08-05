@@ -80,9 +80,9 @@ server-rendered website — it never handles questions, answers, or vault
 crypto, and it must **never depend on `askrypt-core`**. The phased plan lives
 in **`server/PLAN.md`**; Phases 0 (scaffolding), 1 (landing page + API
 namespacing), 2 (auth: register, login, Google sign-in), 3 (profile API), 4
-(vault cloud storage), 5 (hardening & deployment) and 7.1 + 7.2 (website
-foundations + browser sessions/CSRF) are done. Still open: Phase 6 (CI/CD),
-7.3 (profile pages), 7.4 (vault file manager), and browser Google sign-in.
+(vault cloud storage), 5 (hardening & deployment) and 7 (the website: 7.1
+foundations, 7.2 browser sessions/CSRF, 7.3 profile pages, 7.4 vault file
+manager) are done. Still open: Phase 6 (CI/CD) and browser Google sign-in.
 Self-hosting is documented in **`server/DEPLOY.md`**.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
@@ -118,11 +118,14 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   nest (`GET /about`, the `/me` profile tree, the `/vaults` tree, and
   `/auth/{register,login,google,logout}` behind a 20 req/min fixed-window
   rate limiter) with a JSON 404 fallback covering everything under `/api`;
-  the HTML routes from `web::routes` at the root; the configured static dir
+  the HTML routes from `web::routes(auth_limiter, profile_limiter)` at the
+  root (both limiters shared with their `/api/v1` twins); the configured static dir
   mounted at `/assets` (`tower-http` `ServeDir`); and an HTML 404 fallback.
   The Phase 1 SPA fallback (`index.html` for every unknown path) is gone. The
   vault routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`, which
-  overrides the outer global limit because it is layered *inside* it. The
+  overrides the outer global limit because it is layered *inside* it (the
+  website's `/vaults` routes do the same in `web::routes`, with 64 KiB extra
+  for the multipart envelope). The
   Phase 5 layer stack is declared innermost-first at the bottom of `router`
   (body limit → `ClientIpPolicy` extension → timeout → shedding → security
   headers), since the last `.layer()` call is the first middleware to run.
@@ -166,7 +169,10 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   `pub(crate)` free functions over `AppState`, and both the JSON handlers and
   `web/` call them. **Never re-implement a rule in `web/`** — in particular
   `authenticate` is where the login timing equalization lives.
-- **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`:
+- **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`
+  (handlers are wrappers; the rules are the `pub(crate)` free functions
+  `set_email`, `set_password`, `active_sessions`, `revoke_session_id`,
+  `delete_account_data`, which the Phase 7.3 pages call):
   `GET /me` (full profile incl. linked providers), `PUT /me/email`,
   `PUT /me/password` (current-password re-auth when one exists; sets the
   first password on Google-created accounts), `GET /me/sessions` +
@@ -181,6 +187,9 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 - **`server/src/vaults.rs`** — Phase 4 vault file API under `/api/v1/vaults`:
   list, upload (`POST ?name=`), download, overwrite (`PUT /{id}`), rename
   (`PUT /{id}/name`) and delete, all scoped to the authenticated account.
+  Same split as `auth`/`profile`: `list_for`, `create`, `overwrite`,
+  `set_name`, `destroy` and `read` are the `pub(crate)` free functions the
+  Phase 7.4 file manager drives.
   Bytes stay opaque apart from a ZIP-magic check. ETags are the SHA-256 of
   the stored bytes: downloads honor `If-None-Match` (304), overwrites
   require `If-Match` (428 without it, 412 when stale) so multi-device sync
@@ -195,22 +204,30 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   askama templates from `server/templates/`, htmx as a progressive
   enhancement. `mod.rs` builds the HTML router and holds `rate_limit`, an
   HTML-rendering twin of `ratelimit::middleware` sharing the *same*
-  `RateLimiter` instance as `/api/v1/auth`; `render.rs` has `Page<T>`
-  (askama 0.16 has no axum integration), `is_htmx`, and `Chrome`/`Shell`
-  (the layout's data plus the cookies a response owes); `error.rs` `WebError`
-  with `From<ApiError>` — 5xx messages are replaced, never forwarded;
-  `session.rs` the `WebSession`/`MaybeWebSession` cookie extractors (7-day
-  sessions labelled `"Web browser"`, rejecting with a 303 to `/login` or an
-  `HX-Redirect`) plus hand-formatted `Set-Cookie` values (`HttpOnly; Secure;
-  SameSite=Lax; Path=/`); `csrf.rs` a random double-submit cookie —
-  **deliberately not derived from the session token, because
-  `profile::session_id` is `sha256(token)` and is published in the device
-  list** — enforced by the `CsrfForm<T>` extractor, the only way to read a
-  form body; `flash.rs` one-shot messages stored as *codes*, never text;
-  `auth.rs` the login/register/logout forms; `pages.rs` landing, the
-  `/account` stub and the HTML 404. Templates must not contain inline
-  `<script>`/`<style>`, `hx-on:` or `js:` htmx expressions — the CSP forbids
-  them and `tests/web.rs` guards it.
+  `RateLimiter` instances as `/api/v1/auth` and the `/api/v1/me` mutations;
+  `render.rs` has `Page<T>` (askama 0.16 has no axum integration), `is_htmx`,
+  `redirect_either_way` (303, or `HX-Redirect` for htmx), `timestamp`, and
+  `Chrome`/`Shell` (the layout's data plus the cookies a response owes);
+  `error.rs` `WebError` with `From<ApiError>` — 5xx messages are replaced,
+  never forwarded; `session.rs` the `WebSession`/`MaybeWebSession` cookie
+  extractors (7-day sessions labelled `"Web browser"`, rejecting with a 303
+  to `/login` or an `HX-Redirect`) plus hand-formatted `Set-Cookie` values
+  (`HttpOnly; Secure; SameSite=Lax; Path=/`); `csrf.rs` a random
+  double-submit cookie — **deliberately not derived from the session token,
+  because `profile::session_id` is `sha256(token)` and is published in the
+  device list** — enforced by `CsrfForm<T>` and, for uploads,
+  `CsrfMultipart` (which verifies the token *before* buffering the file, so
+  the hidden input must come first in every multipart form); these two are
+  the only ways to read a form body; `flash.rs` one-shot messages stored as
+  *codes*, never text; `auth.rs` the login/register/logout forms;
+  `account.rs` the 7.3 profile pages (email, password, device list with
+  per-row revoke, typed-confirmation delete); `vaults.rs` the 7.4 file
+  manager (multipart upload, cookie-authed download route, inline rename,
+  replace carrying the row's ETag through the `If-Match` path, delete, quota
+  display) plus `explain`, which turns the handful of reachable `ApiError`
+  codes into sentences; `pages.rs` landing and the HTML 404. Templates must
+  not contain inline `<script>`/`<style>`, `hx-on:` or `js:` htmx
+  expressions — the CSP forbids them and `tests/web.rs` guards it.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
   seam; handlers can only reach the traits.
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
@@ -238,19 +255,27 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7.1/7.2 gate: template
-  rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie attributes,
-  the three CSRF rejections, fragment vs. full page, and register-in-browser
-  → find the session in `GET /api/v1/me/sessions` → revoke → signed out).
-  Middleware needing a slow or parked handler (timeout, shedding) is
-  unit-tested inside `src/hardening.rs` instead.
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 30 tests:
+  template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
+  attributes, the CSRF rejections for both form and multipart, fragment vs.
+  full page, register-in-browser → find the session in
+  `GET /api/v1/me/sessions` → revoke → signed out, the 7.3 profile round trip
+  incl. self-revocation and the typed-confirmation delete, and the 7.4
+  upload → list → byte-identical download → rename → delete with the
+  stale-ETag conflict and the oversize 413 page). Middleware needing a slow
+  or parked handler (timeout, shedding) is unit-tested inside
+  `src/hardening.rs` instead.
 - **`server/templates/` + `server/static/`** — The website's markup and its
   only loose files. Templates (`layout.html`, `landing.html`,
-  `auth_page.html`, `account.html`, `error.html`, `fragments/auth_form.html`)
-  compile into the binary; every page template carries a `chrome: Chrome`
-  field because `layout.html` reads it. `static/` holds just `style.css` and
-  the vendored `htmx.min.js` (2.0.10), served at `/assets` — there is no
-  `index.html` any more. No Node, no bundler, no CDN.
+  `auth_page.html`, `account.html`, `vaults.html`, `error.html`, and
+  `fragments/` — `auth_form`, `email_form`, `password_form`, `devices`,
+  `delete_account`, `vault_upload`, `vault_list`) compile into the binary;
+  every page template carries a `chrome: Chrome` field because `layout.html`
+  reads it, and each fragment is a self-contained element with an id its
+  forms name as `hx-target`. Confirmation steps are `<details>` disclosures,
+  not scripted dialogs — the CSP forbids the inline handler. `static/` holds
+  just `style.css` and the vendored `htmx.min.js` (2.0.10), served at
+  `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN.
 - **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts:
   multi-stage image (build from the **repo root** — cargo validates every
   workspace member's target paths, and `sqlx::migrate!` embeds

@@ -10,7 +10,9 @@ publish = false
 # NEVER depend on `askrypt-core` — all vault crypto stays in the clients.
 
 [dependencies]
-axum = "0.8"
+# `multipart` backs the website's vault upload form (Phase 7.4); native
+# clients keep posting raw bytes to `/api/v1/vaults`.
+axum = { version = "0.8", features = ["multipart"] }
 # `time` for the request-timeout middleware, `sync` for the concurrency and
 # argon2 semaphores (Phase 5 hardening).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }

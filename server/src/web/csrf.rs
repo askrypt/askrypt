@@ -18,7 +18,9 @@
 //! `Origin`/`Referer` are checked as a backstop, and `SameSite=Lax` on the
 //! session cookie is a third layer.
 
-use axum::extract::{FromRequest, RawForm, Request};
+use std::collections::HashMap;
+
+use axum::extract::{FromRequest, Multipart, RawForm, Request};
 use axum::http::{HeaderMap, header};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -27,6 +29,9 @@ use crate::web::error::WebError;
 use crate::web::session::{cookie_value, set_cookie};
 
 pub const CSRF_COOKIE: &str = "askrypt_csrf";
+
+/// The hidden input every mutating form carries.
+pub const CSRF_FIELD: &str = "csrf";
 
 /// Long enough that a form left open over a coffee break still submits,
 /// short enough that an abandoned public-terminal token doesn't linger.
@@ -101,6 +106,119 @@ where
             .map_err(|_| WebError::bad_request("That form was missing something."))?;
         Ok(Self(value))
     }
+}
+
+/// A `multipart/form-data` submission whose CSRF token has been checked.
+///
+/// The file upload in Phase 7.4 can't go through [`CsrfForm`] — a file is
+/// not urlencoded — so this is its twin, and the same rule holds: it is the
+/// only way to read a multipart body.
+///
+/// The token has to arrive *before* any other part. That is how the
+/// templates are written (the hidden input precedes the file input), and it
+/// means a forged cross-origin upload is refused before its megabytes are
+/// buffered rather than after.
+pub struct CsrfMultipart(pub MultipartForm);
+
+/// A whole multipart body, read into memory: the named text fields plus at
+/// most one file. Vault files are capped at
+/// [`crate::vaults::MAX_VAULT_BYTES`] by the route's body limit, so there is
+/// nothing here worth streaming to disk.
+#[derive(Default)]
+pub struct MultipartForm {
+    fields: HashMap<String, String>,
+    /// The uploaded file's own name, as the browser reported it.
+    pub file_name: Option<String>,
+    pub file: Vec<u8>,
+}
+
+/// Cap on a text field. Names and ETags are the only ones the site sends;
+/// anything larger is a client that has lost the plot.
+const MAX_TEXT_FIELD_BYTES: usize = 1024;
+
+impl MultipartForm {
+    /// A trimmed text field, or `""` when it wasn't sent.
+    pub fn field(&self, name: &str) -> &str {
+        self.fields.get(name).map_or("", |value| value.trim())
+    }
+}
+
+impl<S> FromRequest<S> for CsrfMultipart
+where
+    S: Send + Sync,
+{
+    type Rejection = WebError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let cookie = cookie_value(request.headers(), CSRF_COOKIE);
+        check_origin(request.headers())?;
+
+        let mut multipart = Multipart::from_request(request, state)
+            .await
+            .map_err(|_| WebError::bad_request("That upload could not be read."))?;
+        let mut form = MultipartForm::default();
+        let mut verified = false;
+        while let Some(field) = multipart
+            .next_field()
+            .await
+            .map_err(|err| multipart_rejected(&err))?
+        {
+            let name = field.name().unwrap_or_default().to_string();
+            let file_name = field.file_name().map(str::to_string);
+            if name == CSRF_FIELD {
+                let token = field.text().await.map_err(|err| multipart_rejected(&err))?;
+                let cookie = cookie.as_deref().ok_or_else(csrf_rejected)?;
+                if !constant_time_eq(cookie.as_bytes(), token.as_bytes()) {
+                    return Err(csrf_rejected());
+                }
+                verified = true;
+                continue;
+            }
+            if !verified {
+                return Err(csrf_rejected());
+            }
+            match file_name {
+                Some(file_name) => {
+                    let bytes = field
+                        .bytes()
+                        .await
+                        .map_err(|err| multipart_rejected(&err))?;
+                    form.file_name = Some(file_name);
+                    form.file = bytes.to_vec();
+                }
+                None => {
+                    let text = field.text().await.map_err(|err| multipart_rejected(&err))?;
+                    if text.len() > MAX_TEXT_FIELD_BYTES {
+                        return Err(WebError::bad_request("That form field is too long."));
+                    }
+                    form.fields.insert(name, text);
+                }
+            }
+        }
+        if !verified {
+            return Err(csrf_rejected());
+        }
+        Ok(Self(form))
+    }
+}
+
+/// Turns a multipart read failure into a page.
+///
+/// A body over the limit surfaces here rather than at the outer body-limit
+/// layer, because the multipart reader is what hits it first.
+fn multipart_rejected(err: &axum::extract::multipart::MultipartError) -> WebError {
+    let status = err.status();
+    if status == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+        return WebError::new(
+            status,
+            "That file is too large",
+            format!(
+                "Vault files are limited to {} MiB.",
+                crate::vaults::MAX_VAULT_BYTES / (1024 * 1024)
+            ),
+        );
+    }
+    WebError::bad_request("That upload could not be read.")
 }
 
 fn csrf_rejected() -> WebError {

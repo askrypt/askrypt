@@ -1,0 +1,21 @@
+{#-
+  Change-email section. `hx-target` names this section's own id, so a refused
+  submission swaps the form back with its error and leaves the rest of the
+  page alone; without htmx the same POST re-renders the whole page.
+-#}
+<section class="card" id="email-form">
+  <h2>Email address</h2>
+  <form class="form" method="post" action="/account/email"
+        hx-post="/account/email" hx-target="#email-form" hx-swap="outerHTML">
+{%- if let Some(error) = error.as_deref() %}
+    <p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="account-email">Email</label>
+    <input id="account-email" name="email" type="email" value="{{ email }}"
+           autocomplete="email" required>
+    <p class="hint">This is the address you sign in with, on the website and
+    in the apps.</p>
+    <button class="button" type="submit">Save email</button>
+  </form>
+</section>

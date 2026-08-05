@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use crate::auth;
 use crate::state::AppState;
 use crate::store::{Account, Session};
-use crate::web::render::{is_htmx, with_cookies};
+use crate::web::render::{HX_REDIRECT, is_htmx, with_cookies};
 
 pub const SESSION_COOKIE: &str = "askrypt_session";
 
@@ -31,9 +31,6 @@ pub const WEB_SESSION_TTL_DAYS: i64 = 7;
 pub const WEB_SESSION_LABEL: &str = "Web browser";
 
 pub const LOGIN_PATH: &str = "/login";
-
-/// Where htmx is told to send the browser when a session has gone away.
-const HX_REDIRECT: header::HeaderName = header::HeaderName::from_static("hx-redirect");
 
 /// A signed-in browser. Rejects with a redirect to the sign-in page rather
 /// than the API's 401 — that is the whole reason it isn't

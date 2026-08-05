@@ -112,9 +112,11 @@ curl http://127.0.0.1:8080/api/v1/about   # {"name":"askrypt-server","version":"
 
 The website is server-rendered HTML (askama templates compiled into the binary)
 with [htmx](https://htmx.org) 2.0.10 vendored into `server/static/` — no Node,
-no bundler, no CDN, and every page works with JavaScript disabled. It can sign
-you in and out; the profile pages and the vault file manager are still to come.
-It can never open a vault: there is no crypto in the browser, by design.
+no bundler, no CDN, and every page works with JavaScript disabled. It signs you
+in and out, manages your account (email, password, signed-in devices, account
+deletion) at `/account`, and stores, renames, replaces and hands back your
+encrypted vault files at `/vaults`. It can never *open* a vault: there is no
+crypto in the browser, by design.
 
 A consistent snapshot of the database, safe to take against a running server
 (never `cp` the live file — it is in WAL mode):

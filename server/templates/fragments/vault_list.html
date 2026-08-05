@@ -1,0 +1,88 @@
+{#-
+  The file table and the quota figures. Every mutating form in here targets
+  this whole section, because a rename, a replace or a delete moves the
+  totals as well as the row.
+
+  The confirmation steps are <details> disclosures rather than a scripted
+  dialog: the CSP forbids inline handlers, and this works with JavaScript
+  switched off, which the pages have to.
+-#}
+<section class="card" id="vault-list">
+  <h2>Stored files</h2>
+{%- if let Some(notice) = notice %}
+  <p class="{% if notice.danger %}error{% else %}flash{% endif %}" role="alert">{{ notice.text }}</p>
+{%- endif %}
+
+{%- if vaults.is_empty() %}
+  <p>No vault files yet. Upload the <code>.askrypt</code> file your desktop or
+  mobile app saved, and your other devices can fetch it from here.</p>
+{%- else %}
+  <div class="table-scroll">
+    <table class="listing">
+      <thead>
+        <tr>
+          <th>Name</th><th>Size</th><th>Last change</th><th>Version</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+{%- for vault in vaults %}
+        <tr>
+          <td>
+            <form class="rename" method="post" action="/vaults/{{ vault.id }}/name"
+                  hx-post="/vaults/{{ vault.id }}/name" hx-target="#vault-list"
+                  hx-swap="outerHTML">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <label class="visually-hidden" for="name-{{ vault.id }}">Vault name</label>
+              <input id="name-{{ vault.id }}" name="name" type="text"
+                     value="{{ vault.name }}" autocomplete="off" spellcheck="false" required>
+              <button class="linklike" type="submit">Rename</button>
+            </form>
+          </td>
+          <td>{{ vault.size }}</td>
+          <td>{{ vault.updated }}</td>
+          <td><code title="Content hash">{{ vault.short_etag }}</code></td>
+          <td class="row-actions">
+            <a href="/vaults/{{ vault.id }}/download">Download</a>
+            <details class="confirm">
+              <summary>Replace</summary>
+              <form method="post" action="/vaults/{{ vault.id }}/replace"
+                    enctype="multipart/form-data"
+                    hx-post="/vaults/{{ vault.id }}/replace"
+                    hx-encoding="multipart/form-data" hx-target="#vault-list"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                {#- The version this row was drawn with: the server refuses the
+                    overwrite if the stored file moved on in the meantime. -#}
+                <input type="hidden" name="etag" value="{{ vault.etag }}">
+                <label class="visually-hidden" for="replace-{{ vault.id }}">New file</label>
+                <input id="replace-{{ vault.id }}" name="file" type="file"
+                       accept=".askrypt,application/zip" required>
+                <button class="button small" type="submit">Upload new version</button>
+              </form>
+            </details>
+            <details class="confirm">
+              <summary class="danger">Delete</summary>
+              <form method="post" action="/vaults/{{ vault.id }}/delete"
+                    hx-post="/vaults/{{ vault.id }}/delete" hx-target="#vault-list"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <p class="hint">Deleting <strong>{{ vault.name }}</strong> here
+                removes the copy stored on this site. Copies on your own
+                devices are untouched.</p>
+                <button class="button danger small" type="submit">Delete permanently</button>
+              </form>
+            </details>
+          </td>
+        </tr>
+{%- endfor %}
+      </tbody>
+    </table>
+  </div>
+{%- endif %}
+
+  <p class="usage">
+    <label for="quota">Storage used</label>
+    <progress id="quota" value="{{ used_percent }}" max="100"></progress>
+    <span>{{ used }} of {{ quota }} &middot; {{ count }} of {{ max_count }} files</span>
+  </p>
+</section>

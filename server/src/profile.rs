@@ -6,6 +6,14 @@
 //! every stored vault). Sessions are identified to clients by a SHA-256
 //! digest of their bearer token, so listing sessions never echoes a raw
 //! token that could hijack another device.
+//!
+//! As in [`crate::auth`], the handlers are wrappers and the rules live in
+//! `pub(crate)` free functions over [`AppState`] — [`set_email`],
+//! [`set_password`], [`active_sessions`], [`revoke_session_id`] and
+//! [`delete_account_data`]. The Phase 7.3 profile pages in
+//! [`crate::web::account`] call those same functions, so the re-auth
+//! requirement, the bulk session revocation on a password change and the
+//! delete cascade have exactly one implementation.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -68,8 +76,19 @@ pub async fn update_email(
     auth: AuthSession,
     ApiJson(req): ApiJson<UpdateEmailRequest>,
 ) -> ApiResult<Json<Profile>> {
-    let email = auth::validate_email(&req.email)?;
-    let mut account = auth.account;
+    let account = set_email(&state, &client, auth.account, &req.email).await?;
+    Ok(Json(Profile::from(&account)))
+}
+
+/// Validates, normalizes and stores a new account email, returning the
+/// updated account. A no-op when the address is unchanged.
+pub(crate) async fn set_email(
+    state: &AppState,
+    client: &ClientInfo,
+    mut account: Account,
+    raw_email: &str,
+) -> ApiResult<Account> {
+    let email = auth::validate_email(raw_email)?;
     if account.email != email {
         // Captured before the move: the audit record has to show what the
         // address was, since the new one is where recovery mail now goes.
@@ -77,12 +96,12 @@ pub async fn update_email(
         state.accounts.update(&account).await?;
         audit::emit(
             audit::EMAIL_CHANGED,
-            &client,
+            client,
             Some(account.id),
             &format!("{previous} -> {}", account.email),
         );
     }
-    Ok(Json(Profile::from(&account)))
+    Ok(account)
 }
 
 #[derive(Deserialize)]
@@ -109,11 +128,35 @@ pub async fn change_password(
     auth: AuthSession,
     ApiJson(req): ApiJson<ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
-    auth::validate_password(&req.new_password)?;
-    let mut account = auth.account;
+    set_password(
+        &state,
+        &client,
+        auth.account,
+        req.current_password,
+        req.new_password,
+        &auth.session.token,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The password change itself, shared with the HTML form.
+///
+/// `keep_token` is the caller's own session: every *other* session is
+/// revoked when an existing password is replaced, so the device doing the
+/// change stays signed in and a stolen token does not.
+pub(crate) async fn set_password(
+    state: &AppState,
+    client: &ClientInfo,
+    mut account: Account,
+    current_password: Option<String>,
+    new_password: String,
+    keep_token: &str,
+) -> ApiResult<()> {
+    auth::validate_password(&new_password)?;
     let had_password = account.password_hash.is_some();
     if let Some(hash) = account.password_hash.clone() {
-        let Some(current) = req.current_password else {
+        let Some(current) = current_password else {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "current_password_required",
@@ -124,7 +167,7 @@ pub async fn change_password(
             // Someone holding a stolen bearer token guessing the password.
             audit::emit(
                 audit::PASSWORD_REAUTH_FAILED,
-                &client,
+                client,
                 Some(account.id),
                 "invalid_current_password",
             );
@@ -135,7 +178,7 @@ pub async fn change_password(
             ));
         }
     }
-    account.password_hash = Some(auth::hash_password(req.new_password).await?);
+    account.password_hash = Some(auth::hash_password(new_password).await?);
     state.accounts.update(&account).await?;
     audit::emit(
         if had_password {
@@ -143,22 +186,22 @@ pub async fn change_password(
         } else {
             audit::PASSWORD_SET
         },
-        &client,
+        client,
         Some(account.id),
         "",
     );
     if had_password {
-        let revoked = revoke_other_sessions(&state, account.id, &auth.session.token).await?;
+        let revoked = revoke_other_sessions(state, account.id, keep_token).await?;
         if revoked > 0 {
             audit::emit(
                 audit::SESSIONS_REVOKED_BULK,
-                &client,
+                client,
                 Some(account.id),
                 &revoked.to_string(),
             );
         }
     }
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 /// Deletes every session of the account except `keep`, returning how many
@@ -199,20 +242,32 @@ pub async fn list_sessions(
     State(state): State<AppState>,
     auth: AuthSession,
 ) -> ApiResult<Json<Vec<SessionInfo>>> {
+    Ok(Json(
+        active_sessions(&state, auth.account.id, &auth.session.token).await?,
+    ))
+}
+
+/// The account's unexpired sessions, newest first, with `current` set for
+/// `caller_token`. Shared with the HTML device list.
+pub(crate) async fn active_sessions(
+    state: &AppState,
+    account: AccountId,
+    caller_token: &str,
+) -> ApiResult<Vec<SessionInfo>> {
     let now = Utc::now();
-    let sessions = state.sessions.list_for_account(auth.account.id).await?;
-    let infos = sessions
+    let mut sessions = state.sessions.list_for_account(account).await?;
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.created_at));
+    Ok(sessions
         .into_iter()
         .filter(|s| s.expires_at > now)
         .map(|s| SessionInfo {
             id: session_id(&s.token),
-            current: s.token == auth.session.token,
+            current: s.token == caller_token,
             label: s.label,
             created_at: s.created_at,
             expires_at: s.expires_at,
         })
-        .collect();
-    Ok(Json(infos))
+        .collect())
 }
 
 /// `DELETE /api/v1/me/sessions/{id}` — revoke one of the account's sessions
@@ -223,15 +278,28 @@ pub async fn revoke_session(
     auth: AuthSession,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let sessions = state.sessions.list_for_account(auth.account.id).await?;
+    revoke_session_id(&state, &client, auth.account.id, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Revokes one of the account's sessions by its published digest, returning
+/// the token that was revoked so a caller can tell whether it just signed
+/// *itself* out.
+pub(crate) async fn revoke_session_id(
+    state: &AppState,
+    client: &ClientInfo,
+    account: AccountId,
+    id: &str,
+) -> ApiResult<String> {
+    let sessions = state.sessions.list_for_account(account).await?;
     let Some(target) = sessions.into_iter().find(|s| session_id(&s.token) == id) else {
         return Err(ApiError::not_found("no such session"));
     };
     match state.sessions.delete(&target.token).await {
         Ok(()) | Err(StoreError::NotFound) => {
             // The digest, never the token itself.
-            audit::emit(audit::SESSION_REVOKED, &client, Some(auth.account.id), &id);
-            Ok(StatusCode::NO_CONTENT)
+            audit::emit(audit::SESSION_REVOKED, client, Some(account), id);
+            Ok(target.token)
         }
         Err(other) => Err(other.into()),
     }
@@ -244,14 +312,24 @@ pub async fn delete_account(
     client: ClientInfo,
     auth: AuthSession,
 ) -> ApiResult<StatusCode> {
-    let id = auth.account.id;
+    delete_account_data(&state, &client, &auth.account).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The delete cascade, shared with the HTML confirmation form.
+pub(crate) async fn delete_account_data(
+    state: &AppState,
+    client: &ClientInfo,
+    account: &Account,
+) -> ApiResult<()> {
+    let id = account.id;
     // Logged before and after: the cascade is irreversible, and a failure
     // part-way leaves a half-deleted account that only the log explains.
     audit::emit(
         audit::ACCOUNT_DELETE_STARTED,
-        &client,
+        client,
         Some(id),
-        &auth.account.email,
+        &account.email,
     );
     // Owned data first, account record last, so a failure part-way never
     // leaves orphaned vaults behind a deleted account.
@@ -260,8 +338,8 @@ pub async fn delete_account(
     state.sessions.delete_for_account(id).await?;
     match state.accounts.delete(id).await {
         Ok(()) | Err(StoreError::NotFound) => {
-            audit::emit(audit::ACCOUNT_DELETED, &client, Some(id), "");
-            Ok(StatusCode::NO_CONTENT)
+            audit::emit(audit::ACCOUNT_DELETED, client, Some(id), "");
+            Ok(())
         }
         Err(other) => Err(other.into()),
     }

@@ -11,6 +11,13 @@
 //! content-hash ETag, served on upload and download. Overwrites must send
 //! `If-Match` (428 without it) and answer 412 when the stored version
 //! changed under the client; downloads honor `If-None-Match` with 304.
+//!
+//! As in [`crate::auth`] and [`crate::profile`], the handlers are wrappers
+//! around `pub(crate)` free functions ([`list_for`], [`create`],
+//! [`overwrite`], [`set_name`], [`destroy`], [`read`]) that take an account
+//! id instead of an extractor. The Phase 7.4 file manager in
+//! [`crate::web::vaults`] drives those, so the name rules, the ZIP check,
+//! the quota arithmetic and the conflict semantics exist once.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -24,7 +31,7 @@ use uuid::Uuid;
 use crate::auth::AuthSession;
 use crate::error::{ApiBytes, ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
-use crate::store::{StoreError, VaultId, VaultMeta};
+use crate::store::{AccountId, StoreError, VaultId, VaultMeta};
 
 /// Hard cap on a single vault file. Real vaults are small ZIPs (tens of
 /// KBs); 10 MiB is deliberately generous. Also enforced as the request
@@ -68,8 +75,16 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthSession,
 ) -> ApiResult<Json<Vec<VaultInfo>>> {
-    let metas = state.vault_meta.list_for_account(auth.account.id).await?;
+    let metas = list_for(&state, auth.account.id).await?;
     Ok(Json(metas.iter().map(VaultInfo::from).collect()))
+}
+
+/// The account's vaults, name-sorted so the file manager's table has a
+/// stable order across requests.
+pub(crate) async fn list_for(state: &AppState, account_id: AccountId) -> ApiResult<Vec<VaultMeta>> {
+    let mut metas = state.vault_meta.list_for_account(account_id).await?;
+    metas.sort_by_key(|meta| meta.name.to_lowercase());
+    Ok(metas)
 }
 
 #[derive(Deserialize)]
@@ -85,9 +100,31 @@ pub async fn upload(
     Query(query): Query<UploadQuery>,
     body: ApiBytes,
 ) -> ApiResult<Response> {
-    let name = validate_name(query.name.as_deref().unwrap_or_default())?;
-    check_vault_bytes(&body.0)?;
-    let account_id = auth.account.id;
+    let meta = create(
+        &state,
+        auth.account.id,
+        query.name.as_deref().unwrap_or_default(),
+        &body.0,
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        [(header::ETAG, http_etag(&meta.etag))],
+        Json(VaultInfo::from(&meta)),
+    )
+        .into_response())
+}
+
+/// Stores a new vault file, enforcing the name rules, the ZIP check, the
+/// per-account count limit, name uniqueness and the byte quota.
+pub(crate) async fn create(
+    state: &AppState,
+    account_id: AccountId,
+    raw_name: &str,
+    bytes: &[u8],
+) -> ApiResult<VaultMeta> {
+    let name = validate_name(raw_name)?;
+    check_vault_bytes(bytes)?;
     let existing = state.vault_meta.list_for_account(account_id).await?;
     if existing.len() >= MAX_VAULTS_PER_ACCOUNT {
         return Err(ApiError::new(
@@ -99,27 +136,22 @@ pub async fn upload(
     if existing.iter().any(|m| m.name == name) {
         return Err(name_taken());
     }
-    check_quota(&existing, None, body.0.len())?;
+    check_quota(&existing, None, bytes.len())?;
 
     let meta = VaultMeta {
         id: Uuid::new_v4(),
         account_id,
         name,
-        size: body.0.len() as u64,
-        etag: content_etag(&body.0),
+        size: bytes.len() as u64,
+        etag: content_etag(bytes),
         updated_at: Utc::now(),
     };
     // Bytes first, metadata second: a failure in between leaves an
     // invisible orphan blob (reaped with the account), never a listed
     // vault with no bytes.
-    state.vault_blobs.put(account_id, meta.id, &body.0).await?;
+    state.vault_blobs.put(account_id, meta.id, bytes).await?;
     state.vault_meta.upsert(meta.clone()).await?;
-    Ok((
-        StatusCode::CREATED,
-        [(header::ETAG, http_etag(&meta.etag))],
-        Json(VaultInfo::from(&meta)),
-    )
-        .into_response())
+    Ok(meta)
 }
 
 /// `GET /api/v1/vaults/{id}` — download the vault bytes. Honors
@@ -149,10 +181,7 @@ pub async fn download(
         )
             .into_response());
     }
-    let Some(bytes) = state.vault_blobs.get(account_id, vault_id).await? else {
-        tracing::error!(%account_id, %vault_id, "vault metadata exists but blob is missing");
-        return Err(ApiError::internal());
-    };
+    let bytes = blob_of(&state, &meta).await?;
     Ok((
         StatusCode::OK,
         [
@@ -163,6 +192,36 @@ pub async fn download(
         bytes,
     )
         .into_response())
+}
+
+/// A vault's metadata and its bytes. Used by the browser download route,
+/// which has no conditional-request handling to do.
+pub(crate) async fn read(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+) -> ApiResult<(VaultMeta, Vec<u8>)> {
+    let meta = state
+        .vault_meta
+        .get(account_id, vault_id)
+        .await?
+        .ok_or_else(no_such_vault)?;
+    let bytes = blob_of(state, &meta).await?;
+    Ok((meta, bytes))
+}
+
+/// Fetches the bytes behind a metadata row. A missing blob is a server-side
+/// inconsistency, not a 404: the vault is listed, so the user did nothing
+/// wrong.
+async fn blob_of(state: &AppState, meta: &VaultMeta) -> ApiResult<Vec<u8>> {
+    match state.vault_blobs.get(meta.account_id, meta.id).await? {
+        Some(bytes) => Ok(bytes),
+        None => {
+            let (account_id, vault_id) = (meta.account_id, meta.id);
+            tracing::error!(%account_id, %vault_id, "vault metadata exists but blob is missing");
+            Err(ApiError::internal())
+        }
+    }
 }
 
 /// `PUT /api/v1/vaults/{id}` — overwrite the vault bytes. Requires
@@ -176,42 +235,65 @@ pub async fn replace(
     body: ApiBytes,
 ) -> ApiResult<Response> {
     let vault_id = parse_vault_id(&id)?;
-    let account_id = auth.account.id;
-    let existing = state.vault_meta.list_for_account(account_id).await?;
-    let Some(meta) = existing.iter().find(|m| m.id == vault_id) else {
-        return Err(no_such_vault());
-    };
-    let Some(expected) = etag_header(&headers, header::IF_MATCH) else {
+    let expected = etag_header(&headers, header::IF_MATCH);
+    if expected.is_none() {
         return Err(ApiError::new(
             StatusCode::PRECONDITION_REQUIRED,
             "precondition_required",
             "overwriting a vault requires If-Match with the last seen ETag",
         ));
-    };
-    if expected != "*" && expected != meta.etag {
-        return Err(ApiError::new(
-            StatusCode::PRECONDITION_FAILED,
-            "precondition_failed",
-            "the stored vault changed since it was last fetched",
-        ));
     }
-    check_vault_bytes(&body.0)?;
-    check_quota(&existing, Some(vault_id), body.0.len())?;
-
-    let updated = VaultMeta {
-        size: body.0.len() as u64,
-        etag: content_etag(&body.0),
-        updated_at: Utc::now(),
-        ..meta.clone()
-    };
-    state.vault_blobs.put(account_id, vault_id, &body.0).await?;
-    state.vault_meta.upsert(updated.clone()).await?;
+    let updated = overwrite(
+        &state,
+        auth.account.id,
+        vault_id,
+        expected.as_deref(),
+        &body.0,
+    )
+    .await?;
     Ok((
         StatusCode::OK,
         [(header::ETAG, http_etag(&updated.etag))],
         Json(VaultInfo::from(&updated)),
     )
         .into_response())
+}
+
+/// Replaces a vault's bytes under optimistic concurrency.
+///
+/// `expected` is the ETag the caller last saw (`*` for "whatever is there");
+/// `None` skips the check and is only for callers that have already refused
+/// an unconditional overwrite themselves — the JSON `PUT` demands
+/// `If-Match`, and the browser form always carries the row's ETag.
+pub(crate) async fn overwrite(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+    expected: Option<&str>,
+    bytes: &[u8],
+) -> ApiResult<VaultMeta> {
+    let existing = state.vault_meta.list_for_account(account_id).await?;
+    let Some(meta) = existing.iter().find(|m| m.id == vault_id) else {
+        return Err(no_such_vault());
+    };
+    if let Some(expected) = expected
+        && expected != "*"
+        && expected != meta.etag
+    {
+        return Err(stale_vault());
+    }
+    check_vault_bytes(bytes)?;
+    check_quota(&existing, Some(vault_id), bytes.len())?;
+
+    let updated = VaultMeta {
+        size: bytes.len() as u64,
+        etag: content_etag(bytes),
+        updated_at: Utc::now(),
+        ..meta.clone()
+    };
+    state.vault_blobs.put(account_id, vault_id, bytes).await?;
+    state.vault_meta.upsert(updated.clone()).await?;
+    Ok(updated)
 }
 
 #[derive(Deserialize)]
@@ -228,8 +310,19 @@ pub async fn rename(
     ApiJson(req): ApiJson<RenameRequest>,
 ) -> ApiResult<Json<VaultInfo>> {
     let vault_id = parse_vault_id(&id)?;
-    let name = validate_name(&req.name)?;
-    let existing = state.vault_meta.list_for_account(auth.account.id).await?;
+    let updated = set_name(&state, auth.account.id, vault_id, &req.name).await?;
+    Ok(Json(VaultInfo::from(&updated)))
+}
+
+/// Renames a vault file. The ETag is a content hash, so this leaves it alone.
+pub(crate) async fn set_name(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+    raw_name: &str,
+) -> ApiResult<VaultMeta> {
+    let name = validate_name(raw_name)?;
+    let existing = state.vault_meta.list_for_account(account_id).await?;
     let Some(meta) = existing.iter().find(|m| m.id == vault_id) else {
         return Err(no_such_vault());
     };
@@ -242,7 +335,7 @@ pub async fn rename(
         updated.updated_at = Utc::now();
         state.vault_meta.upsert(updated.clone()).await?;
     }
-    Ok(Json(VaultInfo::from(&updated)))
+    Ok(updated)
 }
 
 /// `DELETE /api/v1/vaults/{id}` — delete the vault file.
@@ -251,8 +344,16 @@ pub async fn remove(
     auth: AuthSession,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let vault_id = parse_vault_id(&id)?;
-    let account_id = auth.account.id;
+    destroy(&state, auth.account.id, parse_vault_id(&id)?).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes a vault: bytes then metadata.
+pub(crate) async fn destroy(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+) -> ApiResult<()> {
     if state.vault_meta.get(account_id, vault_id).await?.is_none() {
         return Err(no_such_vault());
     }
@@ -264,19 +365,30 @@ pub async fn remove(
         Err(other) => return Err(other.into()),
     }
     match state.vault_meta.delete(account_id, vault_id).await {
-        Ok(()) | Err(StoreError::NotFound) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) | Err(StoreError::NotFound) => Ok(()),
         Err(other) => Err(other.into()),
     }
 }
 
 /// Vault ids are uuids; anything else can't name a stored vault, so it
 /// gets the same 404 as an unknown id.
-fn parse_vault_id(raw: &str) -> Result<VaultId, ApiError> {
+pub(crate) fn parse_vault_id(raw: &str) -> Result<VaultId, ApiError> {
     Uuid::parse_str(raw).map_err(|_| no_such_vault())
 }
 
 fn no_such_vault() -> ApiError {
     ApiError::not_found("no such vault")
+}
+
+/// The overwrite conflict. `PRECONDITION_FAILED` is what the API answers;
+/// the browser turns the same error into a "changed on another device"
+/// message rather than showing a bare 412.
+fn stale_vault() -> ApiError {
+    ApiError::new(
+        StatusCode::PRECONDITION_FAILED,
+        "precondition_failed",
+        "the stored vault changed since it was last fetched",
+    )
 }
 
 fn name_taken() -> ApiError {
@@ -291,7 +403,9 @@ fn validate_name(raw: &str) -> Result<String, ApiError> {
         && name.len() <= MAX_NAME_BYTES
         && name != "."
         && name != ".."
-        && !name.chars().any(|c| c.is_control() || c == '/' || c == '\\');
+        && !name
+            .chars()
+            .any(|c| c.is_control() || c == '/' || c == '\\');
     if ok {
         Ok(name.to_string())
     } else {
@@ -373,7 +487,10 @@ mod tests {
 
     #[test]
     fn name_validation() {
-        assert_eq!(validate_name(" personal.askrypt ").unwrap(), "personal.askrypt");
+        assert_eq!(
+            validate_name(" personal.askrypt ").unwrap(),
+            "personal.askrypt"
+        );
         for bad in ["", ".", "..", "a/b", "a\\b", "a\nb", &"x".repeat(256)] {
             assert!(validate_name(bad).is_err(), "{bad:?} should be rejected");
         }
@@ -399,7 +516,10 @@ mod tests {
             updated_at: Utc::now(),
         };
         let big = Uuid::new_v4();
-        let existing = vec![meta(big, ACCOUNT_QUOTA_BYTES - 10), meta(Uuid::new_v4(), 10)];
+        let existing = vec![
+            meta(big, ACCOUNT_QUOTA_BYTES - 10),
+            meta(Uuid::new_v4(), 10),
+        ];
         assert!(check_quota(&existing, None, 1).is_err());
         assert!(check_quota(&existing, Some(big), 100).is_ok());
         assert!(check_quota(&existing[..1], None, 10).is_ok());

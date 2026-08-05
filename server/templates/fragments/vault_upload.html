@@ -1,0 +1,26 @@
+{#-
+  Upload form. `hx-encoding` is what makes htmx send a real multipart body;
+  without htmx the browser does the same thing on its own. The CSRF field
+  comes first on purpose: `web::csrf::CsrfMultipart` checks the token as it
+  reads the parts, so a forged upload is refused before its bytes arrive.
+-#}
+<section class="card" id="vault-upload">
+  <h2>Upload a vault</h2>
+  <form class="form wide" method="post" action="/vaults"
+        enctype="multipart/form-data" hx-post="/vaults"
+        hx-encoding="multipart/form-data" hx-target="#vault-list"
+        hx-swap="outerHTML">
+{%- if let Some(error) = error.as_deref() %}
+    <p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="vault-file">Vault file</label>
+    <input id="vault-file" name="file" type="file" accept=".askrypt,application/zip" required>
+    <label for="vault-name">Name (optional)</label>
+    <input id="vault-name" name="name" type="text" autocomplete="off"
+           spellcheck="false" placeholder="defaults to the file's own name">
+    <p class="hint">Up to {{ max_size }} per file. The file is stored exactly
+    as your app encrypted it.</p>
+    <button class="button" type="submit">Upload</button>
+  </form>
+</section>

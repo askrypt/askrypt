@@ -1,0 +1,24 @@
+{#-
+  Account deletion. The confirmation field has to be typed out in full: this
+  is the one irreversible action on the site, and it takes every stored vault
+  file with it.
+-#}
+<section class="card danger-zone" id="delete-form">
+  <h2>Delete account</h2>
+  <form class="form" method="post" action="/account/delete"
+        hx-post="/account/delete" hx-target="#delete-form" hx-swap="outerHTML">
+{%- if let Some(error) = error.as_deref() %}
+    <p class="error" role="alert">{{ error }}</p>
+{%- endif %}
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <p>Deleting your account removes every vault file stored here and signs
+    out every device. It cannot be undone, and this site holds no copy of
+    your data afterwards.</p>
+    <p class="hint">Vault files already downloaded to your devices are
+    untouched &mdash; they are yours, and they open without this account.</p>
+    <label for="confirm-delete">Type <strong>{{ email }}</strong> to confirm</label>
+    <input id="confirm-delete" name="confirm" type="text" autocomplete="off"
+           spellcheck="false" required>
+    <button class="button danger" type="submit">Delete my account</button>
+  </form>
+</section>

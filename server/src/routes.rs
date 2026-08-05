@@ -69,7 +69,7 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .route("/me/email", put(profile::update_email))
         .route("/me/password", put(profile::change_password))
         .route_layer(middleware::from_fn_with_state(
-            profile_limiter,
+            Arc::clone(&profile_limiter),
             ratelimit::middleware,
         ));
 
@@ -104,7 +104,7 @@ pub fn router(state: AppState, config: &Config) -> Router {
         // The stylesheet and the vendored htmx, and nothing else: templates
         // are compiled into the binary.
         .nest_service("/assets", ServeDir::new(&config.static_dir))
-        .merge(web::routes(auth_limiter))
+        .merge(web::routes(auth_limiter, profile_limiter))
         .fallback(web::not_found)
         // Layers wrap what was declared before them, so the LAST `.layer`
         // call is the FIRST middleware a request meets. Listed innermost
