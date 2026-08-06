@@ -46,6 +46,38 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_LOG_FORMAT` | `text` | `text` or `json` |
 | `RUST_LOG` | `askrypt_server=debug,info` | Log filter. **Keep `askrypt_server` at `info` or lower** — the audit log rides that target |
 
+### Email
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ASKRYPT_SMTP_HOST` | *(empty)* | Relay host name. **Empty means nothing is delivered** — see the warning below |
+| `ASKRYPT_SMTP_PORT` | *(per encryption)* | 587 for STARTTLS, 465 for implicit TLS, 25 for none |
+| `ASKRYPT_SMTP_ENCRYPTION` | `starttls` | `starttls`, `tls` (implicit/SMTPS) or `none`. `none` only for a relay on localhost |
+| `ASKRYPT_SMTP_FROM` | — | Envelope sender, e.g. `Askrypt <no-reply@example.com>`. Required once a host is set |
+| `ASKRYPT_SMTP_USERNAME` | *(empty)* | Relay login. Set together with the password or not at all |
+| `ASKRYPT_SMTP_PASSWORD` | *(empty)* | Relay password. Deliver it as a secret (systemd `EnvironmentFile`, compose secret) — never in a unit file that lands in git |
+| `ASKRYPT_SMTP_TIMEOUT_SECS` | `10` | Per-operation SMTP network timeout |
+
+> **Leaving `ASKRYPT_SMTP_HOST` unset is not "email disabled" — it is
+> "email printed to the log."** The fallback mailer records each message and
+> logs the recipient, subject *and full body*. Verification and reset bodies
+> carry single-use tokens, so on a production box that turns your log
+> aggregator into a credential store. Configure a relay, or make sure nothing
+> ever asks the server to send.
+
+Startup says which one is live — `INFO … smtp mailer enabled` with the relay,
+mode and whether it authenticates, or:
+
+```
+WARN askrypt_server: no SMTP relay configured (ASKRYPT_SMTP_HOST unset);
+     outgoing email will be LOGGED IN FULL instead of delivered — development only
+```
+
+Treat that warning as a deployment defect. A bad sender address or unusable
+relay fails at startup, not on the first message; half-set credentials fail
+`Config::from_env` before the server binds. The password is never logged — it
+is redacted from every `Debug` rendering and from configuration errors.
+
 ### Sizing note
 
 Peak argon2 memory is roughly `ASKRYPT_ARGON2_PARALLELISM × 19 MiB`. On a
@@ -210,6 +242,11 @@ An older database self-upgrades: migrations run on boot.
       the service user, mode `0700`.
 - [ ] `ASKRYPT_GOOGLE_CLIENT_IDS` set if Google sign-in is wanted; otherwise
       confirm `/api/v1/auth/google` answers 501.
+- [ ] `ASKRYPT_SMTP_HOST` + `ASKRYPT_SMTP_FROM` set, and the startup log says
+      `smtp mailer enabled`. Without them the server logs message bodies —
+      tokens included — instead of sending them.
+- [ ] `ASKRYPT_SMTP_PASSWORD` comes from a secret file, not from a unit file
+      or a compose file under version control.
 - [ ] `RUST_LOG` keeps `askrypt_server` at `info` or lower; logs are shipped
       somewhere durable.
 - [ ] `backup.sh` runs on a timer and its output lands off-host.

@@ -252,8 +252,13 @@ pub struct SentMail {
     pub body: String,
 }
 
-/// Logs and records outgoing mail; doubles as the no-op boot-time mailer
-/// until a real SMTP/provider impl exists.
+/// Records outgoing mail instead of delivering it, and logs every field so a
+/// developer can read verification / reset links straight out of the console.
+/// Used by tests, by the `memory` backend, and by any run that leaves
+/// `ASKRYPT_SMTP_HOST` unset — see [`crate::store::smtp`] for real delivery.
+///
+/// **Never select this in production**: the log line below contains the full
+/// message body, tokens and all.
 #[derive(Debug, Default)]
 pub struct MemoryMailer {
     sent: Mutex<Vec<SentMail>>,
@@ -268,12 +273,26 @@ impl MemoryMailer {
 #[async_trait]
 impl Mailer for MemoryMailer {
     async fn send(&self, to: &str, subject: &str, body: &str) -> Result<(), MailerError> {
-        tracing::info!(to, subject, "mailer: recording email (no delivery backend)");
-        self.sent.lock().unwrap().push(SentMail {
-            to: to.to_string(),
-            subject: subject.to_string(),
-            body: body.to_string(),
-        });
+        let index = {
+            let mut sent = self.sent.lock().unwrap();
+            sent.push(SentMail {
+                to: to.to_string(),
+                subject: subject.to_string(),
+                body: body.to_string(),
+            });
+            sent.len() - 1
+        };
+        // Every field, body included — the whole point of this backend is
+        // that a developer can read a verification or reset link off the
+        // console. `index` matches the position in `sent()`.
+        tracing::info!(
+            to,
+            subject,
+            body,
+            body_bytes = body.len(),
+            index,
+            "mailer: no delivery backend — email captured in full (dev only)"
+        );
         Ok(())
     }
 }

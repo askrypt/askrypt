@@ -141,6 +141,17 @@ Configuration via environment variables (all optional):
 | `ASKRYPT_MAX_BODY_BYTES` | `65536`      | Body limit outside the vault routes (those allow 10 MiB) |
 | `ASKRYPT_ARGON2_PARALLELISM` | *(cpus)* | Concurrent argon2 hashes (~19 MiB each)  |
 | `ASKRYPT_LOG_FORMAT` | `text`           | `text` or `json`                         |
+| `ASKRYPT_SMTP_HOST`  | *(empty)*        | Relay host. **Empty = no delivery**: mail is logged in full instead |
+| `ASKRYPT_SMTP_PORT`  | *(per encryption)* | 587 STARTTLS, 465 TLS, 25 none         |
+| `ASKRYPT_SMTP_ENCRYPTION` | `starttls`  | `starttls`, `tls` (implicit) or `none`   |
+| `ASKRYPT_SMTP_FROM`  | —                | Sender, e.g. `Askrypt <no-reply@example.com>`. Required with a host |
+| `ASKRYPT_SMTP_USERNAME` / `ASKRYPT_SMTP_PASSWORD` | *(empty)* | Relay login. Set both or neither |
+| `ASKRYPT_SMTP_TIMEOUT_SECS` | `10`      | Per-operation SMTP network timeout       |
+
+Without `ASKRYPT_SMTP_HOST` the server keeps the development mailer, which
+writes each message — recipient, subject **and body** — to the log rather than
+sending it. That is convenient for reading a verification link off the console
+and unacceptable in production, where those bodies carry single-use tokens.
 
 Logging uses the standard `RUST_LOG` filter; keep `askrypt_server` at `info` or
 lower, since the audit log rides that target. The server crate is covered by the

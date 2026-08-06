@@ -15,6 +15,20 @@
 //! | `ASKRYPT_LOG_FORMAT` | `text`           | Log output: `text` or `json`     |
 //! | `ASKRYPT_ARGON2_PARALLELISM` | *(cpus)* | Concurrent argon2 hashes; each costs ~19 MiB. Read in [`crate::auth`] |
 //!
+//! Email delivery. `ASKRYPT_SMTP_HOST` is the switch: set it and the server
+//! sends through that relay, leave it unset and outgoing mail is only logged
+//! (see [`crate::store::memory::MemoryMailer`]).
+//!
+//! | Variable             | Default          | Meaning                          |
+//! |----------------------|------------------|----------------------------------|
+//! | `ASKRYPT_SMTP_HOST`  | *(empty)*        | Relay host name. Empty = log-only mailer |
+//! | `ASKRYPT_SMTP_PORT`  | *(per encryption)* | 587 STARTTLS, 465 TLS, 25 none |
+//! | `ASKRYPT_SMTP_ENCRYPTION` | `starttls`  | `starttls`, `tls` (implicit) or `none` |
+//! | `ASKRYPT_SMTP_FROM`  | —                | Sender, e.g. `Askrypt <no-reply@example.com>`. Required with a host |
+//! | `ASKRYPT_SMTP_USERNAME` | *(empty)*     | Relay login; requires the password too |
+//! | `ASKRYPT_SMTP_PASSWORD` | *(empty)*     | Relay password; requires the username too |
+//! | `ASKRYPT_SMTP_TIMEOUT_SECS` | `10`      | Per-operation SMTP network timeout |
+//!
 //! Logging verbosity is configured separately via the standard `RUST_LOG`
 //! filter. Keep the `askrypt_server` target at `info` or lower — the audit
 //! log ([`crate::audit`]) is emitted there.
@@ -22,6 +36,8 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use crate::store::smtp::{SmtpConfig, SmtpCredentials, SmtpEncryption};
 
 pub const ENV_BIND: &str = "ASKRYPT_BIND";
 pub const ENV_DATA_DIR: &str = "ASKRYPT_DATA_DIR";
@@ -34,6 +50,13 @@ pub const ENV_REQUEST_TIMEOUT: &str = "ASKRYPT_REQUEST_TIMEOUT_SECS";
 pub const ENV_MAX_CONCURRENT: &str = "ASKRYPT_MAX_CONCURRENT";
 pub const ENV_MAX_BODY_BYTES: &str = "ASKRYPT_MAX_BODY_BYTES";
 pub const ENV_LOG_FORMAT: &str = "ASKRYPT_LOG_FORMAT";
+pub const ENV_SMTP_HOST: &str = "ASKRYPT_SMTP_HOST";
+pub const ENV_SMTP_PORT: &str = "ASKRYPT_SMTP_PORT";
+pub const ENV_SMTP_ENCRYPTION: &str = "ASKRYPT_SMTP_ENCRYPTION";
+pub const ENV_SMTP_FROM: &str = "ASKRYPT_SMTP_FROM";
+pub const ENV_SMTP_USERNAME: &str = "ASKRYPT_SMTP_USERNAME";
+pub const ENV_SMTP_PASSWORD: &str = "ASKRYPT_SMTP_PASSWORD";
+pub const ENV_SMTP_TIMEOUT: &str = "ASKRYPT_SMTP_TIMEOUT_SECS";
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_DATA_DIR: &str = "data";
@@ -45,6 +68,9 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_MAX_CONCURRENT: usize = 256;
 /// Everything outside the vault routes is small JSON.
 const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
+/// Long enough for a busy relay's greeting, short enough that a dead relay
+/// doesn't hold a handler open to the request timeout.
+const DEFAULT_SMTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -94,6 +120,9 @@ pub struct Config {
     /// Body limit outside the vault routes, which set their own.
     pub max_body_bytes: usize,
     pub log_format: LogFormat,
+    /// SMTP relay to deliver through. `None` (no `ASKRYPT_SMTP_HOST`) leaves
+    /// the log-only mailer in place — mail is captured, never sent.
+    pub smtp: Option<SmtpConfig>,
 }
 
 impl Default for Config {
@@ -110,6 +139,7 @@ impl Default for Config {
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             log_format: LogFormat::Text,
+            smtp: None,
         }
     }
 }
@@ -191,6 +221,7 @@ impl Config {
             )?,
             max_body_bytes: parse_num(ENV_MAX_BODY_BYTES, defaults.max_body_bytes)?,
             log_format,
+            smtp: smtp_from(&|var| std::env::var(var).ok())?,
         })
     }
 
@@ -202,6 +233,95 @@ impl Config {
     pub fn vaults_dir(&self) -> PathBuf {
         self.data_dir.join("vaults")
     }
+}
+
+/// Builds the SMTP settings from a variable lookup.
+///
+/// Takes the lookup as an argument rather than reading the process
+/// environment directly: `from_env`'s other fields are single values, but
+/// this one is a seven-variable cluster with cross-field rules, and tests
+/// exercising those must not race each other over global env state.
+///
+/// `ASKRYPT_SMTP_HOST` is the switch — everything else is ignored without it,
+/// so a half-filled config can't silently half-enable delivery.
+fn smtp_from(
+    lookup: &dyn Fn(&'static str) -> Option<String>,
+) -> Result<Option<SmtpConfig>, ConfigError> {
+    let get = |var| {
+        lookup(var)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+
+    let Some(host) = get(ENV_SMTP_HOST) else {
+        return Ok(None);
+    };
+
+    let encryption = match get(ENV_SMTP_ENCRYPTION) {
+        Some(raw) => SmtpEncryption::parse(&raw).ok_or_else(|| ConfigError {
+            var: ENV_SMTP_ENCRYPTION,
+            value: raw,
+            reason: format!("expected {}", SmtpEncryption::SPELLINGS),
+        })?,
+        None => SmtpEncryption::default(),
+    };
+
+    let port = match get(ENV_SMTP_PORT) {
+        Some(raw) => raw.parse().map_err(|_| ConfigError {
+            var: ENV_SMTP_PORT,
+            value: raw,
+            reason: "expected a TCP port (1-65535)".to_string(),
+        })?,
+        None => encryption.default_port(),
+    };
+
+    // Without a sender the relay would reject every message; catch it here
+    // rather than on the first email the server tries to send.
+    let from = get(ENV_SMTP_FROM).ok_or_else(|| ConfigError {
+        var: ENV_SMTP_FROM,
+        value: String::new(),
+        reason: format!("required when {ENV_SMTP_HOST} is set"),
+    })?;
+
+    // Half-credentials mean a typo or a missing secret mount, and would
+    // otherwise connect anonymously and fail at the relay.
+    let credentials = match (get(ENV_SMTP_USERNAME), get(ENV_SMTP_PASSWORD)) {
+        (Some(username), Some(password)) => Some(SmtpCredentials { username, password }),
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(ConfigError {
+                var: ENV_SMTP_PASSWORD,
+                value: String::new(),
+                reason: format!("required when {ENV_SMTP_USERNAME} is set"),
+            });
+        }
+        (None, Some(_)) => {
+            return Err(ConfigError {
+                var: ENV_SMTP_USERNAME,
+                value: String::new(),
+                // Never echo the password back, not even its length.
+                reason: format!("required when {ENV_SMTP_PASSWORD} is set"),
+            });
+        }
+    };
+
+    let timeout = match get(ENV_SMTP_TIMEOUT) {
+        Some(raw) => Duration::from_secs(raw.parse().map_err(|_| ConfigError {
+            var: ENV_SMTP_TIMEOUT,
+            value: raw,
+            reason: "expected a non-negative integer".to_string(),
+        })?),
+        None => DEFAULT_SMTP_TIMEOUT,
+    };
+
+    Ok(Some(SmtpConfig {
+        host,
+        port,
+        encryption,
+        from,
+        credentials,
+        timeout,
+    }))
 }
 
 fn parse_bool(var: &'static str, default: bool) -> Result<bool, ConfigError> {
@@ -261,5 +381,130 @@ mod tests {
         // Uses a var name that no test sets, so the default path is exercised.
         assert!(parse_bool("ASKRYPT_TEST_UNSET_BOOL", true).unwrap());
         assert!(!parse_bool("ASKRYPT_TEST_UNSET_BOOL", false).unwrap());
+    }
+
+    /// Fake environment for the SMTP tests, so they don't touch process state.
+    fn env(pairs: &[(&'static str, &str)]) -> impl Fn(&'static str) -> Option<String> + use<> {
+        let pairs: Vec<(&'static str, String)> =
+            pairs.iter().map(|(k, v)| (*k, (*v).to_string())).collect();
+        move |var| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == var)
+                .map(|(_, v)| v.clone())
+        }
+    }
+
+    #[test]
+    fn no_smtp_host_means_no_delivery() {
+        assert!(smtp_from(&env(&[])).unwrap().is_none());
+        // A sender alone is not enough to turn delivery on.
+        assert!(
+            smtp_from(&env(&[(ENV_SMTP_FROM, "a@example.com")]))
+                .unwrap()
+                .is_none()
+        );
+        // An empty host reads the same as an unset one.
+        assert!(
+            smtp_from(&env(&[
+                (ENV_SMTP_HOST, "  "),
+                (ENV_SMTP_FROM, "a@example.com")
+            ]))
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn smtp_defaults_to_starttls_on_587_without_credentials() {
+        let smtp = smtp_from(&env(&[
+            (ENV_SMTP_HOST, "smtp.example.com"),
+            (ENV_SMTP_FROM, "Askrypt <no-reply@example.com>"),
+        ]))
+        .unwrap()
+        .expect("host set");
+        assert_eq!(smtp.encryption, SmtpEncryption::StartTls);
+        assert_eq!(smtp.port, 587);
+        assert_eq!(smtp.timeout, DEFAULT_SMTP_TIMEOUT);
+        assert!(smtp.credentials.is_none());
+    }
+
+    #[test]
+    fn smtp_port_follows_the_encryption_mode_but_yields_to_an_explicit_one() {
+        let base = [
+            (ENV_SMTP_HOST, "smtp.example.com"),
+            (ENV_SMTP_FROM, "a@example.com"),
+        ];
+        let implicit = smtp_from(&env(
+            &[base.as_slice(), &[(ENV_SMTP_ENCRYPTION, "tls")]].concat()
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(implicit.port, 465);
+
+        let explicit = smtp_from(&env(&[
+            base.as_slice(),
+            &[(ENV_SMTP_ENCRYPTION, "tls"), (ENV_SMTP_PORT, "2525")],
+        ]
+        .concat()))
+        .unwrap()
+        .unwrap();
+        assert_eq!(explicit.port, 2525);
+    }
+
+    #[test]
+    fn smtp_credentials_must_come_in_pairs() {
+        let base = [
+            (ENV_SMTP_HOST, "smtp.example.com"),
+            (ENV_SMTP_FROM, "a@example.com"),
+        ];
+        let user_only = smtp_from(&env(
+            &[base.as_slice(), &[(ENV_SMTP_USERNAME, "u")]].concat()
+        ))
+        .unwrap_err();
+        assert_eq!(user_only.var, ENV_SMTP_PASSWORD);
+
+        let pass_only = smtp_from(&env(
+            &[base.as_slice(), &[(ENV_SMTP_PASSWORD, "hunter2")]].concat()
+        ))
+        .unwrap_err();
+        assert_eq!(pass_only.var, ENV_SMTP_USERNAME);
+        // The error is rendered to stderr on startup — it must not leak the
+        // password it is complaining about.
+        assert!(!pass_only.to_string().contains("hunter2"));
+
+        let both = smtp_from(&env(&[
+            base.as_slice(),
+            &[(ENV_SMTP_USERNAME, "u"), (ENV_SMTP_PASSWORD, "hunter2")],
+        ]
+        .concat()))
+        .unwrap()
+        .unwrap();
+        assert_eq!(both.credentials.unwrap().username, "u");
+    }
+
+    #[test]
+    fn a_host_without_a_sender_is_rejected() {
+        let err = smtp_from(&env(&[(ENV_SMTP_HOST, "smtp.example.com")])).unwrap_err();
+        assert_eq!(err.var, ENV_SMTP_FROM);
+    }
+
+    #[test]
+    fn unknown_encryption_and_bad_port_are_rejected() {
+        let base = [
+            (ENV_SMTP_HOST, "smtp.example.com"),
+            (ENV_SMTP_FROM, "a@example.com"),
+        ];
+        let bad_mode = smtp_from(&env(
+            &[base.as_slice(), &[(ENV_SMTP_ENCRYPTION, "ssl")]].concat()
+        ))
+        .unwrap_err();
+        assert_eq!(bad_mode.var, ENV_SMTP_ENCRYPTION);
+
+        let bad_port = smtp_from(&env(
+            &[base.as_slice(), &[(ENV_SMTP_PORT, "99999")]].concat()
+        ))
+        .unwrap_err();
+        assert_eq!(bad_port.var, ENV_SMTP_PORT);
     }
 }

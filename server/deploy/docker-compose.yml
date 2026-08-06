@@ -19,6 +19,13 @@ services:
       # Set to the OAuth client ids of the web/desktop/mobile apps to enable
       # Google sign-in; leave unset to disable it.
       ASKRYPT_GOOGLE_CLIENT_IDS: "${ASKRYPT_GOOGLE_CLIENT_IDS:-}"
+      # Email relay. With no host the server logs message bodies (tokens and
+      # all) instead of delivering them — set these in a .env beside this file.
+      ASKRYPT_SMTP_HOST: "${ASKRYPT_SMTP_HOST:-}"
+      ASKRYPT_SMTP_FROM: "${ASKRYPT_SMTP_FROM:-}"
+      ASKRYPT_SMTP_ENCRYPTION: "${ASKRYPT_SMTP_ENCRYPTION:-starttls}"
+      ASKRYPT_SMTP_USERNAME: "${ASKRYPT_SMTP_USERNAME:-}"
+      ASKRYPT_SMTP_PASSWORD: "${ASKRYPT_SMTP_PASSWORD:-}"
     volumes:
       - askrypt-data:/var/lib/askrypt
     healthcheck:

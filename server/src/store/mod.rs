@@ -11,6 +11,7 @@
 //! - [`disk`] — local-disk vault blob storage with atomic writes.
 //! - [`google`] — real Google ID-token verification against Google's
 //!   published JWKS.
+//! - [`smtp`] — SMTP email delivery via a relay.
 //!
 //! Handlers and middleware must depend only on these traits — no `sqlx`
 //! or `std::fs` types in handler code.
@@ -18,6 +19,7 @@
 pub mod disk;
 pub mod google;
 pub mod memory;
+pub mod smtp;
 pub mod sqlite;
 
 use async_trait::async_trait;
@@ -149,6 +151,10 @@ pub trait VaultBlobStore: Send + Sync {
 pub enum MailerError {
     #[error("send failed: {0}")]
     Send(String),
+    /// The backend could not be built from its settings (bad sender address,
+    /// unusable relay). Raised at startup, not per message.
+    #[error("mailer configuration: {0}")]
+    Config(String),
 }
 
 /// Outgoing email delivery (verification / password reset — Phase 2+).

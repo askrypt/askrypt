@@ -40,6 +40,15 @@ Environment=ASKRYPT_LOG_FORMAT=json
 Environment=RUST_LOG=askrypt_server=info,info
 # Google sign-in: set to the accepted OAuth client ids, or leave unset.
 #Environment=ASKRYPT_GOOGLE_CLIENT_IDS=
+# Email. Without a relay host the server LOGS every message body — reset and
+# verification tokens included — instead of sending it. Uncomment both.
+#Environment=ASKRYPT_SMTP_HOST=smtp.example.com
+#Environment=ASKRYPT_SMTP_FROM=Askrypt <no-reply@example.com>
+# Defaults: STARTTLS on 587. Use ASKRYPT_SMTP_ENCRYPTION=tls for port 465.
+#Environment=ASKRYPT_SMTP_USERNAME=askrypt
+# The relay password belongs in a root-owned 0600 file, not here: this unit
+# is world-readable and tends to end up in version control.
+#EnvironmentFile=/etc/askrypt/smtp.env
 
 ExecStart=/usr/local/bin/askrypt-server
 Restart=on-failure

@@ -74,8 +74,9 @@ Consequences for the API design:
     without touching handlers.
   - `VaultBlobStore` (opaque file bytes) — first impl: local disk; later
     S3-compatible.
-  - `Mailer` (verification/reset emails) — first impl: no-op/log; later SMTP
-    or a provider API.
+  - `Mailer` (verification/reset emails) — `SmtpMailer` (lettre) when
+    `ASKRYPT_SMTP_HOST` is set, otherwise the logging `MemoryMailer`; a
+    provider-API impl can be added alongside. No feature calls it yet.
   - Handlers and middleware depend only on these traits (trait objects or
     generics in app state); each trait ships with an in-memory fake so
     integration tests run without SQLite or a real filesystem.
@@ -159,8 +160,9 @@ askrypt/
     and the placeholder `static/index.html` are gone, replaced by explicit
     HTML routes, `ServeDir` at `/assets`, and an HTML 404.
 
-- **Phase 2 — Auth: register & login.** ✅ *(done 2026-08-02; email
-  verification / password reset via `Mailer` still open, as planned)*
+- **Phase 2 — Auth: register & login.** ✅ *(done 2026-08-02; the `Mailer`
+  seam now has an SMTP backend, but email verification / password reset are
+  still unbuilt, as planned)*
   - `AccountStore`: user records (id, email, argon2 password hash, timestamps);
     SQLite impl via migration.
   - Register endpoint with input validation (email format, password policy).
@@ -174,8 +176,11 @@ askrypt/
     existing one by verified email, and issues the normal opaque session
     token via `SessionStore`.
   - Rate limiting on auth endpoints.
-  - Later (optional, non-blocking): email verification, password reset (via
-    the `Mailer` trait).
+  - Later (optional, non-blocking): email verification, password reset. The
+    delivery half is done — `Mailer` has an SMTP impl (`store::smtp`) and is
+    configured from `ASKRYPT_SMTP_*`; what is missing is the token issuing,
+    storage, expiry and the endpoints that consume them. Nothing calls
+    `state.mailer` yet.
   - Gate: register → login → authenticated request → logout flow covered by
     integration tests running against the in-memory store fakes; the flow is
     exercised as a headless client would do it (bearer token, no cookies).
@@ -461,7 +466,8 @@ askrypt/
 
 - Client-side sync UX: how desktop (`src/`) and mobile (`app/`) integrate the
   storage API (manual upload/download vs automatic sync, conflict UI).
-- Email delivery provider for verification / password reset.
+- Which email service to point `ASKRYPT_SMTP_*` at in production (any SMTP
+  relay works; a provider-API impl of `Mailer` is the alternative).
 - Trigger points for adding the Postgres and S3 trait impls (the trait layer
   makes this additive — no handler changes).
 - Multiple vaults per user vs a single primary vault (API assumes multiple).

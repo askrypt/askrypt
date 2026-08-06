@@ -88,9 +88,13 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
   wires `SqliteAccountStore`/`SqliteSessionStore`/`SqliteVaultMetaStore` plus
-  the on-disk `DiskVaultBlobStore` (only the mailer stays in-memory); the
+  the on-disk `DiskVaultBlobStore`; the
   Google verifier is real when `ASKRYPT_GOOGLE_CLIENT_IDS` is set, else
-  `NotConfiguredIdTokenVerifier` (501). Serves with `ConnectInfo` so rate
+  `NotConfiguredIdTokenVerifier` (501), and the mailer is a real `SmtpMailer`
+  when `ASKRYPT_SMTP_HOST` is set, else `MemoryMailer` behind a `warn!` (built
+  once for both backends, before the `AppState` match, so a bad relay or
+  sender address aborts startup rather than the first send). Serves with
+  `ConnectInfo` so rate
   limiting and the audit log can key on peer IPs. Config is read *before*
   tracing init (it selects `ASKRYPT_LOG_FORMAT`), and `std::env::args()`
   dispatches the `backup <path>` subcommand (`VACUUM INTO`, refuses to
@@ -105,6 +109,13 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   (default **false** — fail closed), `ASKRYPT_HSTS` (default false),
   `ASKRYPT_REQUEST_TIMEOUT_SECS` (60), `ASKRYPT_MAX_CONCURRENT` (256),
   `ASKRYPT_MAX_BODY_BYTES` (64 KiB) and `ASKRYPT_LOG_FORMAT` (`text`|`json`).
+  Email lives in `smtp: Option<SmtpConfig>`, parsed by `smtp_from` from the
+  `ASKRYPT_SMTP_*` cluster (`HOST` `PORT` `ENCRYPTION` `FROM` `USERNAME`
+  `PASSWORD` `TIMEOUT_SECS`): `HOST` is the switch, `FROM` is then required,
+  the port defaults per encryption mode (587/465/25), and username/password
+  must appear together. `smtp_from` takes a variable *lookup* rather than
+  reading the process environment, so its cross-field rules are testable
+  without racing over global env state.
   The same table lives in `README.md` and `server/DEPLOY.md` — keep all three
   in sync.
 - **`server/src/error.rs`** — Uniform JSON error convention: every API error is
@@ -243,7 +254,20 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   rename writes (path components are uuids, so no user string reaches the
   filesystem); `google.rs` `GoogleIdTokenVerifier` (RS256 against Google's
   JWKS, cached with a 60 s refetch floor, issuer/audience/expiry checks) and
-  `NotConfiguredIdTokenVerifier`.
+  `NotConfiguredIdTokenVerifier`; `smtp.rs` `SmtpMailer` — `lettre` over
+  rustls (never native-tls: it would drag OpenSSL in, and `ring` must stay
+  the only rustls crypto provider or the provider lookup panics at connect
+  time), pooled, with `SmtpConfig`/`SmtpCredentials`/`SmtpEncryption`
+  (`StartTls` default | `ImplicitTls` | `None`) defined here and merely
+  *parsed* by `config.rs`. `SmtpMailer::new` validates the sender and relay
+  up front so failures land at startup, and it logs recipient + subject only.
+  The relay password is redacted from every `Debug` impl (`SmtpCredentials`,
+  and `SmtpMailer` itself, whose transport holds the credentials) because
+  `Config` derives `Debug`. Its tests include a loopback fake relay that
+  speaks real SMTP — it must stop at the end of `DATA` instead of waiting for
+  `QUIT`, since the pooled transport keeps the socket rather than closing it.
+  **`MemoryMailer` is not "email off"** — it logs the full body, tokens
+  included, which is why `main` warns when it is selected.
 - **`server/tests/`** — HTTP-level tests (tower `oneshot`, no socket):
   `http.rs` (routing/static), `auth.rs` (the Phase 2 gate: register →
   login → `/me` → logout, Google new-account + link-to-existing against the
@@ -299,6 +323,7 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 | `rand` | Random number generation |
 | `tokio` | `spawn_blocking` for off-main-thread vault decryption |
 | `askama` | Server-rendered HTML templates, compiled into the server binary |
+| `lettre` | SMTP delivery for the server's `Mailer` seam (rustls, no OpenSSL) |
 
 ### Build & Test
 

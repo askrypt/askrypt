@@ -5,13 +5,14 @@ use std::sync::Arc;
 use askrypt_server::config::{Backend, Config, LogFormat};
 use askrypt_server::routes;
 use askrypt_server::state::AppState;
-use askrypt_server::store::IdTokenVerifier;
 use askrypt_server::store::disk::DiskVaultBlobStore;
 use askrypt_server::store::google::{GoogleIdTokenVerifier, NotConfiguredIdTokenVerifier};
 use askrypt_server::store::memory::MemoryMailer;
+use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
     self, SqliteAccountStore, SqliteSessionStore, SqliteVaultMetaStore,
 };
+use askrypt_server::store::{IdTokenVerifier, Mailer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -83,8 +84,35 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(GoogleIdTokenVerifier::new(config.google_client_ids.clone()))
     };
 
+    // A bad relay or sender address fails here, at startup, rather than on
+    // the first email the server tries to send.
+    let mailer: Arc<dyn Mailer> = match &config.smtp {
+        Some(smtp) => {
+            let mailer = SmtpMailer::new(smtp)?;
+            info!(
+                relay = mailer.relay(),
+                ?smtp.encryption,
+                authenticated = smtp.credentials.is_some(),
+                from = %smtp.from,
+                "smtp mailer enabled"
+            );
+            Arc::new(mailer)
+        }
+        None => {
+            // A warning, not an info line: this is a working configuration
+            // for development and a data leak in production — outgoing mail
+            // is written to the log, bodies and tokens included.
+            tracing::warn!(
+                "no SMTP relay configured ({} unset); outgoing email will be \
+                 LOGGED IN FULL instead of delivered — development only",
+                askrypt_server::config::ENV_SMTP_HOST
+            );
+            Arc::new(MemoryMailer::default())
+        }
+    };
+
     // Accounts, sessions and vault metadata persist in SQLite, vault bytes
-    // on disk (Phase 4); the mailer stays in-memory until the email phase.
+    // on disk (Phase 4).
     let state = match config.backend {
         Backend::Sqlite => {
             std::fs::create_dir_all(&config.data_dir)?;
@@ -95,12 +123,13 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 sessions: Arc::new(SqliteSessionStore::new(pool.clone())),
                 vault_meta: Arc::new(SqliteVaultMetaStore::new(pool)),
                 vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),
-                mailer: Arc::new(MemoryMailer::default()),
+                mailer,
                 id_verifier,
             }
         }
         Backend::Memory => AppState {
             id_verifier,
+            mailer,
             ..AppState::in_memory()
         },
     };

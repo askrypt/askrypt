@@ -23,8 +23,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/askrypt-server /out/
 
 FROM debian:trixie-slim
-# No ca-certificates needed: the Google ID-token verifier uses rustls with
-# webpki-roots compiled in.
+# No ca-certificates needed: the Google ID-token verifier and the SMTP mailer
+# both use rustls with webpki-roots compiled in. Switching either to
+# native-tls would need ca-certificates and libssl installed here.
 RUN useradd --system --uid 10001 --home-dir /var/lib/askrypt askrypt \
     && mkdir -p /var/lib/askrypt \
     && chown askrypt:askrypt /var/lib/askrypt \
