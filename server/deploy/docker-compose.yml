@@ -28,6 +28,9 @@ services:
       ASKRYPT_SMTP_PASSWORD: "${ASKRYPT_SMTP_PASSWORD:-}"
     volumes:
       - askrypt-data:/var/lib/askrypt
+      # Daily log files (the image sets ASKRYPT_LOG_DIR); without this volume
+      # they would vanish with the container.
+      - askrypt-logs:/var/log/askrypt
     healthcheck:
       # No curl in the runtime image; the server answers /healthz and the
       # orchestrator can probe it from outside if preferred.
@@ -51,5 +54,6 @@ services:
 
 volumes:
   askrypt-data:
+  askrypt-logs:
   caddy-data:
   caddy-config:

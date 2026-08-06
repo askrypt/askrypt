@@ -95,10 +95,19 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   once for both backends, before the `AppState` match, so a bad relay or
   sender address aborts startup rather than the first send). Serves with
   `ConnectInfo` so rate
-  limiting and the audit log can key on peer IPs. Config is read *before*
-  tracing init (it selects `ASKRYPT_LOG_FORMAT`), and `std::env::args()`
-  dispatches the `backup <path>` subcommand (`VACUUM INTO`, refuses to
-  clobber or to run on the `memory` backend) — no `clap` dependency.
+  limiting and the audit log can key on peer IPs. `std::env::args()` is parsed
+  *first* (so `--help` works whatever the environment says) into `Command`,
+  then config (it selects `ASKRYPT_LOG_FORMAT`), then `init_tracing`; the
+  `backup <path>` subcommand is `VACUUM INTO` and refuses to clobber or to run
+  on the `memory` backend — no `clap` dependency. `init_tracing` builds a
+  `registry` with an `EnvFilter` plus one boxed `fmt` layer per sink: the
+  console always, and — for `Command::Serve` only — a `tracing-appender`
+  daily-rotating file in `ASKRYPT_LOG_DIR` (`askrypt-server.<date>.log`,
+  `open_log_file`, ANSI off, pruned to `ASKRYPT_LOG_MAX_FILES`). `backup`
+  deliberately does *not* write files — run from cron as root it would create
+  the day's file unwritable by the service user. The returned `WorkerGuard`
+  flushes the non-blocking writer on drop, so every `process::exit` path
+  drops it by hand first.
 - **`server/src/config.rs`** — `Config::from_env()`, layered over
   `Config::default()` (which tests use directly): `ASKRYPT_BIND`
   (default `127.0.0.1:8080`), `ASKRYPT_DATA_DIR` (default `data`, gitignored),
@@ -109,6 +118,11 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   (default **false** — fail closed), `ASKRYPT_HSTS` (default false),
   `ASKRYPT_REQUEST_TIMEOUT_SECS` (60), `ASKRYPT_MAX_CONCURRENT` (256),
   `ASKRYPT_MAX_BODY_BYTES` (64 KiB) and `ASKRYPT_LOG_FORMAT` (`text`|`json`).
+  File logging is `log_dir: Option<PathBuf>` — `ASKRYPT_LOG_DIR`, default
+  `logs` (gitignored, a *sibling* of the data dir so backups don't sweep it
+  up), an explicitly empty value meaning console-only — plus
+  `ASKRYPT_LOG_MAX_FILES` (14 daily files; `0` keeps all). Rotation is daily,
+  full stop: there is no knob for it.
   Email lives in `smtp: Option<SmtpConfig>`, parsed by `smtp_from` from the
   `ASKRYPT_SMTP_*` cluster (`HOST` `PORT` `ENCRYPTION` `FROM` `USERNAME`
   `PASSWORD` `TIMEOUT_SECS`): `HOST` is the switch, `FROM` is then required,
@@ -309,6 +323,12 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   `askrypt-server backup`, a `VACUUM INTO` snapshot, **before** tarring the
   blobs — uploads write bytes then metadata, so that order can only orphan a
   blob; `--quiesce` for an exact snapshot). Checklist in `server/DEPLOY.md`.
+  Both deployments put the log files in `/var/log/askrypt` — the unit via
+  `LogsDirectory=askrypt` (systemd creates it owned by the service user and
+  makes it writable under `ProtectSystem=strict`), the image via its own
+  `mkdir`/`chown` plus a second `VOLUME`, because `ASKRYPT_LOG_DIR`'s default
+  is relative to a working directory neither can write. `backup.sh` does not
+  archive them.
 
 ### Key Dependencies
 
@@ -324,6 +344,7 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 | `tokio` | `spawn_blocking` for off-main-thread vault decryption |
 | `askama` | Server-rendered HTML templates, compiled into the server binary |
 | `lettre` | SMTP delivery for the server's `Mailer` seam (rustls, no OpenSSL) |
+| `tracing-appender` | The server's daily-rotating log files under `ASKRYPT_LOG_DIR` |
 
 ### Build & Test
 

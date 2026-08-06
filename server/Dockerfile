@@ -27,9 +27,9 @@ FROM debian:trixie-slim
 # both use rustls with webpki-roots compiled in. Switching either to
 # native-tls would need ca-certificates and libssl installed here.
 RUN useradd --system --uid 10001 --home-dir /var/lib/askrypt askrypt \
-    && mkdir -p /var/lib/askrypt \
-    && chown askrypt:askrypt /var/lib/askrypt \
-    && chmod 700 /var/lib/askrypt
+    && mkdir -p /var/lib/askrypt /var/log/askrypt \
+    && chown askrypt:askrypt /var/lib/askrypt /var/log/askrypt \
+    && chmod 700 /var/lib/askrypt /var/log/askrypt
 COPY --from=builder /out/askrypt-server /usr/local/bin/askrypt-server
 COPY server/static /srv/askrypt/static
 USER askrypt
@@ -43,7 +43,11 @@ ENV ASKRYPT_BIND=0.0.0.0:8080 \
     ASKRYPT_TRUST_PROXY=1 \
     ASKRYPT_HSTS=1 \
     ASKRYPT_LOG_FORMAT=json \
+    # Daily files, two weeks kept. The default is relative to the working
+    # directory, which this image's user cannot write to; set it empty to log
+    # only to stdout and let the container runtime collect it.
+    ASKRYPT_LOG_DIR=/var/log/askrypt \
     RUST_LOG=askrypt_server=info,info
-VOLUME ["/var/lib/askrypt"]
+VOLUME ["/var/lib/askrypt", "/var/log/askrypt"]
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/askrypt-server"]

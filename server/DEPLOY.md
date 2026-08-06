@@ -44,6 +44,8 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_MAX_BODY_BYTES` | `65536` | Body limit outside the vault routes |
 | `ASKRYPT_ARGON2_PARALLELISM` | *(cpu count)* | Concurrent argon2 hashes. Each holds ~19 MiB; this is the memory ceiling under a login flood |
 | `ASKRYPT_LOG_FORMAT` | `text` | `text` or `json` |
+| `ASKRYPT_LOG_DIR` | `logs` | Directory for the daily-rotated log files, written in addition to the console. **Empty disables file logging** — use that where journald or the container runtime already keeps stdout |
+| `ASKRYPT_LOG_MAX_FILES` | `14` | Daily files kept; the oldest are deleted on rollover. `0` keeps every one — then rotate externally or the disk fills |
 | `RUST_LOG` | `askrypt_server=debug,info` | Log filter. **Keep `askrypt_server` at `info` or lower** — the audit log rides that target |
 
 ### Email
@@ -186,6 +188,23 @@ accounts.
 
 With `ASKRYPT_LOG_FORMAT=json`, each event is one flat JSON object; filter on
 `"target":"askrypt_server::audit"`.
+
+### Where it lands
+
+Every event goes to the console *and* to a file in `ASKRYPT_LOG_DIR`, named
+`askrypt-server.<YYYY-MM-DD>.log`. A new file starts at each UTC midnight and
+the oldest are removed once there are more than `ASKRYPT_LOG_MAX_FILES`;
+nothing is compressed. Writes go through a background thread, so a slow disk
+delays log lines rather than request handlers.
+
+The directory is created at startup if missing. If it cannot be created or
+written the server prints a warning to stderr and keeps serving with console
+logging only — a broken log path never takes the service down. Both the
+systemd unit and the container image point this at `/var/log/askrypt`.
+
+Because the audit trail lives in these files, back them up (or ship them)
+alongside the database if you need account-security history to survive the
+host; `backup.sh` does not archive them.
 
 ---
 

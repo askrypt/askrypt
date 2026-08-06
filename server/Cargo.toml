@@ -19,6 +19,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net
 tracing = "0.1"
 # `json` backs ASKRYPT_LOG_FORMAT=json, so audit events ship as structured logs.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Daily-rotating log files under ASKRYPT_LOG_DIR, written from a background
+# thread so a slow disk never blocks a request handler.
+tracing-appender = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"

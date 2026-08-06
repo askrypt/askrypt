@@ -13,6 +13,8 @@
 //! | `ASKRYPT_MAX_CONCURRENT` | `256`        | In-flight requests before shedding with 503 (`0` disables) |
 //! | `ASKRYPT_MAX_BODY_BYTES` | `65536`      | Request body limit outside `/api/v1/vaults` (vault routes keep their own 10 MiB limit) |
 //! | `ASKRYPT_LOG_FORMAT` | `text`           | Log output: `text` or `json`     |
+//! | `ASKRYPT_LOG_DIR`    | `logs`           | Directory for the daily-rotated log files; empty disables file logging |
+//! | `ASKRYPT_LOG_MAX_FILES` | `14`          | Daily files to keep (`0` keeps every one) |
 //! | `ASKRYPT_ARGON2_PARALLELISM` | *(cpus)* | Concurrent argon2 hashes; each costs ~19 MiB. Read in [`crate::auth`] |
 //!
 //! Email delivery. `ASKRYPT_SMTP_HOST` is the switch: set it and the server
@@ -31,7 +33,8 @@
 //!
 //! Logging verbosity is configured separately via the standard `RUST_LOG`
 //! filter. Keep the `askrypt_server` target at `info` or lower — the audit
-//! log ([`crate::audit`]) is emitted there.
+//! log ([`crate::audit`]) is emitted there. Everything written to the console
+//! is also written to the log directory, in the same format.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -50,6 +53,8 @@ pub const ENV_REQUEST_TIMEOUT: &str = "ASKRYPT_REQUEST_TIMEOUT_SECS";
 pub const ENV_MAX_CONCURRENT: &str = "ASKRYPT_MAX_CONCURRENT";
 pub const ENV_MAX_BODY_BYTES: &str = "ASKRYPT_MAX_BODY_BYTES";
 pub const ENV_LOG_FORMAT: &str = "ASKRYPT_LOG_FORMAT";
+pub const ENV_LOG_DIR: &str = "ASKRYPT_LOG_DIR";
+pub const ENV_LOG_MAX_FILES: &str = "ASKRYPT_LOG_MAX_FILES";
 pub const ENV_SMTP_HOST: &str = "ASKRYPT_SMTP_HOST";
 pub const ENV_SMTP_PORT: &str = "ASKRYPT_SMTP_PORT";
 pub const ENV_SMTP_ENCRYPTION: &str = "ASKRYPT_SMTP_ENCRYPTION";
@@ -60,6 +65,13 @@ pub const ENV_SMTP_TIMEOUT: &str = "ASKRYPT_SMTP_TIMEOUT_SECS";
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_DATA_DIR: &str = "data";
+/// Sibling of the data directory, not a child of it: logs are operational
+/// output, and backups (`server/deploy/backup.sh`) archive the data directory
+/// wholesale.
+const DEFAULT_LOG_DIR: &str = "logs";
+/// Two weeks of daily files — enough to investigate an incident over a
+/// weekend, small enough to leave unattended on a modest disk.
+const DEFAULT_LOG_MAX_FILES: usize = 14;
 // Matches `cargo run` from the workspace root; deployments set the env var.
 const DEFAULT_STATIC_DIR: &str = "server/static";
 /// Generous enough for a 10 MiB vault upload over a slow link, short enough
@@ -120,6 +132,12 @@ pub struct Config {
     /// Body limit outside the vault routes, which set their own.
     pub max_body_bytes: usize,
     pub log_format: LogFormat,
+    /// Directory the log files are written to, alongside the console output.
+    /// They roll over daily. `None` (an empty `ASKRYPT_LOG_DIR`) means console
+    /// only — for setups where the supervisor already captures stdout.
+    pub log_dir: Option<PathBuf>,
+    /// Daily files kept on disk; `0` disables pruning.
+    pub log_max_files: usize,
     /// SMTP relay to deliver through. `None` (no `ASKRYPT_SMTP_HOST`) leaves
     /// the log-only mailer in place — mail is captured, never sent.
     pub smtp: Option<SmtpConfig>,
@@ -139,6 +157,8 @@ impl Default for Config {
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             log_format: LogFormat::Text,
+            log_dir: Some(PathBuf::from(DEFAULT_LOG_DIR)),
+            log_max_files: DEFAULT_LOG_MAX_FILES,
             smtp: None,
         }
     }
@@ -203,6 +223,14 @@ impl Config {
             Err(_) => defaults.log_format,
         };
 
+        // An explicit empty value is "no file logging", the same way an empty
+        // SMTP host means "no delivery"; unset keeps the default directory.
+        let log_dir = match std::env::var(ENV_LOG_DIR) {
+            Ok(raw) if raw.trim().is_empty() => None,
+            Ok(raw) => Some(PathBuf::from(raw.trim())),
+            Err(_) => defaults.log_dir,
+        };
+
         Ok(Config {
             bind,
             data_dir,
@@ -221,6 +249,8 @@ impl Config {
             )?,
             max_body_bytes: parse_num(ENV_MAX_BODY_BYTES, defaults.max_body_bytes)?,
             log_format,
+            log_dir,
+            log_max_files: parse_num(ENV_LOG_MAX_FILES, defaults.log_max_files)?,
             smtp: smtp_from(&|var| std::env::var(var).ok())?,
         })
     }
@@ -364,6 +394,10 @@ mod tests {
         assert!(!config.hsts);
         assert_eq!(config.backend, Backend::Sqlite);
         assert_eq!(config.log_format, LogFormat::Text);
+        // File logging is on out of the box; only an explicitly empty
+        // ASKRYPT_LOG_DIR turns it off.
+        assert_eq!(config.log_dir, Some(PathBuf::from(DEFAULT_LOG_DIR)));
+        assert_eq!(config.log_max_files, DEFAULT_LOG_MAX_FILES);
     }
 
     #[test]

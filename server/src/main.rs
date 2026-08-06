@@ -14,7 +14,11 @@ use askrypt_server::store::sqlite::{
 };
 use askrypt_server::store::{IdTokenVerifier, Mailer};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 /// Keeps `askrypt_server` (and with it the audit target) at info or better.
 const DEFAULT_LOG_FILTER: &str = "askrypt_server=debug,info";
@@ -27,21 +31,12 @@ usage:
 
 #[tokio::main]
 async fn main() {
-    // Config comes first: it decides the log format, so failures here have
-    // to report themselves without a subscriber.
-    let config = match Config::from_env() {
-        Ok(config) => config,
-        Err(err) => {
-            eprintln!("configuration error: {err}");
-            std::process::exit(1);
-        }
-    };
-    init_tracing(config.log_format);
-
+    // Arguments before configuration: `--help` has to work whatever the
+    // environment says.
     let mut args = std::env::args().skip(1);
-    let (what, result) = match args.next().as_deref() {
-        None => ("server", run(config).await),
-        Some("backup") => ("backup", backup(config, args.next().map(PathBuf::from)).await),
+    let command = match args.next().as_deref() {
+        None => Command::Serve,
+        Some("backup") => Command::Backup(args.next().map(PathBuf::from)),
         Some("--help" | "-h" | "help") => {
             print!("{USAGE}");
             return;
@@ -52,22 +47,126 @@ async fn main() {
         }
     };
 
+    // Config next: it decides the log format, so failures here have to report
+    // themselves without a subscriber.
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("configuration error: {err}");
+            std::process::exit(1);
+        }
+    };
+    // Only the server writes log files. `backup` is a short-lived command
+    // often run from cron as another user, and creating the day's file as
+    // root would leave the service unable to append to it.
+    let log_to_file = matches!(command, Command::Serve);
+    // Held for the whole process: dropping it flushes whatever the
+    // non-blocking file writer still has buffered.
+    let log_guard = init_tracing(&config, log_to_file);
+
+    let (what, result) = match command {
+        Command::Serve => ("server", run(config).await),
+        Command::Backup(dest) => ("backup", backup(config, dest).await),
+    };
+
     if let Err(err) = result {
         tracing::error!(error = %err, "{what} failed");
+        // `process::exit` runs no destructors, so the guard has to be dropped
+        // by hand or the failure never reaches the log file.
+        drop(log_guard);
         std::process::exit(1);
     }
 }
 
-fn init_tracing(format: LogFormat) {
-    let builder = tracing_subscriber::fmt().with_env_filter(
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER)),
-    );
-    match format {
-        LogFormat::Text => builder.init(),
-        // One JSON object per event, fields at the top level so audit
-        // records are queryable without unwrapping a nested object.
-        LogFormat::Json => builder.json().flatten_event(true).init(),
+enum Command {
+    Serve,
+    Backup(Option<PathBuf>),
+}
+
+/// Installs the subscriber: always the console, plus a daily-rotated file in
+/// `ASKRYPT_LOG_DIR` when `log_to_file` and the directory is configured.
+///
+/// Returns the writer guard, which must outlive every event — the file layer
+/// hands events to a background thread, and dropping the guard is what flushes
+/// the queue.
+fn init_tracing(config: &Config, log_to_file: bool) -> Option<WorkerGuard> {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
+
+    // One JSON object per event, fields at the top level so audit records are
+    // queryable without unwrapping a nested object.
+    let console = match config.log_format {
+        LogFormat::Text => fmt::layer().boxed(),
+        LogFormat::Json => fmt::layer().json().flatten_event(true).boxed(),
+    };
+
+    // A missing or unwritable log directory is an operational problem, not a
+    // reason to refuse to serve: warn on stderr (no subscriber exists yet) and
+    // carry on with console logging.
+    let file = config
+        .log_dir
+        .as_ref()
+        .filter(|_| log_to_file)
+        .and_then(|dir| match open_log_file(dir, config.log_max_files) {
+            Ok(appender) => Some(appender),
+            Err(err) => {
+                eprintln!(
+                    "warning: cannot write logs to {}: {err}; continuing with console logging only",
+                    dir.display()
+                );
+                None
+            }
+        });
+
+    let (file_layer, guard) = match file {
+        Some(appender) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            // No ANSI escapes in a file, whatever the console does.
+            let layer = match config.log_format {
+                LogFormat::Text => fmt::layer().with_ansi(false).with_writer(writer).boxed(),
+                LogFormat::Json => fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_writer(writer)
+                    .boxed(),
+            };
+            (Some(layer), Some(guard))
+        }
+        None => (None, None),
+    };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(console)
+        .with(file_layer)
+        .init();
+
+    if let Some(dir) = config.log_dir.as_ref().filter(|_| guard.is_some()) {
+        info!(
+            dir = %dir.display(),
+            keep_days = config.log_max_files,
+            "writing logs to file, rotated daily"
+        );
     }
+    guard
+}
+
+fn open_log_file(
+    dir: &std::path::Path,
+    max_files: usize,
+) -> Result<RollingFileAppender, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    let mut builder = RollingFileAppender::builder()
+        // Daily only: one file per UTC day, `askrypt-server.<date>.log`.
+        .rotation(Rotation::DAILY)
+        .filename_prefix("askrypt-server")
+        .filename_suffix("log");
+    // Pruning happens on rollover, so `0` (keep everything) is expressed by
+    // not asking for it at all.
+    if max_files > 0 {
+        builder = builder.max_log_files(max_files);
+    }
+    Ok(builder.build(dir)?)
 }
 
 async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -225,4 +324,48 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn log_file_lands_in_the_configured_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A nested path the operator hasn't created: the appender is expected
+        // to make it rather than fall back to console-only.
+        let dir = tmp.path().join("logs");
+        let mut appender = open_log_file(&dir, 14).expect("appender");
+        writeln!(appender, "hello").unwrap();
+        appender.flush().unwrap();
+
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "one file per day: {names:?}");
+        // `askrypt-server.<YYYY-MM-DD>.log` — the date makes the daily
+        // rollover visible, and the suffix keeps log shippers happy.
+        let name = &names[0];
+        assert!(name.starts_with("askrypt-server."), "{name}");
+        assert!(name.ends_with(".log"), "{name}");
+        assert!(
+            std::fs::read_to_string(dir.join(name))
+                .unwrap()
+                .contains("hello")
+        );
+    }
+
+    #[test]
+    fn an_unwritable_log_dir_is_reported_not_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A regular file where the directory should be: `create_dir_all`
+        // fails, and `init_tracing` must degrade to console logging instead of
+        // taking the server down.
+        let path = tmp.path().join("occupied");
+        std::fs::write(&path, b"not a directory").unwrap();
+        assert!(open_log_file(&path, 14).is_err());
+    }
 }

@@ -23,6 +23,10 @@ Group=askrypt
 # /var/lib/askrypt, created with these permissions if missing.
 StateDirectory=askrypt
 StateDirectoryMode=0700
+# /var/log/askrypt, likewise — systemd creates it owned by the service user
+# and adds it to the writable paths, so no ReadWritePaths entry is needed.
+LogsDirectory=askrypt
+LogsDirectoryMode=0700
 # The SQLite db holds argon2 hashes and live session tokens; keep the files
 # it creates unreadable to other local users.
 UMask=0077
@@ -36,6 +40,10 @@ Environment=ASKRYPT_BACKEND=sqlite
 Environment=ASKRYPT_TRUST_PROXY=1
 Environment=ASKRYPT_HSTS=1
 Environment=ASKRYPT_LOG_FORMAT=json
+# Daily log files, two weeks kept. journald also captures stdout, so set this
+# to the empty string if the files are redundant for you.
+Environment=ASKRYPT_LOG_DIR=/var/log/askrypt
+Environment=ASKRYPT_LOG_MAX_FILES=14
 # Must keep askrypt_server at info or lower: the audit log rides that target.
 Environment=RUST_LOG=askrypt_server=info,info
 # Google sign-in: set to the accepted OAuth client ids, or leave unset.
