@@ -168,6 +168,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         padded_button("Edit Questions").on_press(Message::Entries(Msg::EditQuestions)),
         padded_button("Save").on_press(Message::Global(GlobalMsg::SaveVault)),
         padded_button("Save As").on_press(Message::Global(GlobalMsg::SaveVaultAs)),
+        padded_button("Save to Server").on_press(Message::Global(GlobalMsg::SaveVaultToServer)),
         padded_button("Smart Lock").on_press(Message::Global(GlobalMsg::ActivateSmartLock)),
         padded_button("Lock Vault").on_press(Message::Entries(Msg::LockVault)),
         padded_button("Exit").on_press(Message::Global(GlobalMsg::ExitApp)),

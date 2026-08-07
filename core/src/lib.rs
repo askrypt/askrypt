@@ -72,6 +72,8 @@ pub mod translit;
 pub mod types;
 
 pub use storage::{LocalFileStorage, MemoryStorage, StorageError, VaultStorage};
+#[cfg(feature = "server-storage")]
+pub use storage::{RemoteVault, ServerClient, ServerStorage};
 pub use types::*;
 
 use aes::Aes256;

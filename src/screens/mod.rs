@@ -10,6 +10,7 @@ pub mod entries;
 pub mod entry_editor;
 pub mod passgen;
 pub mod questions;
+pub mod server;
 pub mod smart_lock;
 pub mod unlock;
 pub mod welcome;
@@ -29,6 +30,7 @@ pub enum Screen {
     EntryEditor(entry_editor::State),
     PassGen(passgen::State),
     SmartLock(smart_lock::State),
+    Server(server::State),
 }
 
 /// The outcome of a screen's `update`: an optional navigation plus a task to
@@ -84,7 +86,13 @@ pub fn show_messages_in_column<'a, M: 'a>(
 /// Append the vault location (if any) to a column.
 pub fn show_vault_path<'a, M: 'a>(session: &Session, mut column: Column<'a, M>) -> Column<'a, M> {
     if let Some(location) = &session.location {
-        let text_prefix = text("Vault File:");
+        // Name the backend, so it is obvious at a glance whether an unlock is
+        // about to touch the network.
+        let text_prefix = if location.is_server() {
+            text("Server Vault:")
+        } else {
+            text("Vault File:")
+        };
         let text_path = text(location.display_location()).font(Font {
             weight: iced::font::Weight::Bold,
             ..Default::default()

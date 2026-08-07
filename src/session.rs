@@ -6,14 +6,15 @@
 //! screen module borrows `&mut Session` to read or mutate this shared state,
 //! while keeping its own UI fields in a per-screen `State` struct.
 
-use crate::settings::{AppSettings, VaultLocation};
+use crate::settings::{AppSettings, ServerSession, VaultLocation};
 use crate::tray::AppTray;
 use askrypt::{
-    AskryptFile, QuestionsData, SecretEntry, calc_pbkdf2, decrypt_with_aes, encode_base64,
-    encrypt_with_aes, generate_salt, normalize_answer, sha256,
+    AskryptFile, QuestionsData, SecretEntry, ServerClient, StorageError, VaultStorage, calc_pbkdf2,
+    decrypt_with_aes, encode_base64, encrypt_with_aes, generate_salt, normalize_answer, sha256,
 };
 use rand::RngExt;
 use rfd::MessageDialogResult;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -61,6 +62,15 @@ pub struct SmartLockData {
 /// Shared, screen-independent application state.
 pub struct Session {
     pub location: Option<VaultLocation>,
+    /// The live backend for `location`, created when the vault is opened and
+    /// kept for the lifetime of that vault rather than rebuilt per save.
+    ///
+    /// This matters for server vaults: `ServerStorage` learns the vault's ETag
+    /// when it reads, and sends it back as `If-Match` when it writes. Rebuilding
+    /// the backend before each save would fetch whatever ETag the server holds
+    /// *now* and happily overwrite another device's edit — the conflict check
+    /// only works if the same instance does the read and the write.
+    pub storage: Option<Arc<dyn VaultStorage>>,
     pub file: Option<AskryptFile>,
     pub questions_data: Option<QuestionsData>,
     pub question0: String,
@@ -72,6 +82,12 @@ pub struct Session {
     pub is_modified: bool,
     /// Application settings
     pub settings: AppSettings,
+    /// The signed-in Askrypt server, if any. Restored from the saved session
+    /// on startup and cleared whenever the server rejects the token.
+    pub server_client: Option<Arc<ServerClient>>,
+    /// The account the current sign-in belongs to, recorded alongside a server
+    /// vault's location so `settings.json` says whose vault it is.
+    pub server_email: Option<String>,
     /// Smart Lock state - stores encrypted answers in RAM
     pub smart_lock_data: Option<SmartLockData>,
     /// Last user activity timestamp for auto Smart Lock
@@ -102,8 +118,16 @@ impl Session {
             }
         };
 
+        // Restore a previous sign-in. The token is not validated here — an
+        // expired or revoked one surfaces as StorageError::Auth on first use.
+        let saved_session = ServerSession::load();
+        let server_email = saved_session.as_ref().map(|s| s.email.clone());
+        let server_client = saved_session
+            .map(|session| Arc::new(ServerClient::with_token(&session.base_url, &session.token)));
+
         Self {
             location: None,
+            storage: None,
             file: None,
             questions_data: None,
             question0: String::new(),
@@ -113,6 +137,8 @@ impl Session {
             unlocked: false,
             is_modified: false,
             settings,
+            server_client,
+            server_email,
             smart_lock_data: None,
             last_user_activity: None,
             tray,
@@ -173,12 +199,102 @@ impl Session {
             .is_some_and(|data| data.last_activity.elapsed() >= SMART_LOCK_TIMEOUT)
     }
 
+    /// Point the session at a vault: remember where it lives and keep the live
+    /// backend that was used to open it.
+    ///
+    /// Always pair the two — a `location` without its `storage` would make the
+    /// next save rebuild the backend and lose a server vault's ETag.
+    pub fn set_vault_location(&mut self, location: VaultLocation, storage: Arc<dyn VaultStorage>) {
+        self.location = Some(location);
+        self.storage = Some(storage);
+    }
+
+    /// Forget where the current vault lives (on close, or when creating a new
+    /// one).
+    pub fn clear_vault_location(&mut self) {
+        self.location = None;
+        self.storage = None;
+    }
+
+    /// Sign in to a server, replacing any previous sign-in and persisting the
+    /// token for the next launch.
+    pub fn sign_in(&mut self, client: Arc<ServerClient>, email: &str) {
+        let saved = ServerSession {
+            base_url: client.base_url().to_string(),
+            email: email.to_string(),
+            token: client.token().to_string(),
+        };
+        if let Err(e) = saved.save() {
+            // Not fatal: the session works, it just won't survive a restart.
+            eprintln!("WARNING: Failed to save server session: {}", e);
+        }
+        self.server_client = Some(client);
+        self.server_email = Some(email.to_string());
+    }
+
+    /// Drop the signed-in server client and the saved token.
+    ///
+    /// A vault currently open *from* that server is left in place — the user
+    /// keeps what they have decrypted; only saving it will ask them to sign in
+    /// again.
+    pub fn sign_out(&mut self) {
+        self.server_client = None;
+        self.server_email = None;
+        ServerSession::clear();
+    }
+
+    /// Whether the session is signed in to a server.
+    pub fn is_signed_in(&self) -> bool {
+        self.server_client.is_some()
+    }
+
+    /// Build the storage backend for a location using this session's server
+    /// client (if it needs one).
+    pub fn storage_for(
+        &self,
+        location: &VaultLocation,
+    ) -> Result<Arc<dyn VaultStorage>, StorageError> {
+        location.storage(self.server_client.as_ref())
+    }
+
+    /// Turn a storage failure into the sentence shown in the status bar, and
+    /// react to the ones that change session state.
+    ///
+    /// The details go to stderr; the user gets something they can act on.
+    fn report_storage_error(&mut self, action: &str, error: &StorageError) {
+        eprintln!("ERROR: Failed to {} vault: {}", action, error);
+        self.error_message = Some(match error {
+            StorageError::Conflict(_) => {
+                "This vault was changed elsewhere since you opened it. Reload before saving."
+                    .to_string()
+            }
+            StorageError::Auth(_) => {
+                // The token is dead; stop pretending we are signed in.
+                self.sign_out();
+                "Your server session expired. Sign in again.".to_string()
+            }
+            StorageError::Network(_) => {
+                format!("Could not reach the server to {} the vault", action)
+            }
+            StorageError::Remote { code, .. } if code == "quota_exceeded" => {
+                "Your server storage quota is full".to_string()
+            }
+            StorageError::Remote { code, .. } if code == "vault_limit_reached" => {
+                "You have reached the vault limit on this server".to_string()
+            }
+            StorageError::Remote { code, .. } if code == "payload_too_large" => {
+                "This vault is too large for the server".to_string()
+            }
+            _ => format!("Failed to {} vault", action),
+        });
+    }
+
     /// Save the current vault to its existing location (falling back to
     /// "Save As" when the vault has never been persisted).
     pub fn save_vault(&mut self) {
-        let location = self.location.clone();
-        if let (Some(location), Some(file), Some(questions_data)) =
-            (location, &self.file, &self.questions_data)
+        let storage = self.storage.clone();
+        if let (Some(storage), Some(file), Some(questions_data)) =
+            (storage, &self.file, &self.questions_data)
         {
             // Reconstruct questions list
             let mut questions = vec![self.question0.clone()];
@@ -196,16 +312,13 @@ impl Session {
                 Some(file.params.iterations),
                 file.params.translit,
             ) {
-                Ok(new_file) => match location.storage().save_vault(&new_file) {
+                Ok(new_file) => match storage.save_vault(&new_file) {
                     Ok(_) => {
                         self.file = Some(new_file);
                         self.is_modified = false;
                         self.success_message = Some("Vault saved successfully".into());
                     }
-                    Err(e) => {
-                        eprintln!("ERROR: Failed to save vault: {}", e);
-                        self.error_message = Some("Failed to save vault".into());
-                    }
+                    Err(e) => self.report_storage_error("save", &e),
                 },
                 Err(e) => {
                     eprintln!("ERROR: Failed to create vault: {}", e);
@@ -238,6 +351,14 @@ impl Session {
             all_answers.extend(self.answers.clone());
 
             let location = VaultLocation::LocalFile(new_path);
+            // A local file never needs a client, so this cannot fail.
+            let storage = match location.storage(None) {
+                Ok(storage) => storage,
+                Err(e) => {
+                    self.report_storage_error("save", &e);
+                    return;
+                }
+            };
 
             // Create new AskryptFile with current entries
             match AskryptFile::create(
@@ -247,23 +368,89 @@ impl Session {
                 Some(DEFAULT_ITERATIONS), // TODO: allow user to set this iterations
                 self.file.as_ref().is_some_and(|f| f.params.translit),
             ) {
-                Ok(new_file) => match location.storage().save_vault(&new_file) {
+                Ok(new_file) => match storage.save_vault(&new_file) {
                     Ok(_) => {
-                        self.location = Some(location.clone());
+                        self.set_vault_location(location.clone(), storage);
                         self.file = Some(new_file);
                         self.is_modified = false;
                         self.success_message = Some("Vault saved successfully".into());
                         self.settings.last_opened_file = Some(location);
                     }
-                    Err(e) => {
-                        eprintln!("ERROR: Failed to save vault: {}", e);
-                        self.error_message = Some("Failed to save vault".into());
-                    }
+                    Err(e) => self.report_storage_error("save", &e),
                 },
                 Err(e) => {
                     eprintln!("ERROR: Failed to create vault: {}", e);
                     self.error_message = Some("Failed to save vault".into());
                 }
+            }
+        }
+    }
+
+    /// Save the current vault to a *new* server location, then adopt it as the
+    /// session's vault location so later saves go to the server too.
+    ///
+    /// Runs the upload inline (see the note on `save_vault`); vaults are small,
+    /// so this is a brief pause rather than a visible freeze.
+    pub fn save_vault_to_server(&mut self, name: &str) -> bool {
+        let Some(client) = self.server_client.clone() else {
+            self.error_message = Some("Not signed in to a server".into());
+            return false;
+        };
+
+        let location = VaultLocation::Server {
+            base_url: client.base_url().to_string(),
+            email: self.server_email.clone().unwrap_or_default(),
+            name: name.to_string(),
+        };
+        let storage = match self.storage_for(&location) {
+            Ok(storage) => storage,
+            Err(e) => {
+                self.report_storage_error("save", &e);
+                return false;
+            }
+        };
+
+        // Reconstruct questions list
+        let mut questions = vec![self.question0.clone()];
+        if let Some(qs_data) = &self.questions_data {
+            questions.extend(qs_data.questions.clone());
+        }
+
+        // Reconstruct answers list
+        let mut all_answers = vec![self.answer0.clone()];
+        all_answers.extend(self.answers.clone());
+
+        let iterations = self
+            .file
+            .as_ref()
+            .map(|f| f.params.iterations)
+            .unwrap_or(DEFAULT_ITERATIONS);
+
+        match AskryptFile::create(
+            questions,
+            all_answers,
+            self.entries.clone(),
+            Some(iterations),
+            self.file.as_ref().is_some_and(|f| f.params.translit),
+        ) {
+            Ok(new_file) => match storage.save_vault(&new_file) {
+                Ok(_) => {
+                    self.set_vault_location(location.clone(), storage);
+                    self.file = Some(new_file);
+                    self.is_modified = false;
+                    self.success_message = Some("Vault saved to the server".into());
+                    self.settings.last_opened_file = Some(location);
+                    true
+                }
+                Err(e) => {
+                    self.report_storage_error("save", &e);
+                    false
+                }
+            },
+            Err(e) => {
+                eprintln!("ERROR: Failed to create vault: {}", e);
+                self.error_message = Some("Failed to save vault".into());
+                false
             }
         }
     }

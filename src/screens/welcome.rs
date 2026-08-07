@@ -1,7 +1,7 @@
 //! Welcome screen: create or open a vault.
 
 use crate::message::{GlobalMsg, Message};
-use crate::screens::{Action, Screen, passgen, questions, show_messages_in_column, unlock};
+use crate::screens::{Action, Screen, passgen, questions, server, show_messages_in_column, unlock};
 use crate::session::Session;
 use crate::settings::VaultLocation;
 use crate::ui::{padded_button, title_h1};
@@ -11,6 +11,7 @@ use iced::{Element, alignment};
 #[derive(Debug, Clone)]
 pub enum Msg {
     OpenVault,
+    OpenFromServer,
     CreateNewVault,
     OpenPassGen,
 }
@@ -18,7 +19,7 @@ pub enum Msg {
 pub fn update(session: &mut Session, msg: Msg) -> Action {
     match msg {
         Msg::CreateNewVault => {
-            session.location = None;
+            session.clear_vault_location();
             session.file = None;
             Action::switch(Screen::Questions(questions::State::new_for_create()))
         }
@@ -29,10 +30,13 @@ pub fn update(session: &mut Session, msg: Msg) -> Action {
                 .pick_file()
             {
                 let location = VaultLocation::LocalFile(path);
-                match location.storage().load_vault() {
-                    Ok(file) => {
+                match session
+                    .storage_for(&location)
+                    .and_then(|storage| storage.load_vault().map(|file| (storage, file)))
+                {
+                    Ok((storage, file)) => {
                         session.question0 = file.question0.clone();
-                        session.location = Some(location);
+                        session.set_vault_location(location, storage);
                         session.file = Some(file);
                         session.is_modified = false;
                         return Action::switch_run(
@@ -48,6 +52,10 @@ pub fn update(session: &mut Session, msg: Msg) -> Action {
             }
             Action::Run(operation::focus_next())
         }
+        Msg::OpenFromServer => Action::switch_run(
+            Screen::Server(server::State::for_open(session)),
+            operation::focus_next(),
+        ),
         Msg::OpenPassGen => Action::switch(Screen::PassGen(passgen::State::new(None, session))),
     }
 }
@@ -58,6 +66,7 @@ pub fn view(session: &Session) -> Element<'_, Message> {
         .push("Your secrets are protected by security questions only you know")
         .push(padded_button("Create New Vault").on_press(Message::Welcome(Msg::CreateNewVault)))
         .push(padded_button("Open Existing Vault").on_press(Message::Welcome(Msg::OpenVault)))
+        .push(padded_button("Open from Server").on_press(Message::Welcome(Msg::OpenFromServer)))
         .push(padded_button("Password Generator").on_press(Message::Welcome(Msg::OpenPassGen)))
         .push(padded_button("Exit").on_press(Message::Global(GlobalMsg::ExitApp)))
         .align_x(alignment::Horizontal::Center);

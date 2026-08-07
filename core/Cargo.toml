@@ -21,6 +21,13 @@ categories = [
 name = "askrypt"
 path = "src/lib.rs"
 
+# The networked `VaultStorage` backend is opt-in: a plain `askrypt-core` build
+# stays free of HTTP and TLS, so only clients that actually talk to a server
+# (today the desktop binary) pay for the dependency tree.
+[features]
+default = []
+server-storage = ["dep:ureq"]
+
 [dependencies]
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
 sha2 = "0.11.0"
@@ -37,6 +44,18 @@ zeroize = { version = "1", features = ["derive"] }
 # is needed beyond `Utc::now()`, hence the trimmed feature set.
 chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
 gethostname = "1.1"
+# `VaultStorage` is synchronous, so the HTTP client must be too. `ureq` blocks
+# natively; `reqwest::blocking` would spin up its own tokio runtime and panics
+# when built inside an async context — which is exactly where the desktop app
+# calls storage from (`spawn_blocking`). rustls, never native-tls, to keep
+# OpenSSL out of the build (the server crate makes the same choice).
+ureq = { version = "3", optional = true, default-features = false, features = ["rustls", "json"] }
+
+# Manual end-to-end check against a running `askrypt-server`; needs the backend
+# it exercises, so it is skipped by a plain `cargo build --examples`.
+[[example]]
+name = "server_roundtrip"
+required-features = ["server-storage"]
 
 [dev-dependencies]
 hex = "0.4.3"

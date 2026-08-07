@@ -1,29 +1,55 @@
 //! Storage backends for vault bytes.
 //!
-//! [`VaultStorage`] abstracts *where* the encrypted vault lives (a local file
-//! today; a zero-knowledge server later) over opaque bytes, so backends never
-//! look inside the vault. [`LocalFileStorage`] is the filesystem
-//! implementation; [`MemoryStorage`] is an in-memory implementation for tests
-//! and fakes.
+//! [`VaultStorage`] abstracts *where* the encrypted vault lives over opaque
+//! bytes, so backends never look inside the vault. [`LocalFileStorage`] is the
+//! filesystem implementation; [`MemoryStorage`] is an in-memory implementation
+//! for tests and fakes; `ServerStorage` (behind the `server-storage` feature)
+//! talks to an Askrypt server's zero-knowledge blob API.
 
 mod local_file;
+#[cfg(feature = "server-storage")]
+mod server;
 
 pub use local_file::LocalFileStorage;
+#[cfg(feature = "server-storage")]
+pub use server::{RemoteVault, ServerClient, ServerStorage};
 
 use crate::AskryptFile;
 use std::sync::Mutex;
 
 /// Error from a storage backend.
 ///
-/// Marked non-exhaustive so future backends (e.g. HTTP: auth failure, save
-/// conflict) can add variants without a breaking change.
+/// Marked non-exhaustive so future backends can add variants without a
+/// breaking change. The network variants are defined unconditionally, even
+/// though only the `server-storage` backend produces them: the error type must
+/// not change shape depending on which features a build enables.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum StorageError {
-    /// Underlying I/O failure (missing file, permissions, ...).
+    /// Underlying I/O failure (missing file, permissions, ...). A remote
+    /// backend reports "no such vault" as [`std::io::ErrorKind::NotFound`]
+    /// here, so callers can treat a missing file and a missing remote vault
+    /// alike.
     Io(std::io::Error),
     /// The bytes are not a valid vault (ZIP/JSON/version error).
     Format(String),
+    /// Transport failure talking to a remote backend: DNS, TCP, TLS, timeout.
+    /// Retrying later may succeed.
+    Network(String),
+    /// The remote backend rejected our credentials — token missing, expired or
+    /// revoked. The caller has to sign in again.
+    Auth(String),
+    /// The stored vault changed since it was last fetched, so writing it would
+    /// silently discard someone else's edit. The caller has to reload.
+    Conflict(String),
+    /// Any other error reported by a remote backend, carrying its
+    /// machine-readable code (`quota_exceeded`, `invalid_vault_name`,
+    /// `payload_too_large`, ...) so callers can react to specific cases.
+    Remote {
+        status: u16,
+        code: String,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for StorageError {
@@ -31,6 +57,14 @@ impl std::fmt::Display for StorageError {
         match self {
             StorageError::Io(e) => write!(f, "storage I/O error: {}", e),
             StorageError::Format(msg) => write!(f, "invalid vault data: {}", msg),
+            StorageError::Network(msg) => write!(f, "network error: {}", msg),
+            StorageError::Auth(msg) => write!(f, "authentication failed: {}", msg),
+            StorageError::Conflict(msg) => write!(f, "conflict: {}", msg),
+            StorageError::Remote {
+                status,
+                code,
+                message,
+            } => write!(f, "server error {} ({}): {}", status, code, message),
         }
     }
 }
@@ -39,7 +73,7 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StorageError::Io(e) => Some(e),
-            StorageError::Format(_) => None,
+            _ => None,
         }
     }
 }

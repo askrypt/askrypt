@@ -31,20 +31,31 @@ impl AskryptApp {
             // Load vault from program argument if provided
             Some(path) => Some(VaultLocation::LocalFile(path)),
             None => {
-                // Try to open the last opened vault if it still exists
+                // Try to open the last opened vault if it still exists. A server
+                // vault also needs a live sign-in; `storage_for` fails without
+                // one, and `exists()` is false when the server is unreachable,
+                // so either way we fall through to the welcome screen.
                 app.session
                     .settings
                     .last_opened_file
                     .clone()
-                    .filter(|location| location.storage().exists())
+                    .filter(|location| {
+                        app.session
+                            .storage_for(location)
+                            .is_ok_and(|storage| storage.exists())
+                    })
             }
         };
 
         if let Some(location) = location {
-            match location.storage().load_vault() {
-                Ok(file) => {
+            match app
+                .session
+                .storage_for(&location)
+                .and_then(|storage| storage.load_vault().map(|file| (storage, file)))
+            {
+                Ok((storage, file)) => {
                     app.session.question0 = file.question0.clone();
-                    app.session.location = Some(location);
+                    app.session.set_vault_location(location, storage);
                     app.session.file = Some(file);
                     app.screen = Screen::FirstQuestion(unlock::FirstState::default());
                     task = operation::focus_next();
@@ -137,6 +148,10 @@ impl AskryptApp {
                 Screen::SmartLock(s) => screens::smart_lock::update(s, &mut self.session, m),
                 _ => Action::None,
             },
+            Message::Server(m) => match &mut self.screen {
+                Screen::Server(s) => screens::server::update(s, &mut self.session, m),
+                _ => Action::None,
+            },
         };
 
         self.apply(action)
@@ -167,7 +182,7 @@ impl AskryptApp {
             }
             GlobalMsg::BackToWelcome => {
                 if self.session.ask_user_about_changes() {
-                    self.session.location = None;
+                    self.session.clear_vault_location();
                     self.session.file = None;
                     self.session.questions_data = None;
                     self.session.question0.clear();
@@ -187,6 +202,10 @@ impl AskryptApp {
                 self.session.save_vault_as();
                 Action::None
             }
+            GlobalMsg::SaveVaultToServer => Action::switch_run(
+                Screen::Server(screens::server::State::for_save(&self.session)),
+                operation::focus_next(),
+            ),
             GlobalMsg::ActivateSmartLock => self.activate_smart_lock(),
             GlobalMsg::SmartLockCreated(result) => self.smart_lock_created(result),
             GlobalMsg::CancelSmartLock => {
@@ -352,6 +371,7 @@ impl AskryptApp {
             Screen::EntryEditor(s) => screens::entry_editor::view(s, &self.session),
             Screen::PassGen(s) => screens::passgen::view(s, &self.session),
             Screen::SmartLock(s) => screens::smart_lock::view(s, &self.session),
+            Screen::Server(s) => screens::server::view(s, &self.session),
         };
 
         container(screen)

@@ -5,7 +5,9 @@
 //! cross-cutting events (window/keyboard, tray, spinner, save, vault lifecycle)
 //! live in [`GlobalMsg`] and are handled by the app shell rather than a screen.
 
-use crate::screens::{entries, entry_editor, passgen, questions, smart_lock, unlock, welcome};
+use crate::screens::{
+    entries, entry_editor, passgen, questions, server, smart_lock, unlock, welcome,
+};
 use crate::session::SmartLockData;
 use iced::event::Event;
 
@@ -19,6 +21,7 @@ pub enum Message {
     EntryEditor(entry_editor::Msg),
     PassGen(passgen::Msg),
     SmartLock(smart_lock::Msg),
+    Server(server::Msg),
     Global(GlobalMsg),
 }
 
@@ -35,6 +38,7 @@ pub enum GlobalMsg {
     BackToWelcome,
     SaveVault,
     SaveVaultAs,
+    SaveVaultToServer,
     ActivateSmartLock,
     SmartLockCreated(Result<SmartLockData, String>),
     CancelSmartLock,
