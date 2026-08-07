@@ -318,21 +318,21 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   not scripted dialogs — the CSP forbids the inline handler. `static/` holds
   just `style.css` and the vendored `htmx.min.js` (2.0.10), served at
   `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN.
-- **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts:
-  multi-stage image (build from the **repo root** — cargo validates every
-  workspace member's target paths, and `sqlx::migrate!` embeds
-  `server/migrations/`), `docker-compose.yml` (server + Caddy),
-  `Caddyfile` (TLS; *overwrites* `X-Forwarded-For`/`X-Real-IP` rather than
-  appending), a sandboxed `askrypt-server.service`, and `backup.sh` (calls
-  `askrypt-server backup`, a `VACUUM INTO` snapshot, **before** tarring the
-  blobs — uploads write bytes then metadata, so that order can only orphan a
-  blob; `--quiesce` for an exact snapshot). Checklist in `server/DEPLOY.md`.
-  Both deployments put the log files in `/var/log/askrypt` — the unit via
-  `LogsDirectory=askrypt` (systemd creates it owned by the service user and
-  makes it writable under `ProtectSystem=strict`), the image via its own
-  `mkdir`/`chown` plus a second `VOLUME`, because `ASKRYPT_LOG_DIR`'s default
-  is relative to a working directory neither can write. `backup.sh` does not
-  archive them.
+- **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts.
+  **Containers are the only supported deployment** — there is no systemd unit
+  and no backup wrapper script; `server/DEPLOY.md` drives everything through
+  `docker compose`. Multi-stage image (build from the **repo root** — cargo
+  validates every workspace member's target paths, and `sqlx::migrate!`
+  embeds `server/migrations/`), `docker-compose.yml` (server + Caddy, named
+  volumes `askrypt-data` + `askrypt-logs`), `Caddyfile` (TLS; *overwrites*
+  `X-Forwarded-For`/`X-Real-IP` rather than appending). Checklist, backup and
+  restore drill in `server/DEPLOY.md`; backups are `askrypt-server backup`
+  (a `VACUUM INTO` snapshot) **before** tarring the blobs — uploads write
+  bytes then metadata, so that order can only orphan a blob — with the server
+  stopped when an exact snapshot matters. The image puts log files in
+  `/var/log/askrypt` via its own `mkdir`/`chown` plus a second `VOLUME`,
+  because `ASKRYPT_LOG_DIR`'s default is relative to a working directory it
+  cannot write; the snapshot does not archive them.
 
 ### Key Dependencies
 

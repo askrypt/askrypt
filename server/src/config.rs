@@ -66,8 +66,7 @@ pub const ENV_SMTP_TIMEOUT: &str = "ASKRYPT_SMTP_TIMEOUT_SECS";
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_DATA_DIR: &str = "data";
 /// Sibling of the data directory, not a child of it: logs are operational
-/// output, and backups (`server/deploy/backup.sh`) archive the data directory
-/// wholesale.
+/// output, and backups archive the data directory wholesale.
 const DEFAULT_LOG_DIR: &str = "logs";
 /// Two weeks of daily files — enough to investigate an incident over a
 /// weekend, small enough to leave unattended on a modest disk.

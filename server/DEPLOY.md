@@ -57,7 +57,7 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_SMTP_ENCRYPTION` | `starttls` | `starttls`, `tls` (implicit/SMTPS) or `none`. `none` only for a relay on localhost |
 | `ASKRYPT_SMTP_FROM` | — | Envelope sender, e.g. `Askrypt <no-reply@example.com>`. Required once a host is set |
 | `ASKRYPT_SMTP_USERNAME` | *(empty)* | Relay login. Set together with the password or not at all |
-| `ASKRYPT_SMTP_PASSWORD` | *(empty)* | Relay password. Deliver it as a secret (systemd `EnvironmentFile`, compose secret) — never in a unit file that lands in git |
+| `ASKRYPT_SMTP_PASSWORD` | *(empty)* | Relay password. Deliver it as a secret (a compose secret, or a `.env` beside the compose file) — never in a file that lands in git |
 | `ASKRYPT_SMTP_TIMEOUT_SECS` | `10` | Per-operation SMTP network timeout |
 
 > **Leaving `ASKRYPT_SMTP_HOST` unset is not "email disabled" — it is
@@ -89,7 +89,8 @@ small VPS, set it explicitly (e.g. `4`) rather than inheriting the CPU count.
 
 ## 3. Install
 
-### Docker (recommended)
+The supported deployment is the container. `server/deploy/docker-compose.yml`
+brings up the server plus Caddy, which terminates TLS:
 
 ```sh
 # From the repository root — the image builds the whole workspace.
@@ -99,7 +100,10 @@ docker compose -f server/deploy/docker-compose.yml up -d --build
 Edit `server/deploy/Caddyfile` first and replace `askrypt.example.com` with
 the real hostname. Caddy obtains certificates automatically. The server
 container publishes no ports; only Caddy can reach it, which is what makes
-`ASKRYPT_TRUST_PROXY=1` safe there.
+`ASKRYPT_TRUST_PROXY=1` (baked into the image) safe there.
+
+Two named volumes hold the state: `askrypt-data` at `/var/lib/askrypt` (the
+database and the vault blobs) and `askrypt-logs` at `/var/log/askrypt`.
 
 To build the image alone:
 
@@ -107,28 +111,22 @@ To build the image alone:
 docker build -f server/Dockerfile -t askrypt-server .
 ```
 
-### systemd
+Migrations run automatically at startup, so an upgrade is a rebuild:
 
 ```sh
-cargo build --release -p askrypt-server
-sudo useradd --system --home-dir /var/lib/askrypt askrypt
-sudo install -m 755 target/release/askrypt-server /usr/local/bin/
-sudo mkdir -p /usr/local/share/askrypt && sudo cp -r server/static /usr/local/share/askrypt/
-sudo cp server/deploy/askrypt-server.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now askrypt-server
+docker compose -f server/deploy/docker-compose.yml up -d --build askrypt-server
 ```
 
-The unit runs sandboxed (`ProtectSystem=strict`, no capabilities, `UMask=0077`,
-`StateDirectory=askrypt` at mode `0700`). Put Caddy or nginx in front; if
-nginx, set both headers explicitly so the trusted hop is unambiguous:
+### Another proxy in front
+
+Caddy is a convenience, not a requirement — anything that terminates TLS
+works, as long as it is the *only* route to the port. Set both client-address
+headers explicitly so the trusted hop is unambiguous; with nginx:
 
 ```nginx
 proxy_set_header X-Real-IP       $remote_addr;
 proxy_set_header X-Forwarded-For $remote_addr;   # not $proxy_add_x_forwarded_for
 ```
-
-Migrations run automatically at startup, so upgrades are: install the new
-binary, `systemctl restart askrypt-server`.
 
 ---
 
@@ -199,12 +197,14 @@ delays log lines rather than request handlers.
 
 The directory is created at startup if missing. If it cannot be created or
 written the server prints a warning to stderr and keeps serving with console
-logging only — a broken log path never takes the service down. Both the
-systemd unit and the container image point this at `/var/log/askrypt`.
+logging only — a broken log path never takes the service down. The image
+points this at `/var/log/askrypt`, kept in the `askrypt-logs` volume; set
+`ASKRYPT_LOG_DIR=` (empty) instead if you collect the container's stdout and
+want no files at all.
 
 Because the audit trail lives in these files, back them up (or ship them)
 alongside the database if you need account-security history to survive the
-host; `backup.sh` does not archive them.
+host — the snapshot below does not archive them.
 
 ---
 
@@ -215,35 +215,66 @@ The live state is `<data>/askrypt.db` plus `<data>/vaults/`.
 > **Never `cp` the live `askrypt.db`.** It runs in WAL mode, so the `.db`
 > file on its own can be stale or torn.
 
+Take the database snapshot with the binary's own `backup` subcommand — a
+`VACUUM INTO` copy, safe against a running server — and archive the blobs
+afterwards:
+
 ```sh
-server/deploy/backup.sh /var/backups/askrypt              # live snapshot
-server/deploy/backup.sh /var/backups/askrypt --quiesce    # stops the service first
+COMPOSE="docker compose -f server/deploy/docker-compose.yml"
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+
+# 1. database, written inside the data volume, then pulled out
+$COMPOSE exec -T askrypt-server askrypt-server backup /var/lib/askrypt/snap-$STAMP.db
+$COMPOSE cp askrypt-server:/var/lib/askrypt/snap-$STAMP.db askrypt-$STAMP.db
+$COMPOSE exec -T askrypt-server rm /var/lib/askrypt/snap-$STAMP.db
+
+# 2. then the blobs (--exclude drops the temp files an interrupted upload leaves)
+$COMPOSE exec -T askrypt-server \
+    tar -C /var/lib/askrypt --exclude='.*.tmp' -cz vaults > vaults-$STAMP.tar.gz
 ```
 
-The script calls `askrypt-server backup <path>` (a `VACUUM INTO` snapshot,
-safe against a running server) **before** archiving the blob directory, then
-prunes snapshots older than `ASKRYPT_BACKUP_KEEP_DAYS` (default 30).
+`exec -T` matters: without it compose allocates a TTY and the tar stream is
+corrupted on its way to the file. Run this from cron, ship both files
+off-host, and prune old ones there.
 
 That order is deliberate. Uploads write vault bytes before their metadata
 row, so a database-first snapshot can only ever capture a blob with no row —
 an invisible orphan. The reverse order could capture a row with no bytes,
 which reads back as a 500. Deletes invert the hazard, so no ordering is safe
-against a concurrent delete: use `--quiesce` when an exact snapshot matters.
-Without it, the inconsistency window is one HTTP request wide.
+against a concurrent delete. When an exact snapshot matters, stop the server
+first and take it with a one-off container:
+
+```sh
+$COMPOSE stop askrypt-server
+$COMPOSE run --rm -T askrypt-server backup /var/lib/askrypt/snap-$STAMP.db
+# ... copy out and archive as above ...
+$COMPOSE start askrypt-server
+```
+
+Without that, the inconsistency window is one HTTP request wide.
 
 ### Restore
 
+Restoring writes into the data volume, so do it with a throwaway container
+rather than through the (stopped) server. Check the volume's real name first
+with `docker volume ls` — compose prefixes it with the project name, which
+defaults to the compose file's directory (`deploy_askrypt-data`).
+
 ```sh
-systemctl stop askrypt-server
-install -o askrypt -g askrypt -m 600 askrypt-20260804T020000Z.db /var/lib/askrypt/askrypt.db
-rm -f /var/lib/askrypt/askrypt.db-wal /var/lib/askrypt/askrypt.db-shm
-rm -rf /var/lib/askrypt/vaults
-tar -C /var/lib/askrypt -xzf vaults-20260804T020000Z.tar.gz
-chown -R askrypt:askrypt /var/lib/askrypt
-systemctl start askrypt-server
+$COMPOSE stop askrypt-server
+docker run --rm -v deploy_askrypt-data:/data -v "$PWD":/restore:ro debian:trixie-slim sh -c '
+  set -e
+  rm -f /data/askrypt.db /data/askrypt.db-wal /data/askrypt.db-shm
+  rm -rf /data/vaults
+  cp /restore/askrypt-20260804T020000Z.db /data/askrypt.db
+  tar -C /data -xzf /restore/vaults-20260804T020000Z.tar.gz
+  chown -R 10001:10001 /data && chmod 700 /data'
+$COMPOSE start askrypt-server
 ```
 
-An older database self-upgrades: migrations run on boot.
+The `-wal`/`-shm` files must go: they belong to the old database and SQLite
+would try to replay them over the restored one. `10001` is the image's
+`askrypt` uid. An older database self-upgrades: migrations run on boot.
 
 **Practise the restore.** A backup that has never been restored is a guess.
 
@@ -257,18 +288,19 @@ An older database self-upgrades: migrations run on boot.
       proxy sets `X-Real-IP` / `X-Forwarded-For` to the observed address.
 - [ ] `ASKRYPT_HSTS=1` once HTTPS is confirmed working (it commits browsers
       for a year).
-- [ ] `ASKRYPT_DATA_DIR` is an absolute path on persistent storage, owned by
-      the service user, mode `0700`.
+- [ ] `ASKRYPT_DATA_DIR` is an absolute path on persistent storage (the
+      `askrypt-data` volume), owned by the service user, mode `0700`.
 - [ ] `ASKRYPT_GOOGLE_CLIENT_IDS` set if Google sign-in is wanted; otherwise
       confirm `/api/v1/auth/google` answers 501.
 - [ ] `ASKRYPT_SMTP_HOST` + `ASKRYPT_SMTP_FROM` set, and the startup log says
       `smtp mailer enabled`. Without them the server logs message bodies —
       tokens included — instead of sending them.
-- [ ] `ASKRYPT_SMTP_PASSWORD` comes from a secret file, not from a unit file
-      or a compose file under version control.
+- [ ] `ASKRYPT_SMTP_PASSWORD` comes from a secret or a `.env` beside the
+      compose file, not from a file under version control.
 - [ ] `RUST_LOG` keeps `askrypt_server` at `info` or lower; logs are shipped
       somewhere durable.
-- [ ] `backup.sh` runs on a timer and its output lands off-host.
+- [ ] The backup commands above run on a timer and their output lands
+      off-host.
 - [ ] A restore has actually been performed into a scratch directory.
 - [ ] `ASKRYPT_ARGON2_PARALLELISM` fits the box's RAM (~19 MiB each).
 - [ ] Browser devtools show no CSP violations on the landing page.

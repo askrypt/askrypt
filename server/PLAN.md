@@ -120,7 +120,7 @@ askrypt/
     ├── DEPLOY.md              # self-hosting: TLS, config, backups, checklist
     ├── Cargo.toml
     ├── Dockerfile             # multi-stage; build from the repo root
-    ├── deploy/                # docker-compose, Caddyfile, systemd unit, backup.sh
+    ├── deploy/                # docker-compose + Caddyfile (containers only)
     ├── migrations/            # sqlx migrations (SQLite backend)
     ├── templates/             # askama HTML templates: pages + fragments/
     ├── static/                # served at /assets: style.css + vendored htmx.min.js
@@ -238,7 +238,7 @@ askrypt/
   - Request body limits, timeouts, backpressure.
   - Structured audit log for auth events (login/failed login/password change).
   - Backup story for the SQLite db + blob directory.
-  - Dockerfile and/or systemd unit for self-hosting.
+  - Dockerfile + compose stack for self-hosting.
   - Gate: deployment checklist complete; server runs behind TLS end-to-end.
 
   **What shipped**, beyond the bullets above:
@@ -265,12 +265,15 @@ askrypt/
     other session** (the caller's survives). Desktop and mobile must handle a
     401 after a password change by re-logging in. Setting a *first* password
     on a Google account does not revoke anything.
-  - `askrypt-server backup <path>` (`VACUUM INTO`) plus `deploy/backup.sh`,
-    which snapshots the database **before** archiving blobs — uploads write
-    bytes then metadata, so that order can only orphan a blob, never strand a
-    metadata row. Deletes invert the hazard, hence `--quiesce`.
-  - `Dockerfile` + `deploy/{docker-compose.yml,Caddyfile,askrypt-server.service,backup.sh}`
-    and `DEPLOY.md` (checklist, restore drill, sizing).
+  - `askrypt-server backup <path>` (`VACUUM INTO`), documented as a
+    `docker compose exec` that snapshots the database **before** archiving
+    blobs — uploads write bytes then metadata, so that order can only orphan a
+    blob, never strand a metadata row. Deletes invert the hazard, hence the
+    stop-first variant for an exact snapshot.
+  - `Dockerfile` + `deploy/{docker-compose.yml,Caddyfile}` and `DEPLOY.md`
+    (checklist, restore drill, sizing). **Containers are the only supported
+    deployment**: the systemd unit and the `backup.sh` wrapper that shipped
+    with Phase 5 were removed afterwards.
   - `server/static/index.html`'s inline `<style>` moved to `style.css`, since
     `style-src 'self'` would otherwise blank the shipped landing page.
   - Gate evidence: `tests/hardening.rs` (8 tests) plus the container run —

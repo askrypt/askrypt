@@ -270,10 +270,11 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 /// `askrypt-server backup <path>` — a consistent snapshot of the SQLite
 /// database via `VACUUM INTO`, safe to run against a live server.
 ///
-/// The vault blobs are plain files and are *not* copied here; see
-/// `server/deploy/backup.sh`, which calls this first and then archives the
-/// blob directory. Never `cp` the live database instead: it runs in WAL
-/// mode, so the `.db` file alone can be stale or torn.
+/// The vault blobs are plain files and are *not* copied here: snapshot the
+/// database first, then archive `<data>/vaults/` (see `server/DEPLOY.md`).
+/// Uploads write bytes before their metadata row, so that order can only
+/// orphan a blob, never strand a row. Never `cp` the live database instead:
+/// it runs in WAL mode, so the `.db` file alone can be stale or torn.
 async fn backup(config: Config, dest: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let Some(dest) = dest else {
         return Err(format!("backup needs a destination path\n\n{USAGE}").into());

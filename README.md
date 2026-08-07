@@ -162,8 +162,8 @@ each UTC day, with the oldest files pruned past `ASKRYPT_LOG_MAX_FILES`. The
 server crate is covered by the `cargo test --workspace` /
 `cargo clippy --workspace` commands above.
 
-Self-hosting (Docker or systemd, TLS, backups, the deployment checklist) is
-documented in **[`server/DEPLOY.md`](server/DEPLOY.md)**.
+Self-hosting (the Docker Compose stack, TLS, backups, the deployment
+checklist) is documented in **[`server/DEPLOY.md`](server/DEPLOY.md)**.
 
 ### Mobile (Flutter)
 
