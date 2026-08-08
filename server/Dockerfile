@@ -3,6 +3,8 @@
 # Build from the *repository root*, not from server/:
 #     docker build -f server/Dockerfile -t askrypt-server .
 #
+# server/deploy/docker-build.sh does that, and passes the git revision in.
+#
 # The whole repo is copied because the root Cargo.toml is both the workspace
 # root and a package: cargo validates every member's explicitly-pathed
 # targets (root `[[bin]] path = "src/main.rs"`, core's `[lib] path =
@@ -48,6 +50,17 @@ ENV ASKRYPT_BIND=0.0.0.0:8080 \
     # only to stdout and let the container runtime collect it.
     ASKRYPT_LOG_DIR=/var/log/askrypt \
     RUST_LOG=askrypt_server=info,info
+# Which commit this image was built from. Declared here, at the end, so a
+# fresh revision doesn't invalidate the cached build layers above; the server
+# logs both at startup, so a container can be traced back to a commit without
+# `docker inspect`. Left as "unknown" when built by hand.
+ARG GIT_HASH=unknown
+ARG GIT_COMMIT_MSG=unknown
+ENV ASKRYPT_BUILD_REV=$GIT_HASH \
+    ASKRYPT_BUILD_MSG=$GIT_COMMIT_MSG
+LABEL org.opencontainers.image.title="askrypt-server" \
+      org.opencontainers.image.revision="$GIT_HASH" \
+      org.opencontainers.image.description="$GIT_COMMIT_MSG"
 VOLUME ["/var/lib/askrypt", "/var/log/askrypt"]
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/askrypt-server"]

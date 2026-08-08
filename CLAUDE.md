@@ -368,9 +368,26 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   and no backup wrapper script; `server/DEPLOY.md` drives everything through
   `docker compose`. Multi-stage image (build from the **repo root** — cargo
   validates every workspace member's target paths, and `sqlx::migrate!`
-  embeds `server/migrations/`), `docker-compose.yml` (server + Caddy, named
-  volumes `askrypt-data` + `askrypt-logs`), `Caddyfile` (TLS; *overwrites*
-  `X-Forwarded-For`/`X-Real-IP` rather than appending). Checklist, backup and
+  embeds `server/migrations/`); `docker-build.sh` is the one that gets that
+  right, and passes `GIT_HASH`/`GIT_COMMIT_MSG` build args that become image
+  labels plus the `ASKRYPT_BUILD_REV`/`_MSG` env `main::log_build_revision`
+  reports at startup. `Caddyfile` (TLS; *overwrites* `X-Forwarded-For`/
+  `X-Real-IP` rather than appending) takes its site address from
+  `{$ASKRYPT_DOMAIN}`, so it carries no hostname and every deploy can
+  overwrite it.
+  **Deployment is `./deploy.sh dev|prod`** → `spot.yml` (a
+  [spot](https://github.com/umputun/spot) playbook): build locally, ship the
+  image as a `docker save | gzip` tarball, `docker load`, `docker compose
+  up -d` from `/opt/askrypt`, then wait on the container *and* on `/healthz`
+  answering — probed with `docker exec askrypt-caddy wget`, since the runtime
+  image has no HTTP client. The server needs only docker: no source checkout,
+  no toolchain, no registry. `docker-compose.yml` (server + Caddy) therefore
+  has **no `build:` section** and `pull_policy: never`; its project name is
+  pinned (`name: askrypt`, so volumes are `askrypt_askrypt-data`/`-logs` +
+  Caddy's three wherever the file sits), and host-specific values come from
+  `/opt/askrypt/.env` on the server — required `ASKRYPT_DOMAIN` plus the SMTP
+  secrets, templated by `env.example`, never uploaded, only checked for.
+  Checklist, backup and
   restore drill in `server/DEPLOY.md`; backups are `askrypt-server backup`
   (a `VACUUM INTO` snapshot) **before** tarring the blobs — uploads write
   bytes then metadata, so that order can only orphan a blob — with the server

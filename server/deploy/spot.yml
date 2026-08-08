@@ -1,0 +1,91 @@
+# Deploy playbook for spot (https://github.com/umputun/spot); run via ./deploy.sh dev|prod.
+#
+# The image is built *locally* and shipped as a tarball, so the server needs
+# nothing but docker — no rust toolchain, no git checkout, no registry.
+#
+# Prerequisites:
+#   - spot installed locally: brew install umputun/apps/spot
+#   - SSH key access to the hosts; the remote user must be in the `docker` group (no sudo used)
+#   - server arch must match the local build arch (PLATFORM=linux/amd64 ./docker-build.sh otherwise)
+#   - /opt/askrypt/.env exists on each server (ASKRYPT_DOMAIN + the SMTP secrets; never uploaded).
+#     See env.example for the keys; docker compose reads that file by itself.
+#
+# Everything else in /opt/askrypt is disposable: the compose file and the
+# Caddyfile are overwritten from git on every deploy, and the state lives in
+# the askrypt_askrypt-data / askrypt_askrypt-logs docker volumes.
+#
+# Fill in the real host/user values below (placeholders ship in git).
+# Copy destinations are sftp paths; absolute paths are used as-is (sftp does not expand ~).
+user: ruslan
+ssh_key: ~/.ssh/id_rsa
+
+# TODO: avoid using root user
+targets:
+  dev:
+    hosts:
+      - {host: "arusdev3", user: "root", name: "dev"}
+  prod:
+    hosts:
+      - {host: "askrypthost", user: "root", name: "prod"}
+
+tasks:
+  - name: deploy
+    commands:
+      # First, so a missing .env costs a second rather than a full release
+      # build followed by a failed compose.
+      - name: check env file
+        script: |
+          if [ ! -f /opt/askrypt/.env ]; then
+            echo "ERROR: /opt/askrypt/.env is missing on {SPOT_REMOTE_HOST}" >&2
+            echo "Create it from server/deploy/env.example and re-run" >&2
+            exit 1
+          fi
+          if ! grep -q '^ASKRYPT_DOMAIN=.' /opt/askrypt/.env; then
+            echo "ERROR: ASKRYPT_DOMAIN is not set in /opt/askrypt/.env" >&2
+            echo "Caddy needs it to request a certificate for the right name" >&2
+            exit 1
+          fi
+          if ! grep -q '^ASKRYPT_SMTP_HOST=.' /opt/askrypt/.env; then
+            echo "WARNING: ASKRYPT_SMTP_HOST is unset — outgoing email will be" >&2
+            echo "LOGGED IN FULL (tokens included) instead of delivered" >&2
+          fi
+
+      - name: build image
+        script: |
+          ./docker-build.sh
+          docker save askrypt-server | gzip > /tmp/askrypt-image.tar.gz
+        options: {local: true}
+        on_exit: "rm -f /tmp/askrypt-image.tar.gz"
+
+      - name: upload image
+        copy: {src: "/tmp/askrypt-image.tar.gz", dst: "/opt/askrypt/askrypt-image.tar.gz", mkdir: true}
+
+      - name: upload compose file
+        copy: {src: "docker-compose.yml", dst: "/opt/askrypt/docker-compose.yml"}
+
+      - name: upload caddyfile
+        copy: {src: "Caddyfile", dst: "/opt/askrypt/Caddyfile"}
+
+      - name: load image
+        script: "gunzip -c /opt/askrypt/askrypt-image.tar.gz | docker load"
+        on_exit: "rm -f /opt/askrypt/askrypt-image.tar.gz"
+
+      - name: run
+        script: |
+          cd /opt/askrypt
+          docker compose up -d --remove-orphans
+          # Drops the image the previous deploy left untagged. Filtered by
+          # label so this only ever touches our own: an unfiltered prune would
+          # also collect anything else dangling on the host.
+          docker image prune -f --filter label=org.opencontainers.image.title=askrypt-server
+
+      - name: verify running
+        wait: {cmd: "docker inspect -f '{{.State.Running}}' askrypt-server | grep -q true", timeout: "30s", interval: "2s"}
+
+      # Real liveness, and it proves the compose network too: the server image
+      # has no http client, so ask from Caddy's side (busybox wget, Alpine).
+      - name: verify serving
+        wait: {cmd: "docker exec askrypt-caddy wget -q -O- http://askrypt-server:8080/healthz | grep -q ok", timeout: "30s", interval: "2s"}
+
+      - name: show logs
+        script: "docker logs --tail 20 askrypt-server"

@@ -25,6 +25,9 @@ whole product.
   mode) and `vaults/<account-id>/<vault-id>.askrypt`, with the generations
   those files replaced alongside them in
   `vaults/<account-id>/versions/<version-id>.askrypt`.
+- On the server: docker (with the compose plugin), and a user in the `docker`
+  group. On your machine: docker to build the image and
+  [spot](https://github.com/umputun/spot) to ship it — see §3.
 
 ---
 
@@ -91,32 +94,91 @@ small VPS, set it explicitly (e.g. `4`) rather than inheriting the CPU count.
 
 ## 3. Install
 
-The supported deployment is the container. `server/deploy/docker-compose.yml`
-brings up the server plus Caddy, which terminates TLS:
+The supported deployment is the container, built **locally** and pushed to the
+server as an image tarball by [spot](https://github.com/umputun/spot). The
+server therefore needs nothing but docker — no rust toolchain, no source
+checkout, no registry account.
+
+Four files in `server/deploy/` do it:
+
+| File | Role |
+|---|---|
+| `docker-build.sh` | Builds `askrypt-server:latest` from the repo root, embedding the git revision |
+| `spot.yml` | The playbook: build → ship → load → `compose up` → verify |
+| `deploy.sh` | `./deploy.sh dev\|prod [spot flags]`, with a confirmation prompt for prod |
+| `docker-compose.yml` + `Caddyfile` | Uploaded to `/opt/askrypt` and run there |
+
+### One-time setup
+
+1. Install spot locally (`brew install umputun/apps/spot`) and make sure SSH
+   key access to the host works.
+2. Put the real host names in `spot.yml` under `targets:` — placeholders ship
+   in git.
+3. On the server, create `/opt/askrypt/.env` from `env.example`:
+
+   ```sh
+   install -D -m 600 env.example /opt/askrypt/.env    # then edit it
+   ```
+
+   `ASKRYPT_DOMAIN` is required — Caddy's site address is `{$ASKRYPT_DOMAIN}`,
+   so the checked-in `Caddyfile` carries no hostname of its own and can be
+   overwritten from git on every deploy. The SMTP settings belong here too;
+   the deploy never uploads or reads this file, it only checks that it exists.
+
+### Deploying
 
 ```sh
-# From the repository root — the image builds the whole workspace.
-docker compose -f server/deploy/docker-compose.yml up -d --build
+cd server/deploy
+./deploy.sh dev              # or prod, which asks for confirmation first
+./deploy.sh dev --dry -v     # extra flags go straight to spot
 ```
 
-Edit `server/deploy/Caddyfile` first and replace `askrypt.example.com` with
-the real hostname. Caddy obtains certificates automatically. The server
-container publishes no ports; only Caddy can reach it, which is what makes
-`ASKRYPT_TRUST_PROXY=1` (baked into the image) safe there.
+The playbook checks the server's `.env` first (a missing one should not cost a
+release build), then builds the image, `docker save | gzip`s it, uploads it
+along with the compose file and Caddyfile, loads it, runs
+`docker compose up -d`, and waits for the container to be running **and** for
+`/healthz` to answer through the compose network before printing the last 20
+log lines. Migrations run at startup, so an upgrade is just another deploy.
 
-Two named volumes hold the state: `askrypt-data` at `/var/lib/askrypt` (the
-database and the vault blobs) and `askrypt-logs` at `/var/log/askrypt`.
+The image is built for the local architecture; if the server's differs, build
+with `PLATFORM=linux/amd64` (slow, emulated) or move the build to that arch.
 
-To build the image alone:
+Every deploy logs which commit is running, from build args baked into the
+image by `docker-build.sh`:
+
+```
+INFO askrypt_server: build revision=03f19d1 commit="feat(desktop): …" version=0.1.0
+```
+
+The same values are on the image as `org.opencontainers.image.revision` and
+`…description`.
+
+### State
+
+Four named volumes, prefixed with the compose project name, which is pinned to
+`askrypt` in the compose file so it does not follow the directory:
+`askrypt_askrypt-data` at `/var/lib/askrypt` (the database and the vault
+blobs), `askrypt_askrypt-logs` at `/var/log/askrypt`, and Caddy's
+`askrypt_caddy-data` (certificates!) / `askrypt_caddy-config` /
+`askrypt_caddy-logs`. Nothing under `/opt/askrypt` is state: the tarball is
+deleted after loading and the two config files are overwritten from git each
+time.
+
+### Running it by hand
+
+The compose file has no `build:` section, so build the image first — the same
+stack then runs anywhere, including locally:
+
+```sh
+./server/deploy/docker-build.sh
+ASKRYPT_DOMAIN=askrypt.example.com \
+    docker compose -f server/deploy/docker-compose.yml up -d
+```
+
+Or just the image, without compose:
 
 ```sh
 docker build -f server/Dockerfile -t askrypt-server .
-```
-
-Migrations run automatically at startup, so an upgrade is a rebuild:
-
-```sh
-docker compose -f server/deploy/docker-compose.yml up -d --build askrypt-server
 ```
 
 ### Another proxy in front
@@ -229,8 +291,10 @@ Take the database snapshot with the binary's own `backup` subcommand — a
 `VACUUM INTO` copy, safe against a running server — and archive the blobs
 afterwards:
 
+Run these **on the server**, where the volumes are:
+
 ```sh
-COMPOSE="docker compose -f server/deploy/docker-compose.yml"
+COMPOSE="docker compose -f /opt/askrypt/docker-compose.yml"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
 # 1. database, written inside the data volume, then pulled out
@@ -266,13 +330,13 @@ Without that, the inconsistency window is one HTTP request wide.
 ### Restore
 
 Restoring writes into the data volume, so do it with a throwaway container
-rather than through the (stopped) server. Check the volume's real name first
-with `docker volume ls` — compose prefixes it with the project name, which
-defaults to the compose file's directory (`deploy_askrypt-data`).
+rather than through the (stopped) server. The volume is
+`askrypt_askrypt-data`: compose prefixes it with the project name, which the
+compose file pins to `askrypt`. Confirm with `docker volume ls`.
 
 ```sh
 $COMPOSE stop askrypt-server
-docker run --rm -v deploy_askrypt-data:/data -v "$PWD":/restore:ro debian:trixie-slim sh -c '
+docker run --rm -v askrypt_askrypt-data:/data -v "$PWD":/restore:ro debian:trixie-slim sh -c '
   set -e
   rm -f /data/askrypt.db /data/askrypt.db-wal /data/askrypt.db-shm
   rm -rf /data/vaults
@@ -305,8 +369,12 @@ would try to replay them over the restored one. `10001` is the image's
 - [ ] `ASKRYPT_SMTP_HOST` + `ASKRYPT_SMTP_FROM` set, and the startup log says
       `smtp mailer enabled`. Without them the server logs message bodies —
       tokens included — instead of sending them.
-- [ ] `ASKRYPT_SMTP_PASSWORD` comes from a secret or a `.env` beside the
-      compose file, not from a file under version control.
+- [ ] `ASKRYPT_SMTP_PASSWORD` comes from `/opt/askrypt/.env` (mode `0600`),
+      not from a file under version control.
+- [ ] `ASKRYPT_DOMAIN` in that `.env` is the real hostname, and its DNS A/AAAA
+      record already points here — Caddy cannot get a certificate otherwise.
+- [ ] `spot.yml`'s `targets:` hold the real hosts, and `./deploy.sh <target>
+      --dry` runs clean before the first real deploy.
 - [ ] `RUST_LOG` keeps `askrypt_server` at `info` or lower; logs are shipped
       somewhere durable.
 - [ ] The backup commands above run on a timer and their output lands

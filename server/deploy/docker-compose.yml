@@ -1,15 +1,33 @@
 # Self-hosting stack: askrypt-server behind Caddy for TLS.
 #
-#   docker compose -f server/deploy/docker-compose.yml up -d --build
+# This file is *deployed*, not built from: `./deploy.sh dev|prod` builds the
+# image locally (docker-build.sh), ships it as a tarball, and runs
+# `docker compose up -d` from /opt/askrypt on the server. There is no `build:`
+# section, so the server needs no source checkout and no rust toolchain.
 #
-# Run it from the repository root: the server image builds from the whole
-# workspace (see server/Dockerfile).
+# To run the same stack locally instead, build the image first and point
+# ASKRYPT_DOMAIN at localhost:
+#
+#   ./server/deploy/docker-build.sh
+#   docker compose -f server/deploy/docker-compose.yml up -d
+#
+# Host-specific values (the domain) and secrets (the SMTP password) come from
+# a `.env` file beside this one, which compose reads by itself and which is
+# never uploaded by the deploy — see env.example.
+
+# Pinned so the volume names are the same wherever the file sits: without it
+# the project name is the directory's, and the state would go missing the day
+# the deploy path changes.
+name: askrypt
 
 services:
   askrypt-server:
-    build:
-      context: ../..
-      dockerfile: server/Dockerfile
+    image: "${ASKRYPT_IMAGE:-askrypt-server:latest}"
+    # Loaded from the tarball the deploy ships; there is no registry to pull
+    # it from, and `never` turns a missing image into a clear error instead of
+    # a confusing pull failure.
+    pull_policy: never
+    container_name: askrypt-server
     restart: unless-stopped
     # No published ports: only Caddy may reach it, which is what makes
     # ASKRYPT_TRUST_PROXY=1 (baked into the image) safe.
@@ -20,12 +38,17 @@ services:
       # Google sign-in; leave unset to disable it.
       ASKRYPT_GOOGLE_CLIENT_IDS: "${ASKRYPT_GOOGLE_CLIENT_IDS:-}"
       # Email relay. With no host the server logs message bodies (tokens and
-      # all) instead of delivering them — set these in a .env beside this file.
+      # all) instead of delivering them — set these in the .env.
       ASKRYPT_SMTP_HOST: "${ASKRYPT_SMTP_HOST:-}"
       ASKRYPT_SMTP_FROM: "${ASKRYPT_SMTP_FROM:-}"
       ASKRYPT_SMTP_ENCRYPTION: "${ASKRYPT_SMTP_ENCRYPTION:-starttls}"
+      ASKRYPT_SMTP_PORT: "${ASKRYPT_SMTP_PORT:-}"
       ASKRYPT_SMTP_USERNAME: "${ASKRYPT_SMTP_USERNAME:-}"
       ASKRYPT_SMTP_PASSWORD: "${ASKRYPT_SMTP_PASSWORD:-}"
+      # Each concurrent argon2 hash holds ~19 MiB; on a small VPS set this
+      # rather than inheriting the CPU count.
+      ASKRYPT_ARGON2_PARALLELISM: "${ASKRYPT_ARGON2_PARALLELISM:-}"
+      RUST_LOG: "${RUST_LOG:-askrypt_server=info,info}"
     volumes:
       - askrypt-data:/var/lib/askrypt
       # Daily log files (the image sets ASKRYPT_LOG_DIR); without this volume
@@ -33,7 +56,7 @@ services:
       - askrypt-logs:/var/log/askrypt
     healthcheck:
       # No curl in the runtime image; the server answers /healthz and the
-      # orchestrator can probe it from outside if preferred.
+      # deploy probes it from the Caddy container, which has busybox wget.
       test: ["CMD", "/usr/local/bin/askrypt-server", "--help"]
       interval: 30s
       timeout: 5s
@@ -41,14 +64,23 @@ services:
 
   caddy:
     image: caddy:2
+    container_name: askrypt-caddy
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # The Caddyfile is checked in with no hostname of its own, so the site
+      # address comes from here. Failing loudly beats asking Let's Encrypt for
+      # a certificate for the literal string.
+      ASKRYPT_DOMAIN: "${ASKRYPT_DOMAIN:?set ASKRYPT_DOMAIN in the .env beside this compose file}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+      # The Caddyfile logs to /var/log/caddy; without this the access log
+      # would go with the container.
+      - caddy-logs:/var/log/caddy
     depends_on:
       - askrypt-server
 
@@ -57,3 +89,4 @@ volumes:
   askrypt-logs:
   caddy-data:
   caddy-config:
+  caddy-logs:

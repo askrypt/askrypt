@@ -169,11 +169,27 @@ fn open_log_file(
     Ok(builder.build(dir)?)
 }
 
+/// Reports which build is running, from the environment `server/Dockerfile`
+/// bakes in out of `docker-build.sh`'s `--build-arg`s. Nothing is set outside
+/// the container, where the git checkout answers the question anyway, so this
+/// stays quiet there rather than logging "unknown".
+fn log_build_revision() {
+    let value = |var| std::env::var(var).ok().filter(|v| !v.is_empty());
+    if let Some(revision) = value("ASKRYPT_BUILD_REV") {
+        info!(
+            %revision,
+            commit = value("ASKRYPT_BUILD_MSG").unwrap_or_default(),
+            version = env!("CARGO_PKG_VERSION"),
+            "build"
+        );
+    }
+}
+
 async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     info!(?config.backend, data_dir = %config.data_dir.display(), "starting askrypt-server");
+    log_build_revision();
 
-    let id_verifier: Arc<dyn IdTokenVerifier> = if config.google_client_ids.is_empty() {
-        info!("google sign-in disabled (ASKRYPT_GOOGLE_CLIENT_IDS not set)");
+    let id_verifier: Arc<dyn IdTokenVerifier> = if config.google_client_ids.is_empty() {        info!("google sign-in disabled (ASKRYPT_GOOGLE_CLIENT_IDS not set)");
         Arc::new(NotConfiguredIdTokenVerifier)
     } else {
         info!(

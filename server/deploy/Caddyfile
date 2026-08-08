@@ -4,8 +4,12 @@
 # speaks plain HTTP and must not be reachable from anywhere else, because
 # ASKRYPT_TRUST_PROXY=1 tells it to believe the client-address headers set
 # below.
+#
+# The site address is substituted from the environment (docker-compose.yml
+# passes ASKRYPT_DOMAIN in from the `.env`) so this file is host-independent
+# and every deploy can overwrite it from git.
 
-askrypt.example.com {
+{$ASKRYPT_DOMAIN} {
 	encode zstd gzip
 
 	reverse_proxy askrypt-server:8080 {
