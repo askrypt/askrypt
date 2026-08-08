@@ -4,7 +4,9 @@
 //! answer-input widgets and the `answer0` visibility toggle.
 
 use crate::message::{GlobalMsg, Message};
-use crate::screens::{Action, Screen, entries, passgen, show_messages_in_column, show_vault_path};
+use crate::screens::{
+    Action, Screen, entries, passgen, show_messages_in_column, show_vault_path, show_vault_stamp,
+};
 use crate::session::Session;
 use crate::ui::{padded_button, security_input_with_toggle, spinner_row, title_h1};
 use askrypt::{QuestionsData, SecretEntry};
@@ -199,6 +201,7 @@ pub fn first_view<'a>(state: &'a FirstState, session: &'a Session) -> Element<'a
         .align_x(alignment::Horizontal::Center);
 
     column = show_vault_path(session, column);
+    column = show_vault_stamp(session, column).push(text(""));
 
     let answer0_input = security_input_with_toggle(
         &session.answer0,
@@ -241,6 +244,7 @@ pub fn other_view<'a>(state: &'a OtherState, session: &'a Session) -> Element<'a
         .align_x(alignment::Horizontal::Center);
 
     column = show_vault_path(session, column);
+    column = show_vault_stamp(session, column).push(text(""));
 
     if let Some(data) = &session.questions_data {
         let answer0_input = security_input_with_toggle(

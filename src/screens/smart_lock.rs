@@ -127,7 +127,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         .push("Enter the selected answer to quickly unlock")
         .align_x(alignment::Horizontal::Center);
 
-    column = show_vault_path(session, column);
+    column = show_vault_path(session, column).push(text(""));
 
     // Show which question is being asked
     if let Some(smart_lock_data) = &session.smart_lock_data {
