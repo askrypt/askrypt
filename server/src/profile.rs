@@ -332,7 +332,11 @@ pub(crate) async fn delete_account_data(
         &account.email,
     );
     // Owned data first, account record last, so a failure part-way never
-    // leaves orphaned vaults behind a deleted account.
+    // leaves orphaned vaults behind a deleted account. Archived versions are
+    // owned data too: "every stored vault" includes the ones this site kept
+    // after they were replaced.
+    state.vault_version_blobs.delete_for_account(id).await?;
+    state.vault_versions.delete_for_account(id).await?;
     state.vault_blobs.delete_for_account(id).await?;
     state.vault_meta.delete_for_account(id).await?;
     state.sessions.delete_for_account(id).await?;

@@ -21,6 +21,8 @@
 //!
 //! Vaults (Phase 4): the `/api/v1/vaults` tree lives in [`crate::vaults`];
 //! its routes carry a raised request-body limit sized to the max vault file.
+//! The `/{id}/versions` subtree reads and restores the generations a save
+//! replaced.
 //!
 //! Hardening (Phase 5): the cross-cutting layers from [`crate::hardening`]
 //! wrap everything. Order matters and is documented at the call site below.
@@ -82,6 +84,12 @@ pub fn router(state: AppState, config: &Config) -> Router {
                 .delete(vaults::remove),
         )
         .route("/{id}/name", put(vaults::rename))
+        .route("/{id}/versions", get(vaults::list_versions))
+        .route("/{id}/versions/{version_id}", get(vaults::download_version))
+        .route(
+            "/{id}/versions/{version_id}/restore",
+            post(vaults::restore),
+        )
         .layer(DefaultBodyLimit::max(vaults::MAX_VAULT_BYTES));
 
     let api_v1 = Router::new()

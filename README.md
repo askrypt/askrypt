@@ -115,8 +115,9 @@ with [htmx](https://htmx.org) 2.0.10 vendored into `server/static/` — no Node,
 no bundler, no CDN, and every page works with JavaScript disabled. It signs you
 in and out, manages your account (email, password, signed-in devices, account
 deletion) at `/account`, and stores, renames, replaces and hands back your
-encrypted vault files at `/vaults`. It can never *open* a vault: there is no
-crypto in the browser, by design.
+encrypted vault files at `/vaults`. Each save keeps the five copies it
+replaced, so a bad save can be downloaded or restored from the file's history.
+It can never *open* a vault: there is no crypto in the browser, by design.
 
 A consistent snapshot of the database, safe to take against a running server
 (never `cp` the live file — it is in WAL mode):

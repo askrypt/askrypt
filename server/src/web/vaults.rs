@@ -1,9 +1,10 @@
 //! The vault file manager (plan Phase 7.4).
 //!
 //! A file listing and nothing more: upload, download, rename, replace,
-//! delete, and how much of the quota is gone. The site cannot open a vault —
-//! there is no decryption in the browser by design — so this page is
-//! deliberately shaped like a folder, not like a password manager.
+//! delete, the generations each save replaced, and how much of the quota is
+//! gone. The site cannot open a vault — there is no decryption in the
+//! browser by design — so this page is deliberately shaped like a folder,
+//! not like a password manager.
 //!
 //! The rules are [`crate::vaults`]'s, called as free functions: the name
 //! validation, the ZIP-magic check, the count and byte quotas, and the
@@ -20,8 +21,11 @@ use serde::Deserialize;
 
 use crate::error::ApiError;
 use crate::state::AppState;
-use crate::store::VaultMeta;
-use crate::vaults::{ACCOUNT_QUOTA_BYTES, MAX_VAULT_BYTES, MAX_VAULTS_PER_ACCOUNT, parse_vault_id};
+use crate::store::{VaultMeta, VaultVersion};
+use crate::vaults::{
+    ACCOUNT_QUOTA_BYTES, MAX_VAULT_BYTES, MAX_VAULT_VERSIONS, MAX_VAULTS_PER_ACCOUNT,
+    parse_vault_id, parse_version_id,
+};
 use crate::web::WebResult;
 use crate::web::csrf::{CsrfForm, CsrfMultipart};
 use crate::web::flash::{self, Flash};
@@ -48,7 +52,11 @@ pub struct Listing {
     vaults: Vec<Row>,
     count: usize,
     max_count: usize,
+    /// How many superseded generations each file keeps.
+    max_versions: usize,
     used: String,
+    /// The share of `used` held by superseded generations.
+    archived: String,
     quota: String,
     /// Percentage of the byte quota in use, for the meter.
     used_percent: u64,
@@ -74,10 +82,12 @@ struct Row {
     /// The full ETag, carried in the replace form so the overwrite goes
     /// through the same `If-Match` check the apps use.
     etag: String,
+    /// The kept generations of this file, newest first.
+    history: Vec<HistoryRow>,
 }
 
-impl From<&VaultMeta> for Row {
-    fn from(meta: &VaultMeta) -> Self {
+impl Row {
+    fn new(meta: &VaultMeta, history: &[VaultVersion]) -> Self {
         Self {
             id: meta.id.to_string(),
             name: meta.name.clone(),
@@ -85,6 +95,28 @@ impl From<&VaultMeta> for Row {
             updated: timestamp(meta.updated_at),
             short_etag: meta.etag.chars().take(12).collect(),
             etag: meta.etag.clone(),
+            history: history.iter().map(HistoryRow::from).collect(),
+        }
+    }
+}
+
+/// One superseded generation, as a line in a row's history disclosure.
+struct HistoryRow {
+    id: String,
+    size: String,
+    /// When these bytes stopped being the current file — the useful date
+    /// when picking which one to go back to.
+    archived: String,
+    short_etag: String,
+}
+
+impl From<&VaultVersion> for HistoryRow {
+    fn from(version: &VaultVersion) -> Self {
+        Self {
+            id: version.id.to_string(),
+            size: human_bytes(version.size),
+            archived: timestamp(version.archived_at),
+            short_etag: version.etag.chars().take(12).collect(),
         }
     }
 }
@@ -228,6 +260,87 @@ pub async fn download(
         .into_response())
 }
 
+/// `POST /vaults/{id}/versions/{version_id}/restore` — make a superseded
+/// generation the current file again.
+///
+/// The row's ETag rides along in a hidden field, exactly as `replace` does:
+/// restoring is an overwrite, and it must lose the same race for the same
+/// reason.
+pub async fn restore(
+    State(state): State<AppState>,
+    web: WebSession,
+    headers: HeaderMap,
+    Path((id, version_id)): Path<(String, String)>,
+    CsrfForm(input): CsrfForm<RestoreInput>,
+) -> WebResult<Response> {
+    let vault_id = parse_vault_id(&id)?;
+    let version_id = parse_version_id(&version_id)?;
+    match crate::vaults::restore_version(
+        &state,
+        web.account.id,
+        vault_id,
+        version_id,
+        Some(&input.etag),
+    )
+    .await
+    {
+        Ok(_) => finish(&state, &web, &headers, Flash::VaultRestored).await,
+        Err(err) => refused(&state, &web, &headers, err).await,
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RestoreInput {
+    /// The current file's ETag as the row was drawn. Missing rather than
+    /// stale means a hand-made form, so it is treated as a mismatch.
+    #[serde(default)]
+    etag: String,
+}
+
+/// `GET /vaults/{id}/versions/{version_id}/download` — an archived
+/// generation, as a file.
+///
+/// Same cookie-authenticated shape as [`download`]; the file name carries the
+/// archived date so several downloaded generations don't collide in the
+/// downloads folder.
+pub async fn download_version(
+    State(state): State<AppState>,
+    web: WebSession,
+    Path((id, version_id)): Path<(String, String)>,
+) -> WebResult<Response> {
+    let vault_id = parse_vault_id(&id)?;
+    let version_id = parse_version_id(&version_id)?;
+    let (version, bytes) =
+        crate::vaults::read_version(&state, web.account.id, vault_id, version_id).await?;
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!(
+                    "attachment; filename=\"{}\"",
+                    sanitize_filename(&version_filename(&version))
+                ),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// `personal.askrypt` archived on 2026-08-08 becomes
+/// `personal.2026-08-08T101500Z.askrypt` — the stem keeps the file
+/// recognizable, the stamp keeps generations apart, and the extension stays
+/// where apps look for it.
+fn version_filename(version: &VaultVersion) -> String {
+    let stamp = version.archived_at.format("%Y-%m-%dT%H%M%SZ");
+    match version.name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem}.{stamp}.{ext}"),
+        _ => format!("{}.{stamp}", version.name),
+    }
+}
+
 /// A change that went through: the refreshed listing for htmx, a
 /// POST-redirect-GET with a flash otherwise.
 async fn finish(
@@ -326,13 +439,24 @@ async fn listing(
     notice: Option<Notice>,
 ) -> WebResult<Listing> {
     let metas = crate::vaults::list_for(state, web.account.id).await?;
-    let used: u64 = metas.iter().map(|m| m.size).sum();
+    // One query for the whole page's history, not one per row.
+    let mut history = crate::vaults::versions_by_vault(state, web.account.id).await?;
+    let live: u64 = metas.iter().map(|m| m.size).sum();
+    // History shares the account's quota, so the meter has to count it or it
+    // would read as free space that isn't.
+    let archived: u64 = history.values().flatten().map(|v| v.size).sum();
+    let used = live + archived;
     Ok(Listing {
         csrf,
-        vaults: metas.iter().map(Row::from).collect(),
+        vaults: metas
+            .iter()
+            .map(|meta| Row::new(meta, history.remove(&meta.id).unwrap_or_default().as_slice()))
+            .collect(),
         count: metas.len(),
         max_count: MAX_VAULTS_PER_ACCOUNT,
+        max_versions: MAX_VAULT_VERSIONS,
         used: human_bytes(used),
+        archived: human_bytes(archived),
         quota: human_bytes(ACCOUNT_QUOTA_BYTES),
         used_percent: (used.saturating_mul(100) / ACCOUNT_QUOTA_BYTES).min(100),
         notice,

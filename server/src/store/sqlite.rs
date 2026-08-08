@@ -1,6 +1,6 @@
 //! SQLite backend: connection pool, embedded migration runner, and the
-//! SQLite implementations of [`AccountStore`], [`SessionStore`] (Phase 2)
-//! and [`VaultMetaStore`] (Phase 4).
+//! SQLite implementations of [`AccountStore`], [`SessionStore`] (Phase 2),
+//! [`VaultMetaStore`] (Phase 4) and [`VaultVersionStore`].
 //!
 //! Uuids are stored as hyphenated TEXT, timestamps as TEXT via sqlx's
 //! chrono mapping. Migrations are embedded in the binary from
@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::{
     Account, AccountId, AccountStore, NewAccount, Session, SessionStore, StoreError, VaultId,
-    VaultMeta, VaultMetaStore,
+    VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
 };
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -389,6 +389,145 @@ impl VaultMetaStore for SqliteVaultMetaStore {
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct VaultVersionRow {
+    id: String,
+    vault_id: String,
+    account_id: String,
+    name: String,
+    size: i64,
+    etag: String,
+    updated_at: DateTime<Utc>,
+    archived_at: DateTime<Utc>,
+}
+
+impl VaultVersionRow {
+    fn into_version(self) -> Result<VaultVersion, StoreError> {
+        Ok(VaultVersion {
+            id: parse_uuid(&self.id)?,
+            vault_id: parse_uuid(&self.vault_id)?,
+            account_id: parse_uuid(&self.account_id)?,
+            name: self.name,
+            size: self.size as u64,
+            etag: self.etag,
+            updated_at: self.updated_at,
+            archived_at: self.archived_at,
+        })
+    }
+}
+
+/// The columns every version query selects, in [`VaultVersionRow`]'s order.
+const VERSION_COLUMNS: &str =
+    "id, vault_id, account_id, name, size, etag, updated_at, archived_at";
+
+#[derive(Clone)]
+pub struct SqliteVaultVersionStore {
+    pool: SqlitePool,
+}
+
+impl SqliteVaultVersionStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl VaultVersionStore for SqliteVaultVersionStore {
+    async fn insert(&self, version: VaultVersion) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO vault_versions \
+             (id, vault_id, account_id, name, size, etag, updated_at, archived_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(version.id.to_string())
+        .bind(version.vault_id.to_string())
+        .bind(version.account_id.to_string())
+        .bind(&version.name)
+        .bind(version.size as i64)
+        .bind(&version.etag)
+        .bind(version.updated_at)
+        .bind(version.archived_at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        account_id: AccountId,
+        version_id: VaultVersionId,
+    ) -> Result<Option<VaultVersion>, StoreError> {
+        let row: Option<VaultVersionRow> = sqlx::query_as(&format!(
+            "SELECT {VERSION_COLUMNS} FROM vault_versions WHERE account_id = ?1 AND id = ?2"
+        ))
+        .bind(account_id.to_string())
+        .bind(version_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(VaultVersionRow::into_version).transpose()
+    }
+
+    async fn list_for_vault(
+        &self,
+        account_id: AccountId,
+        vault_id: VaultId,
+    ) -> Result<Vec<VaultVersion>, StoreError> {
+        let rows: Vec<VaultVersionRow> = sqlx::query_as(&format!(
+            "SELECT {VERSION_COLUMNS} FROM vault_versions \
+             WHERE account_id = ?1 AND vault_id = ?2 ORDER BY archived_at DESC"
+        ))
+        .bind(account_id.to_string())
+        .bind(vault_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        rows.into_iter().map(VaultVersionRow::into_version).collect()
+    }
+
+    async fn list_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<VaultVersion>, StoreError> {
+        let rows: Vec<VaultVersionRow> = sqlx::query_as(&format!(
+            "SELECT {VERSION_COLUMNS} FROM vault_versions \
+             WHERE account_id = ?1 ORDER BY archived_at DESC"
+        ))
+        .bind(account_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        rows.into_iter().map(VaultVersionRow::into_version).collect()
+    }
+
+    async fn delete(
+        &self,
+        account_id: AccountId,
+        version_id: VaultVersionId,
+    ) -> Result<(), StoreError> {
+        let result = sqlx::query("DELETE FROM vault_versions WHERE account_id = ?1 AND id = ?2")
+            .bind(account_id.to_string())
+            .bind(version_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn delete_for_account(&self, account_id: AccountId) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM vault_versions WHERE account_id = ?1")
+            .bind(account_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
@@ -420,7 +559,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(applied, 3);
+        assert_eq!(applied, 4);
 
         // Re-opening is idempotent: already-applied migrations are skipped.
         let pool2 = open(&db_path).await.unwrap();
@@ -607,5 +746,76 @@ mod tests {
         assert_eq!(store.get(account.id, meta.id).await.unwrap(), Some(meta));
         // Another account may use the name freely.
         store.upsert(new_meta(other.id, "a.askrypt")).await.unwrap();
+    }
+
+    fn new_version(meta: &VaultMeta, age_secs: i64) -> VaultVersion {
+        let archived_at = Utc::now() - Duration::seconds(age_secs);
+        VaultVersion {
+            id: Uuid::new_v4(),
+            vault_id: meta.id,
+            account_id: meta.account_id,
+            name: meta.name.clone(),
+            size: 1234,
+            etag: format!("etag-{age_secs}"),
+            updated_at: archived_at,
+            archived_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn vault_versions_list_newest_first_and_cascade_twice() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let vaults = SqliteVaultMetaStore::new(pool.clone());
+        let store = SqliteVaultVersionStore::new(pool);
+        let account = accounts.create(new_account("a@example.com")).await.unwrap();
+        let other = accounts.create(new_account("b@example.com")).await.unwrap();
+
+        let meta = new_meta(account.id, "a.askrypt");
+        let second = new_meta(account.id, "b.askrypt");
+        let other_meta = new_meta(other.id, "other.askrypt");
+        for m in [&meta, &second, &other_meta] {
+            vaults.upsert(m.clone()).await.unwrap();
+        }
+
+        let newest = new_version(&meta, 0);
+        let oldest = new_version(&meta, 60);
+        for version in [&newest, &oldest, &new_version(&second, 30)] {
+            store.insert(version.clone()).await.unwrap();
+        }
+        let other_version = new_version(&other_meta, 0);
+        store.insert(other_version.clone()).await.unwrap();
+
+        assert_eq!(
+            store.get(account.id, newest.id).await.unwrap(),
+            Some(newest.clone())
+        );
+        // Scoped to the owner, like every other vault-shaped lookup.
+        assert_eq!(store.get(other.id, newest.id).await.unwrap(), None);
+
+        let history = store.list_for_vault(account.id, meta.id).await.unwrap();
+        assert_eq!(history, vec![newest.clone(), oldest.clone()]);
+        assert_eq!(store.list_for_account(account.id).await.unwrap().len(), 3);
+
+        store.delete(account.id, oldest.id).await.unwrap();
+        assert!(matches!(
+            store.delete(account.id, oldest.id).await,
+            Err(StoreError::NotFound)
+        ));
+
+        // Deleting the vault takes its history with it...
+        vaults.delete(account.id, meta.id).await.unwrap();
+        assert!(
+            store
+                .list_for_vault(account.id, meta.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.list_for_account(account.id).await.unwrap().len(), 1);
+
+        // ...and so does deleting the account.
+        accounts.delete(other.id).await.unwrap();
+        assert!(store.get(other.id, other_version.id).await.unwrap().is_none());
     }
 }

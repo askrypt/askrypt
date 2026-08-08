@@ -10,7 +10,7 @@ use askrypt_server::store::google::{GoogleIdTokenVerifier, NotConfiguredIdTokenV
 use askrypt_server::store::memory::MemoryMailer;
 use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
-    self, SqliteAccountStore, SqliteSessionStore, SqliteVaultMetaStore,
+    self, SqliteAccountStore, SqliteSessionStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 use askrypt_server::store::{IdTokenVerifier, Mailer};
 use tracing::info;
@@ -211,17 +211,25 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Accounts, sessions and vault metadata persist in SQLite, vault bytes
-    // on disk (Phase 4).
+    // on disk (Phase 4), and the generations a save replaced beside them.
     let state = match config.backend {
         Backend::Sqlite => {
+            // The blob root up front, not on first upload: a backup script
+            // tarring a directory that nothing has created yet fails, and
+            // that is a bad way to learn about it.
             std::fs::create_dir_all(&config.data_dir)?;
+            std::fs::create_dir_all(config.vaults_dir())?;
             let pool = sqlite::open(&config.db_path()).await?;
             info!(db = %config.db_path().display(), "sqlite ready, migrations applied");
             AppState {
                 accounts: Arc::new(SqliteAccountStore::new(pool.clone())),
                 sessions: Arc::new(SqliteSessionStore::new(pool.clone())),
-                vault_meta: Arc::new(SqliteVaultMetaStore::new(pool)),
+                vault_meta: Arc::new(SqliteVaultMetaStore::new(pool.clone())),
                 vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),
+                vault_versions: Arc::new(SqliteVaultVersionStore::new(pool)),
+                // Same root, keyed by version id: archived generations sit in
+                // a `versions/` subdirectory of each account's own directory.
+                vault_version_blobs: Arc::new(DiskVaultBlobStore::versions(config.vaults_dir())),
                 mailer,
                 id_verifier,
             }

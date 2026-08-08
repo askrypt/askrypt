@@ -258,7 +258,9 @@ impl Config {
         self.data_dir.join("askrypt.db")
     }
 
-    /// Root directory for on-disk vault blobs (used from Phase 4 on).
+    /// Root directory for on-disk vault blobs (used from Phase 4 on). Holds
+    /// one directory per account, containing that account's vault files and
+    /// a `versions/` subdirectory of the generations they replaced.
     pub fn vaults_dir(&self) -> PathBuf {
         self.data_dir.join("vaults")
     }

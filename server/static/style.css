@@ -223,6 +223,23 @@ details.confirm[open] {
 }
 details.confirm input[type="file"] { max-width: 100%; font: inherit; font-size: 0.9rem; }
 
+/* One superseded generation per line: what it is on the left, what you can
+   do with it on the right. The restore form is inline so its button sits
+   next to the download link rather than under it. */
+ul.history { list-style: none; margin: 0 0 0.5rem; padding: 0; }
+ul.history li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+ul.history li:last-child { border-bottom: 0; }
+ul.history li > span { flex: 1 1 12rem; color: var(--muted); }
+ul.history form { display: inline; }
+
 .tag {
   font-size: 0.75rem;
   padding: 0.05rem 0.4rem;

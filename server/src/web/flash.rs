@@ -28,6 +28,7 @@ pub enum Flash {
     VaultReplaced,
     VaultRenamed,
     VaultDeleted,
+    VaultRestored,
 }
 
 impl Flash {
@@ -45,6 +46,7 @@ impl Flash {
             Self::VaultReplaced => "vrep",
             Self::VaultRenamed => "vren",
             Self::VaultDeleted => "vdel",
+            Self::VaultRestored => "vres",
         }
     }
 
@@ -62,6 +64,7 @@ impl Flash {
             "vrep" => Some(Self::VaultReplaced),
             "vren" => Some(Self::VaultRenamed),
             "vdel" => Some(Self::VaultDeleted),
+            "vres" => Some(Self::VaultRestored),
             _ => None,
         }
     }
@@ -82,6 +85,9 @@ impl Flash {
             Self::VaultReplaced => "Vault updated.",
             Self::VaultRenamed => "Vault renamed.",
             Self::VaultDeleted => "Vault deleted.",
+            Self::VaultRestored => {
+                "Earlier version restored. The version it replaced was kept in the history."
+            }
         }
     }
 }
@@ -126,6 +132,7 @@ mod tests {
             Flash::VaultReplaced,
             Flash::VaultRenamed,
             Flash::VaultDeleted,
+            Flash::VaultRestored,
         ];
         for flash in all {
             assert_eq!(Flash::from_code(flash.code()), Some(flash));

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::{
     Account, AccountId, AccountStore, IdTokenError, IdTokenVerifier, Mailer, MailerError,
     NewAccount, Session, SessionStore, StoreError, VaultBlobStore, VaultId, VaultMeta,
-    VaultMetaStore, VerifiedIdToken,
+    VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore, VerifiedIdToken,
 };
 
 #[derive(Debug, Default)]
@@ -237,6 +237,95 @@ impl VaultBlobStore for MemoryVaultBlobStore {
 
     async fn delete_for_account(&self, account_id: AccountId) -> Result<(), StoreError> {
         self.blobs
+            .lock()
+            .unwrap()
+            .retain(|(owner, _), _| *owner != account_id);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct MemoryVaultVersionStore {
+    versions: Mutex<HashMap<(AccountId, VaultVersionId), VaultVersion>>,
+}
+
+/// Newest first, matching the SQLite `ORDER BY archived_at DESC`. Ties break
+/// on the id so a listing is stable: tests archive several versions inside
+/// one clock tick.
+fn newest_first(a: &VaultVersion, b: &VaultVersion) -> std::cmp::Ordering {
+    b.archived_at.cmp(&a.archived_at).then(b.id.cmp(&a.id))
+}
+
+#[async_trait]
+impl VaultVersionStore for MemoryVaultVersionStore {
+    async fn insert(&self, version: VaultVersion) -> Result<(), StoreError> {
+        self.versions
+            .lock()
+            .unwrap()
+            .insert((version.account_id, version.id), version);
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        account_id: AccountId,
+        version_id: VaultVersionId,
+    ) -> Result<Option<VaultVersion>, StoreError> {
+        Ok(self
+            .versions
+            .lock()
+            .unwrap()
+            .get(&(account_id, version_id))
+            .cloned())
+    }
+
+    async fn list_for_vault(
+        &self,
+        account_id: AccountId,
+        vault_id: VaultId,
+    ) -> Result<Vec<VaultVersion>, StoreError> {
+        let versions = self.versions.lock().unwrap();
+        let mut found: Vec<VaultVersion> = versions
+            .values()
+            .filter(|v| v.account_id == account_id && v.vault_id == vault_id)
+            .cloned()
+            .collect();
+        found.sort_by(newest_first);
+        Ok(found)
+    }
+
+    async fn list_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<VaultVersion>, StoreError> {
+        let versions = self.versions.lock().unwrap();
+        let mut found: Vec<VaultVersion> = versions
+            .values()
+            .filter(|v| v.account_id == account_id)
+            .cloned()
+            .collect();
+        found.sort_by(newest_first);
+        Ok(found)
+    }
+
+    async fn delete(
+        &self,
+        account_id: AccountId,
+        version_id: VaultVersionId,
+    ) -> Result<(), StoreError> {
+        match self
+            .versions
+            .lock()
+            .unwrap()
+            .remove(&(account_id, version_id))
+        {
+            Some(_) => Ok(()),
+            None => Err(StoreError::NotFound),
+        }
+    }
+
+    async fn delete_for_account(&self, account_id: AccountId) -> Result<(), StoreError> {
+        self.versions
             .lock()
             .unwrap()
             .retain(|(owner, _), _| *owner != account_id);

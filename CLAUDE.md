@@ -91,8 +91,11 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
-  wires `SqliteAccountStore`/`SqliteSessionStore`/`SqliteVaultMetaStore` plus
-  the on-disk `DiskVaultBlobStore`; the
+  wires `SqliteAccountStore`/`SqliteSessionStore`/`SqliteVaultMetaStore`/
+  `SqliteVaultVersionStore` plus **two** on-disk `DiskVaultBlobStore`s over
+  the *same* root — `new` for the live vaults, `versions` for the archived
+  generations — with `vaults_dir()` created at startup so a backup script
+  never tars a path no upload has made yet; the
   Google verifier is real when `ASKRYPT_GOOGLE_CLIENT_IDS` is set, else
   `NotConfiguredIdTokenVerifier` (501), and the mailer is a real `SmtpMailer`
   when `ASKRYPT_SMTP_HOST` is set, else `MemoryMailer` behind a `warn!` (built
@@ -207,7 +210,8 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   first password on Google-created accounts), `GET /me/sessions` +
   `DELETE /me/sessions/{id}` (sessions are identified by a SHA-256 digest of
   the bearer token so listings never leak tokens; `current` flags the
-  caller's), and `DELETE /me` (cascades vault blobs → vault metadata →
+  caller's), and `DELETE /me` (cascades archived version bytes → version
+  index → vault blobs → vault metadata →
   sessions → account). The email/password mutations sit behind their own
   20 req/min rate limiter. **Changing an existing password revokes every
   other session** (`revoke_other_sessions`, the caller's survives) — desktop
@@ -215,10 +219,21 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   on a Google account revokes nothing.
 - **`server/src/vaults.rs`** — Phase 4 vault file API under `/api/v1/vaults`:
   list, upload (`POST ?name=`), download, overwrite (`PUT /{id}`), rename
-  (`PUT /{id}/name`) and delete, all scoped to the authenticated account.
-  Same split as `auth`/`profile`: `list_for`, `create`, `overwrite`,
-  `set_name`, `destroy` and `read` are the `pub(crate)` free functions the
+  (`PUT /{id}/name`), delete and the `/{id}/versions` subtree (list, download
+  one, `POST /{version_id}/restore`), all scoped to the authenticated
+  account. Same split as `auth`/`profile`: `list_for`, `create`, `overwrite`,
+  `set_name`, `destroy`, `read`, `versions_for`, `versions_by_vault`,
+  `read_version` and `restore_version` are the `pub(crate)` free functions the
   Phase 7.4 file manager drives.
+  **Version history**: every content-changing overwrite archives the bytes it
+  replaced (`MAX_VAULT_VERSIONS` = 5 per vault). Archiving and trimming are
+  deliberately *best effort* — they log a `warn!` and never fail a save — and
+  the trim runs after the write lands. `trim` walks the account's versions
+  newest-first and keeps each only while its vault is under the cap **and**
+  it fits in what the live files leave of `ACCOUNT_QUOTA_BYTES`, so history
+  shares the existing quota instead of multiplying disk use; re-uploading
+  identical bytes makes no generation; a restore is an ordinary `overwrite`
+  with old bytes, so it archives what it displaces and is itself undoable.
   Bytes stay opaque apart from a ZIP-magic check. ETags are the SHA-256 of
   the stored bytes: downloads honor `If-None-Match` (304), overwrites
   require `If-Match` (428 without it, 412 when stale) so multi-device sync
@@ -253,24 +268,34 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   per-row revoke, typed-confirmation delete); `vaults.rs` the 7.4 file
   manager (multipart upload, cookie-authed download route, inline rename,
   replace carrying the row's ETag through the `If-Match` path, delete, quota
-  display) plus `explain`, which turns the handful of reachable `ApiError`
+  display, and a per-row history disclosure whose download route stamps the
+  archival date into the filename and whose restore form carries the row's
+  ETag like replace does) plus `explain`, which turns the handful of reachable `ApiError`
   codes into sentences; `pages.rs` landing and the HTML 404. Templates must
   not contain inline `<script>`/`<style>`, `hx-on:` or `js:` htmx
   expressions — the CSP forbids them and `tests/web.rs` guards it.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
-  seam; handlers can only reach the traits.
+  seam; handlers can only reach the traits. Two of them are the same trait:
+  `vault_blobs` (live files) and `vault_version_blobs` (archived generations,
+  keyed by version id, under each account's `versions/` subdirectory).
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
-  `SessionStore`, `VaultMetaStore`, `VaultBlobStore`, `Mailer`,
+  `SessionStore`, `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
+  `Mailer`,
   `IdTokenVerifier` (+ `StoreError`/`MailerError`/`IdTokenError`, all
   `#[non_exhaustive]`); `memory.rs` in-memory fakes for all six (used by tests
   and the `memory` backend); `sqlite.rs` SQLite pool + embedded migration
   runner over `server/migrations/` plus `SqliteAccountStore`/
-  `SqliteSessionStore`/`SqliteVaultMetaStore` (uuids as TEXT, timestamps via
-  sqlx-chrono, sessions and vault rows cascade on account delete, vault names
-  unique per account); `disk.rs` `DiskVaultBlobStore` storing bytes at
-  `<data>/vaults/<account-id>/<vault-id>.askrypt` with atomic temp-file +
+  `SqliteSessionStore`/`SqliteVaultMetaStore`/`SqliteVaultVersionStore`
+  (uuids as TEXT, timestamps via sqlx-chrono, sessions and vault rows cascade
+  on account delete, version rows cascade on *both* vault and account delete,
+  vault names unique per account); `disk.rs` `DiskVaultBlobStore` storing
+  bytes at `<root>/<account-id>/<blob-id>.askrypt` with atomic temp-file +
   rename writes (path components are uuids, so no user string reaches the
-  filesystem); `google.rs` `GoogleIdTokenVerifier` (RS256 against Google's
+  filesystem) — instantiated **twice** over `<data>/vaults`: `new` keyed by
+  vault id, and `versions` keyed by version id, which nests them at
+  `<account-id>/versions/`. History therefore shares no namespace with the
+  live files while everything one account stores stays under one directory,
+  so deleting that directory takes the history with it; `google.rs` `GoogleIdTokenVerifier` (RS256 against Google's
   JWKS, cached with a 60 s refetch floor, issuer/audience/expiry checks) and
   `NotConfiguredIdTokenVerifier`; `smtp.rs` `SmtpMailer` — `lettre` over
   rustls (never native-tls: it would drag OpenSSL in, and `ring` must stay

@@ -61,14 +61,44 @@
               </form>
             </details>
             <details class="confirm">
+              <summary>History{% if !vault.history.is_empty() %} ({{ vault.history.len() }}){% endif %}</summary>
+{%- if vault.history.is_empty() %}
+              <p class="hint">No earlier versions yet. Each time this file is
+              replaced, the copy it replaced is kept here — the last
+              {{ max_versions }}.</p>
+{%- else %}
+              <ul class="history">
+{%- for version in vault.history %}
+                <li>
+                  <span>{{ version.archived }} &middot; {{ version.size }} &middot;
+                  <code title="Content hash">{{ version.short_etag }}</code></span>
+                  <a href="/vaults/{{ vault.id }}/versions/{{ version.id }}/download">Download</a>
+                  <form method="post"
+                        action="/vaults/{{ vault.id }}/versions/{{ version.id }}/restore"
+                        hx-post="/vaults/{{ vault.id }}/versions/{{ version.id }}/restore"
+                        hx-target="#vault-list" hx-swap="outerHTML">
+                    <input type="hidden" name="csrf" value="{{ csrf }}">
+                    {#- Restoring is an overwrite, so it carries the same
+                        stale-copy guard the replace form does. -#}
+                    <input type="hidden" name="etag" value="{{ vault.etag }}">
+                    <button class="linklike" type="submit">Restore</button>
+                  </form>
+                </li>
+{%- endfor %}
+              </ul>
+              <p class="hint">Restoring makes that copy current again and keeps
+              the present one in the history.</p>
+{%- endif %}
+            </details>
+            <details class="confirm">
               <summary class="danger">Delete</summary>
               <form method="post" action="/vaults/{{ vault.id }}/delete"
                     hx-post="/vaults/{{ vault.id }}/delete" hx-target="#vault-list"
                     hx-swap="outerHTML">
                 <input type="hidden" name="csrf" value="{{ csrf }}">
                 <p class="hint">Deleting <strong>{{ vault.name }}</strong> here
-                removes the copy stored on this site. Copies on your own
-                devices are untouched.</p>
+                removes the copy stored on this site, and its earlier versions
+                with it. Copies on your own devices are untouched.</p>
                 <button class="button danger small" type="submit">Delete permanently</button>
               </form>
             </details>
@@ -83,6 +113,7 @@
   <p class="usage">
     <label for="quota">Storage used</label>
     <progress id="quota" value="{{ used_percent }}" max="100"></progress>
-    <span>{{ used }} of {{ quota }} &middot; {{ count }} of {{ max_count }} files</span>
+    <span>{{ used }} of {{ quota }} &middot; {{ count }} of {{ max_count }} files
+    &middot; {{ archived }} of it earlier versions</span>
   </p>
 </section>

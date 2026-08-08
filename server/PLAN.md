@@ -222,11 +222,36 @@ askrypt/
     | `GET` | `/vaults/{id}` | download raw bytes; `ETag`, honors `If-None-Match` (304) |
     | `PUT` | `/vaults/{id}` | overwrite; **requires `If-Match`** (428 without, 412 on mismatch) |
     | `PUT` | `/vaults/{id}/name` | rename (JSON `{"name": …}`); ETag is content-based, so unchanged |
-    | `DELETE` | `/vaults/{id}` | delete bytes + metadata |
+    | `DELETE` | `/vaults/{id}` | delete bytes + metadata (and the vault's history) |
+    | `GET` | `/vaults/{id}/versions` | the generations this vault's saves replaced, newest first |
+    | `GET` | `/vaults/{id}/versions/{version_id}` | download archived bytes; `ETag`, honors `If-None-Match` |
+    | `POST` | `/vaults/{id}/versions/{version_id}/restore` | make that generation current; `If-Match` honored if sent |
 
     ETags are the SHA-256 of the stored bytes, quoted in headers. Limits:
     10 MiB per file (also the route body limit), 100 MiB and 100 files per
     account, answered as 507 `quota_exceeded` / `vault_limit_reached`.
+
+  - **Version history** *(added 2026-08-08, after the phase gate)*. Every
+    overwrite files the bytes it replaced away as a `VaultVersion`:
+    `MAX_VAULT_VERSIONS` = 5 generations per vault, indexed in
+    `VaultVersionStore` (table `vault_versions`) with the bytes in a
+    **second `VaultBlobStore` instance keyed by version id**, writing to
+    `<data>/vaults/<account-id>/versions/` — inside the account's own
+    directory, so one tree still holds everything an account has stored. Design points worth keeping:
+    - **History never costs a save.** Archiving and trimming are best effort
+      — a failure is a `warn!`, not a 5xx — and the trim runs *after* the
+      write has landed.
+    - **History shares the account quota** rather than adding to it: the trim
+      keeps the newest generations that fit in what the live files leave of
+      the 100 MiB, so total disk per account is unchanged from before the
+      feature. A full account simply keeps no history.
+    - **Identical bytes make no generation**, so a client that re-uploads on
+      a timer cannot flush the real history out of the window.
+    - **A restore is an ordinary overwrite** with old bytes, which archives
+      the state it displaces — restoring the wrong generation is undone by
+      restoring again.
+    - Deleting a vault, and deleting an account, remove the archived bytes
+      too; the SQLite rows also cascade both ways.
 
 - **Phase 5 — Hardening & deployment.** ✅ *(done 2026-08-04)*
   - Security headers; HTTPS story (reverse proxy, e.g. Caddy/nginx).
@@ -434,6 +459,15 @@ askrypt/
   - **`GET /vaults/{id}/download` is a second download route**, cookie-authed,
     beside the API's bearer one: a browser cannot put an `Authorization`
     header on a plain link. Same bytes, plus a `Content-Disposition` filename.
+    Its version twin `/vaults/{id}/versions/{version_id}/download` stamps the
+    archival date into the file name so several downloaded generations do not
+    collide in the downloads folder.
+  - **Each row carries a "History" disclosure** listing the generations that
+    file's saves replaced, with a download link and a restore form per entry.
+    The restore form carries the row's ETag exactly as the replace form does:
+    a restore *is* an overwrite and must lose the same race. The page's whole
+    history is fetched in one store call (`vaults::versions_by_vault`), not
+    per row.
   - **Confirmation steps are `<details>` disclosures**, not scripted dialogs —
     the CSP forbids the inline handler a `confirm()` would need, and a
     disclosure still works with JavaScript off. Account deletion additionally

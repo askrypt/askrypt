@@ -12,12 +12,21 @@
 //! `If-Match` (428 without it) and answer 412 when the stored version
 //! changed under the client; downloads honor `If-None-Match` with 304.
 //!
+//! Every save keeps the bytes it replaced: the previous
+//! [`MAX_VAULT_VERSIONS`] generations of a vault stay readable through
+//! `/{id}/versions`, and any of them can be made current again. History is
+//! written on a best-effort basis and trimmed after the fact — a save is
+//! never refused, and never fails, because of it.
+//!
 //! As in [`crate::auth`] and [`crate::profile`], the handlers are wrappers
 //! around `pub(crate)` free functions ([`list_for`], [`create`],
-//! [`overwrite`], [`set_name`], [`destroy`], [`read`]) that take an account
-//! id instead of an extractor. The Phase 7.4 file manager in
-//! [`crate::web::vaults`] drives those, so the name rules, the ZIP check,
-//! the quota arithmetic and the conflict semantics exist once.
+//! [`overwrite`], [`set_name`], [`destroy`], [`read`], [`versions_for`],
+//! [`read_version`], [`restore_version`]) that take an account id instead of
+//! an extractor. The Phase 7.4 file manager in [`crate::web::vaults`] drives
+//! those, so the name rules, the ZIP check, the quota arithmetic, the
+//! retention rules and the conflict semantics exist once.
+
+use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -31,7 +40,9 @@ use uuid::Uuid;
 use crate::auth::AuthSession;
 use crate::error::{ApiBytes, ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
-use crate::store::{AccountId, StoreError, VaultId, VaultMeta};
+use crate::store::{
+    AccountId, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId,
+};
 
 /// Hard cap on a single vault file. Real vaults are small ZIPs (tens of
 /// KBs); 10 MiB is deliberately generous. Also enforced as the request
@@ -41,6 +52,9 @@ pub const MAX_VAULT_BYTES: usize = 10 * 1024 * 1024;
 pub const ACCOUNT_QUOTA_BYTES: u64 = 100 * 1024 * 1024;
 /// Maximum number of vault files per account.
 pub const MAX_VAULTS_PER_ACCOUNT: usize = 100;
+/// How many superseded generations of a vault are kept. The newest is the
+/// state before the last save, so this many undo steps are available.
+pub const MAX_VAULT_VERSIONS: usize = 5;
 const MAX_NAME_BYTES: usize = 255;
 /// Vault downloads opt out of the blanket `no-store`
 /// ([`crate::hardening::no_store`]): the bytes are encrypted, and
@@ -291,9 +305,119 @@ pub(crate) async fn overwrite(
         updated_at: Utc::now(),
         ..meta.clone()
     };
+    // Only a real change is worth a generation: re-uploading identical bytes
+    // (a client that syncs on a timer) would otherwise push the actual
+    // history out of the window.
+    if updated.etag != meta.etag {
+        archive_current(state, meta).await;
+    }
     state.vault_blobs.put(account_id, vault_id, bytes).await?;
     state.vault_meta.upsert(updated.clone()).await?;
+    // Trimming happens after the save has landed, so a full history can
+    // never be the reason a save fails.
+    trim_history(state, account_id, used_bytes(&existing, Some(vault_id)) + updated.size).await;
     Ok(updated)
+}
+
+/// Files the vault's current bytes away as a version.
+///
+/// Best effort by design: history is a convenience, the save is the point.
+/// A failure here is logged and the save goes ahead, which is the right
+/// trade in both directions — the user keeps their data, and the operator
+/// learns the version store is unwell.
+async fn archive_current(state: &AppState, meta: &VaultMeta) {
+    if let Err(err) = archive(state, meta).await {
+        let (account_id, vault_id) = (meta.account_id, meta.id);
+        tracing::warn!(%account_id, %vault_id, %err, "could not archive the previous vault version");
+    }
+}
+
+async fn archive(state: &AppState, meta: &VaultMeta) -> Result<(), StoreError> {
+    let Some(bytes) = state.vault_blobs.get(meta.account_id, meta.id).await? else {
+        // Nothing stored to keep. `blob_of` reports this inconsistency on
+        // the paths where it matters; here there is simply no history to
+        // write.
+        return Ok(());
+    };
+    let version = VaultVersion {
+        id: Uuid::new_v4(),
+        vault_id: meta.id,
+        account_id: meta.account_id,
+        name: meta.name.clone(),
+        // Measured from the bytes actually archived, not from the metadata
+        // row: this figure drives the quota trim.
+        size: bytes.len() as u64,
+        etag: meta.etag.clone(),
+        updated_at: meta.updated_at,
+        archived_at: Utc::now(),
+    };
+    // Bytes first, index second — same order as the live vault, and with the
+    // same consequence: a failure between the two leaves an unreferenced
+    // blob, never an index entry pointing at nothing.
+    state
+        .vault_version_blobs
+        .put(meta.account_id, version.id, &bytes)
+        .await?;
+    state.vault_versions.insert(version).await
+}
+
+/// Applies both retention rules and drops whatever they exclude.
+///
+/// Walks the account's versions newest first and keeps each one only while
+/// its vault is under [`MAX_VAULT_VERSIONS`] *and* it fits in what is left of
+/// [`ACCOUNT_QUOTA_BYTES`] after the live files. So history never pushes an
+/// account past the quota it already had, and the generations that survive a
+/// squeeze are the recent ones.
+///
+/// `live_used` is the total size of the account's live vaults *after* the
+/// save that triggered this. Like archiving, failures are logged rather than
+/// propagated: the save has already succeeded.
+async fn trim_history(state: &AppState, account_id: AccountId, live_used: u64) {
+    if let Err(err) = trim(state, account_id, live_used).await {
+        tracing::warn!(%account_id, %err, "could not trim vault version history");
+    }
+}
+
+async fn trim(state: &AppState, account_id: AccountId, live_used: u64) -> Result<(), StoreError> {
+    let versions = state.vault_versions.list_for_account(account_id).await?;
+    let mut budget = ACCOUNT_QUOTA_BYTES.saturating_sub(live_used);
+    let mut kept: HashMap<VaultId, usize> = HashMap::new();
+    let mut doomed = Vec::new();
+    for version in versions {
+        let count = kept.entry(version.vault_id).or_default();
+        if *count >= MAX_VAULT_VERSIONS || version.size > budget {
+            doomed.push(version);
+            continue;
+        }
+        *count += 1;
+        budget -= version.size;
+    }
+    for version in doomed {
+        drop_version(state, &version).await?;
+    }
+    Ok(())
+}
+
+/// Removes one archived generation, bytes and index entry both. Already-gone
+/// halves are not an error: this runs from cleanup paths that must be safe to
+/// retry.
+async fn drop_version(state: &AppState, version: &VaultVersion) -> Result<(), StoreError> {
+    match state
+        .vault_version_blobs
+        .delete(version.account_id, version.id)
+        .await
+    {
+        Ok(()) | Err(StoreError::NotFound) => {}
+        Err(other) => return Err(other),
+    }
+    match state
+        .vault_versions
+        .delete(version.account_id, version.id)
+        .await
+    {
+        Ok(()) | Err(StoreError::NotFound) => Ok(()),
+        Err(other) => Err(other),
+    }
 }
 
 #[derive(Deserialize)]
@@ -348,7 +472,7 @@ pub async fn remove(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Deletes a vault: bytes then metadata.
+/// Deletes a vault: history, then bytes, then metadata.
 pub(crate) async fn destroy(
     state: &AppState,
     account_id: AccountId,
@@ -356,6 +480,16 @@ pub(crate) async fn destroy(
 ) -> ApiResult<()> {
     if state.vault_meta.get(account_id, vault_id).await?.is_none() {
         return Err(no_such_vault());
+    }
+    // History goes first and explicitly. SQLite would cascade the index rows
+    // off the vault row, but the archived *bytes* are the server's to remove,
+    // and deleting a vault has to mean the copies stored here are gone.
+    for version in state
+        .vault_versions
+        .list_for_vault(account_id, vault_id)
+        .await?
+    {
+        drop_version(state, &version).await?;
     }
     // Bytes first (tolerating already-gone) so a failure part-way is healed
     // by retrying; the metadata row keeps the vault addressable until both
@@ -370,10 +504,206 @@ pub(crate) async fn destroy(
     }
 }
 
+/// One archived generation as answered by the version endpoints.
+#[derive(Serialize)]
+pub struct VersionInfo {
+    pub id: VaultVersionId,
+    pub vault_id: VaultId,
+    /// The vault's name when this generation was archived.
+    pub name: String,
+    pub size: u64,
+    pub etag: String,
+    /// When these bytes were the live vault's last write.
+    pub updated_at: DateTime<Utc>,
+    /// When they were superseded.
+    pub archived_at: DateTime<Utc>,
+}
+
+impl From<&VaultVersion> for VersionInfo {
+    fn from(version: &VaultVersion) -> Self {
+        Self {
+            id: version.id,
+            vault_id: version.vault_id,
+            name: version.name.clone(),
+            size: version.size,
+            etag: version.etag.clone(),
+            updated_at: version.updated_at,
+            archived_at: version.archived_at,
+        }
+    }
+}
+
+/// `GET /api/v1/vaults/{id}/versions` — the vault's kept generations,
+/// newest first.
+pub async fn list_versions(
+    State(state): State<AppState>,
+    auth: AuthSession,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<VersionInfo>>> {
+    let versions = versions_for(&state, auth.account.id, parse_vault_id(&id)?).await?;
+    Ok(Json(versions.iter().map(VersionInfo::from).collect()))
+}
+
+/// A vault's kept generations, newest first. An unknown vault is a 404 —
+/// "no history" and "no such vault" are different answers.
+pub(crate) async fn versions_for(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+) -> ApiResult<Vec<VaultVersion>> {
+    if state.vault_meta.get(account_id, vault_id).await?.is_none() {
+        return Err(no_such_vault());
+    }
+    Ok(state
+        .vault_versions
+        .list_for_vault(account_id, vault_id)
+        .await?)
+}
+
+/// Every kept generation the account holds, grouped by vault and newest
+/// first. One store round trip for a whole listing — the file manager draws
+/// history inside each row and would otherwise query per vault.
+pub(crate) async fn versions_by_vault(
+    state: &AppState,
+    account_id: AccountId,
+) -> ApiResult<HashMap<VaultId, Vec<VaultVersion>>> {
+    let mut grouped: HashMap<VaultId, Vec<VaultVersion>> = HashMap::new();
+    for version in state.vault_versions.list_for_account(account_id).await? {
+        grouped.entry(version.vault_id).or_default().push(version);
+    }
+    Ok(grouped)
+}
+
+/// `GET /api/v1/vaults/{id}/versions/{version_id}` — the archived bytes.
+///
+/// Archived bytes never change, so the ETag is as strong as it gets and
+/// `If-None-Match` is worth honoring.
+pub async fn download_version(
+    State(state): State<AppState>,
+    auth: AuthSession,
+    Path((id, version_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let vault_id = parse_vault_id(&id)?;
+    let version_id = parse_version_id(&version_id)?;
+    if let Some(if_none_match) = etag_header(&headers, header::IF_NONE_MATCH) {
+        let version = version_of(&state, auth.account.id, vault_id, version_id).await?;
+        if if_none_match == "*" || if_none_match == version.etag {
+            return Ok((
+                StatusCode::NOT_MODIFIED,
+                [
+                    (header::ETAG, http_etag(&version.etag)),
+                    (header::CACHE_CONTROL, CACHE_CONTROL_VAULT.to_string()),
+                ],
+            )
+                .into_response());
+        }
+    }
+    let (version, bytes) = read_version(&state, auth.account.id, vault_id, version_id).await?;
+    Ok((
+        StatusCode::OK,
+        [
+            (header::ETAG, http_etag(&version.etag)),
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CACHE_CONTROL, CACHE_CONTROL_VAULT.to_string()),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// An archived generation and its bytes.
+pub(crate) async fn read_version(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+    version_id: VaultVersionId,
+) -> ApiResult<(VaultVersion, Vec<u8>)> {
+    let version = version_of(state, account_id, vault_id, version_id).await?;
+    match state
+        .vault_version_blobs
+        .get(account_id, version.id)
+        .await?
+    {
+        Some(bytes) => Ok((version, bytes)),
+        None => {
+            tracing::error!(%account_id, %vault_id, %version_id, "vault version indexed but bytes are missing");
+            Err(ApiError::internal())
+        }
+    }
+}
+
+/// Looks up a version, checking it belongs to the vault in the path. A
+/// version id from another vault is not that vault's history, so it 404s
+/// like an unknown one.
+async fn version_of(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+    version_id: VaultVersionId,
+) -> ApiResult<VaultVersion> {
+    match state.vault_versions.get(account_id, version_id).await? {
+        Some(version) if version.vault_id == vault_id => Ok(version),
+        _ => Err(no_such_version()),
+    }
+}
+
+/// `POST /api/v1/vaults/{id}/versions/{version_id}/restore` — make an
+/// archived generation the live vault again.
+///
+/// `If-Match` is honored when sent but not required: the caller picked a
+/// version out of a listing, which is a deliberate act, unlike a blind
+/// overwrite.
+pub async fn restore(
+    State(state): State<AppState>,
+    auth: AuthSession,
+    Path((id, version_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let updated = restore_version(
+        &state,
+        auth.account.id,
+        parse_vault_id(&id)?,
+        parse_version_id(&version_id)?,
+        etag_header(&headers, header::IF_MATCH).as_deref(),
+    )
+    .await?;
+    Ok((
+        StatusCode::OK,
+        [(header::ETAG, http_etag(&updated.etag))],
+        Json(VaultInfo::from(&updated)),
+    )
+        .into_response())
+}
+
+/// Writes an archived generation back as the live vault.
+///
+/// This is an ordinary overwrite with old bytes, which means the state it
+/// replaces is itself archived first: restoring the wrong version is undone
+/// by restoring again.
+pub(crate) async fn restore_version(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+    version_id: VaultVersionId,
+    expected: Option<&str>,
+) -> ApiResult<VaultMeta> {
+    let (_, bytes) = read_version(state, account_id, vault_id, version_id).await?;
+    overwrite(state, account_id, vault_id, expected, &bytes).await
+}
+
 /// Vault ids are uuids; anything else can't name a stored vault, so it
 /// gets the same 404 as an unknown id.
 pub(crate) fn parse_vault_id(raw: &str) -> Result<VaultId, ApiError> {
     Uuid::parse_str(raw).map_err(|_| no_such_vault())
+}
+
+pub(crate) fn parse_version_id(raw: &str) -> Result<VaultVersionId, ApiError> {
+    Uuid::parse_str(raw).map_err(|_| no_such_version())
+}
+
+fn no_such_version() -> ApiError {
+    ApiError::not_found("no such vault version")
 }
 
 fn no_such_vault() -> ApiError {
@@ -445,11 +775,7 @@ fn check_quota(
     replacing: Option<VaultId>,
     new_size: usize,
 ) -> Result<(), ApiError> {
-    let used: u64 = existing
-        .iter()
-        .filter(|m| Some(m.id) != replacing)
-        .map(|m| m.size)
-        .sum();
+    let used = used_bytes(existing, replacing);
     if used + new_size as u64 > ACCOUNT_QUOTA_BYTES {
         return Err(ApiError::new(
             StatusCode::INSUFFICIENT_STORAGE,
@@ -458,6 +784,17 @@ fn check_quota(
         ));
     }
     Ok(())
+}
+
+/// Live bytes held by an account, optionally excluding the vault about to be
+/// replaced. Only the live files count here — history is measured separately
+/// and trimmed to whatever this leaves over.
+fn used_bytes(existing: &[VaultMeta], replacing: Option<VaultId>) -> u64 {
+    existing
+        .iter()
+        .filter(|m| Some(m.id) != replacing)
+        .map(|m| m.size)
+        .sum()
 }
 
 fn content_etag(bytes: &[u8]) -> String {
@@ -523,6 +860,100 @@ mod tests {
         assert!(check_quota(&existing, None, 1).is_err());
         assert!(check_quota(&existing, Some(big), 100).is_ok());
         assert!(check_quota(&existing[..1], None, 10).is_ok());
+    }
+
+    /// Files a version away with a controlled size and archival time. The
+    /// bytes are a stand-in: the retention rules read sizes from the index,
+    /// which is exactly what makes quota-sized fixtures affordable here.
+    async fn seed_version(
+        state: &AppState,
+        account_id: AccountId,
+        vault_id: VaultId,
+        age_secs: i64,
+        size: u64,
+    ) -> VaultVersionId {
+        let id = Uuid::new_v4();
+        let archived_at = Utc::now() - chrono::Duration::seconds(age_secs);
+        state
+            .vault_version_blobs
+            .put(account_id, id, b"PK\x03\x04")
+            .await
+            .unwrap();
+        state
+            .vault_versions
+            .insert(VaultVersion {
+                id,
+                vault_id,
+                account_id,
+                name: "v.askrypt".into(),
+                size,
+                etag: format!("etag-{age_secs}"),
+                updated_at: archived_at,
+                archived_at,
+            })
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn trimming_keeps_the_newest_generations_within_the_cap() {
+        let state = AppState::in_memory();
+        let (account_id, vault_id) = (Uuid::new_v4(), Uuid::new_v4());
+        // Three more generations than the history is deep, youngest first.
+        let seeded = MAX_VAULT_VERSIONS as i64 + 3;
+        let mut ids = Vec::new();
+        for age in 0..seeded {
+            ids.push(seed_version(&state, account_id, vault_id, age, 10).await);
+        }
+
+        trim(&state, account_id, 0).await.unwrap();
+
+        let kept = state.vault_versions.list_for_account(account_id).await.unwrap();
+        assert_eq!(kept.len(), MAX_VAULT_VERSIONS);
+        let kept_ids: Vec<VaultVersionId> = kept.iter().map(|v| v.id).collect();
+        assert_eq!(kept_ids, ids[..MAX_VAULT_VERSIONS], "the newest must survive");
+        // The bytes go with the index entry — a trim that only forgot the
+        // row would leak disk forever.
+        for dropped in &ids[MAX_VAULT_VERSIONS..] {
+            assert!(
+                state
+                    .vault_version_blobs
+                    .get(account_id, *dropped)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn history_gives_way_to_the_live_files_under_the_quota() {
+        let state = AppState::in_memory();
+        let (account_id, vault_id) = (Uuid::new_v4(), Uuid::new_v4());
+        let size = ACCOUNT_QUOTA_BYTES / 10;
+        for age in 0..4 {
+            seed_version(&state, account_id, vault_id, age, size).await;
+        }
+
+        // Live files leave room for two generations, so three of the four go.
+        trim(&state, account_id, ACCOUNT_QUOTA_BYTES - 2 * size)
+            .await
+            .unwrap();
+        let kept = state.vault_versions.list_for_account(account_id).await.unwrap();
+        assert_eq!(kept.len(), 2);
+
+        // A full account keeps no history at all rather than exceeding the
+        // quota it always had.
+        trim(&state, account_id, ACCOUNT_QUOTA_BYTES).await.unwrap();
+        assert!(
+            state
+                .vault_versions
+                .list_for_account(account_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

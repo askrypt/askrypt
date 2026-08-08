@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 pub type AccountId = Uuid;
 pub type VaultId = Uuid;
+pub type VaultVersionId = Uuid;
 
 /// Error type shared by the persistence traits.
 #[derive(Debug, thiserror::Error)]
@@ -127,8 +128,69 @@ pub trait VaultMetaStore: Send + Sync {
     async fn delete_for_account(&self, account_id: AccountId) -> Result<(), StoreError>;
 }
 
+/// One archived generation of a vault: the metadata the bytes were stored
+/// under before a save replaced them.
+///
+/// `name` and `updated_at` are copies taken at archival time, not links to
+/// the live vault — history describes what the file *was*, so a later rename
+/// leaves older entries alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultVersion {
+    /// Identifies the version, and is also the key its bytes are stored
+    /// under in the version blob store.
+    pub id: VaultVersionId,
+    pub vault_id: VaultId,
+    pub account_id: AccountId,
+    pub name: String,
+    pub size: u64,
+    /// Content hash of the archived bytes — the ETag they were served under
+    /// while they were the live vault.
+    pub etag: String,
+    /// When these bytes were written as the live vault.
+    pub updated_at: DateTime<Utc>,
+    /// When they were superseded.
+    pub archived_at: DateTime<Utc>,
+}
+
+/// Index over the archived generations of an account's vaults.
+///
+/// Deliberately has no `update`: a version is written once and then either
+/// read or dropped by the retention rules in [`crate::vaults`].
+#[async_trait]
+pub trait VaultVersionStore: Send + Sync {
+    async fn insert(&self, version: VaultVersion) -> Result<(), StoreError>;
+    async fn get(
+        &self,
+        account_id: AccountId,
+        version_id: VaultVersionId,
+    ) -> Result<Option<VaultVersion>, StoreError>;
+    /// One vault's history, newest first.
+    async fn list_for_vault(
+        &self,
+        account_id: AccountId,
+        vault_id: VaultId,
+    ) -> Result<Vec<VaultVersion>, StoreError>;
+    /// Every version the account holds, newest first. The retention rules
+    /// need the whole set: the byte budget is per account, not per vault.
+    async fn list_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<VaultVersion>, StoreError>;
+    async fn delete(
+        &self,
+        account_id: AccountId,
+        version_id: VaultVersionId,
+    ) -> Result<(), StoreError>;
+    async fn delete_for_account(&self, account_id: AccountId) -> Result<(), StoreError>;
+}
+
 /// Opaque vault bytes, addressed per user. The server never parses these
 /// beyond an optional ZIP-magic sanity check (Phase 4).
+///
+/// Two instances of this trait are in play (see [`crate::state::AppState`]):
+/// one keyed by vault id holding the live files, and one keyed by *version*
+/// id holding archived generations, rooted in a separate directory so the
+/// two never share a namespace.
 #[async_trait]
 pub trait VaultBlobStore: Send + Sync {
     async fn put(

@@ -1,10 +1,17 @@
 //! Local-disk [`VaultBlobStore`] (Phase 4): opaque vault bytes stored as
-//! `<root>/<account-id>/<vault-id>.askrypt`.
+//! `<root>/<account-id>/<vault-id>.askrypt`, and — for the archived
+//! generations of those files — `<root>/<account-id>/versions/<version-id>.askrypt`.
+//!
+//! Everything one account has stored therefore sits under a single
+//! directory: one tree to back up, one tree to remove when the account goes.
+//! The two stores stay distinct all the same, because `versions/` can never
+//! collide with a uuid-named vault file.
 //!
 //! Writes are atomic — bytes go to a temp file in the same directory which
 //! is then renamed over the target — so a crash mid-upload never leaves a
-//! truncated vault where a good one was. Path components are uuids, so no
-//! user-controlled strings ever reach the filesystem.
+//! truncated vault where a good one was. Path components are uuids (plus
+//! that one fixed segment), so no user-controlled strings ever reach the
+//! filesystem.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -14,17 +21,44 @@ use uuid::Uuid;
 
 use super::{AccountId, StoreError, VaultBlobStore, VaultId};
 
+/// Where archived generations live inside an account's own directory.
+const VERSIONS_SUBDIR: &str = "versions";
+
 pub struct DiskVaultBlobStore {
     root: PathBuf,
+    /// Inserted between the account directory and the file name. `None` for
+    /// the live vaults; `Some("versions")` for their history.
+    subdir: Option<&'static str>,
 }
 
 impl DiskVaultBlobStore {
+    /// The live vaults: `<root>/<account-id>/<vault-id>.askrypt`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            subdir: None,
+        }
     }
 
+    /// The archived generations, keyed by version id and nested inside the
+    /// account's own directory: `<root>/<account-id>/versions/<version-id>.askrypt`.
+    /// Takes the *same* root as [`Self::new`].
+    pub fn versions(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            subdir: Some(VERSIONS_SUBDIR),
+        }
+    }
+
+    /// The directory this store writes into for `account_id` — which for the
+    /// version store is a subdirectory of the account's, so deleting the
+    /// account's directory takes the history with it.
     fn account_dir(&self, account_id: AccountId) -> PathBuf {
-        self.root.join(account_id.to_string())
+        let dir = self.root.join(account_id.to_string());
+        match self.subdir {
+            Some(subdir) => dir.join(subdir),
+            None => dir,
+        }
     }
 
     fn vault_path(&self, account_id: AccountId, vault_id: VaultId) -> PathBuf {
@@ -130,6 +164,44 @@ mod tests {
             store.delete(account_id, vault_id).await,
             Err(StoreError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn versions_live_under_the_account_directory_not_beside_it() {
+        let (dir, live) = store();
+        let root = dir.path().join("vaults");
+        let versions = DiskVaultBlobStore::versions(&root);
+        let account_id = Uuid::new_v4();
+        let vault_id = Uuid::new_v4();
+        let version_id = Uuid::new_v4();
+
+        live.put(account_id, vault_id, b"PK\x03\x04live").await.unwrap();
+        versions
+            .put(account_id, version_id, b"PK\x03\x04old")
+            .await
+            .unwrap();
+
+        let account_dir = root.join(account_id.to_string());
+        assert!(account_dir.join(format!("{vault_id}.askrypt")).is_file());
+        assert!(
+            account_dir
+                .join("versions")
+                .join(format!("{version_id}.askrypt"))
+                .is_file()
+        );
+        // The two stores address different files even for the same id, and
+        // neither can read the other's.
+        assert!(live.get(account_id, version_id).await.unwrap().is_none());
+        assert!(versions.get(account_id, vault_id).await.unwrap().is_none());
+
+        // Dropping the account's directory takes its history with it — the
+        // whole point of nesting rather than storing history in a tree of
+        // its own.
+        live.delete_for_account(account_id).await.unwrap();
+        assert!(!account_dir.exists());
+        assert!(versions.get(account_id, version_id).await.unwrap().is_none());
+        // And removing just the history is still idempotent afterwards.
+        versions.delete_for_account(account_id).await.unwrap();
     }
 
     #[tokio::test]

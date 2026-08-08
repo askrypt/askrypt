@@ -22,7 +22,9 @@ whole product.
   make an exception for `localhost`, which is why `cargo run` works in
   development.) Do not expose the server's own port.
 - A data directory on persistent storage. It holds `askrypt.db` (SQLite, WAL
-  mode) and `vaults/<account-id>/<vault-id>.askrypt`.
+  mode) and `vaults/<account-id>/<vault-id>.askrypt`, with the generations
+  those files replaced alongside them in
+  `vaults/<account-id>/versions/<version-id>.askrypt`.
 
 ---
 
@@ -166,7 +168,10 @@ Limits and backpressure:
   never shed.
 - 20 requests/minute per client on `/api/v1/auth/*` and on the email/password
   mutations → 429 `rate_limited` with `Retry-After`.
-- Per account: 100 MiB total, 100 vaults, 10 MiB per file.
+- Per account: 100 MiB total, 100 vaults, 10 MiB per file. Each vault also
+  keeps the 5 generations its last saves replaced; those bytes are charged to
+  the same 100 MiB, and the oldest are dropped to make room rather than a
+  save being refused.
 
 ---
 
@@ -212,7 +217,10 @@ host — the snapshot below does not archive them.
 
 ## 6. Backup and restore
 
-The live state is `<data>/askrypt.db` plus `<data>/vaults/`.
+The live state is `<data>/askrypt.db` plus `<data>/vaults/` — which includes
+each account's `versions/` subdirectory, the generations their saves replaced.
+Keep those: a restore that drops them throws away the recovery path a user
+reaches for after a bad save.
 
 > **Never `cp` the live `askrypt.db`.** It runs in WAL mode, so the `.db`
 > file on its own can be stale or torn.

@@ -1062,6 +1062,88 @@ async fn a_file_that_is_not_a_vault_is_refused_in_plain_words() {
     assert!(html.starts_with("<!doctype html>"), "expected a full page");
 }
 
+/// The history disclosure a row grows once it has been replaced: read a
+/// version out of the page, fetch those bytes, and put them back.
+#[tokio::test]
+async fn the_file_manager_can_download_and_restore_an_earlier_version() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "history@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "notes.askrypt")],
+            Some(("notes.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+
+    // A file that was never replaced says so instead of showing an empty list.
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = first_vault_id(&html);
+    assert!(html.contains("No earlier versions yet"), "{html}");
+
+    let (status, _, html) = send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &csrf_field(&html),
+            &[("etag", &field_value(&html, "etag").unwrap())],
+            Some(("notes.askrypt", &vault_bytes(2))),
+        ),
+    )
+    .await;
+    // A plain (non-htmx) form post redirects back to the listing.
+    assert_eq!(status, StatusCode::SEE_OTHER, "{html}");
+
+    // The replaced copy is now offered in the row's history.
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let marker = format!("/vaults/{id}/versions/");
+    let start = html.find(&marker).expect("no history entry in the page") + marker.len();
+    let version_id = html[start..][..html[start..].find('/').unwrap()].to_string();
+
+    // Its bytes are the ones the replace displaced, under a dated name.
+    let (status, headers, body) = send(
+        &app,
+        get_with_cookies(
+            &format!("/vaults/{id}/versions/{version_id}/download"),
+            &cookies,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_bytes(), vault_bytes(1).as_slice());
+    let disposition = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
+    assert!(disposition.contains("notes."), "{disposition}");
+    assert!(disposition.ends_with(".askrypt\""), "{disposition}");
+
+    // Restoring answers with the refreshed listing and swaps the file back.
+    let (status, _, html) = send(
+        &app,
+        post_form_htmx(
+            &format!("/vaults/{id}/versions/{version_id}/restore"),
+            &cookies,
+            &format!(
+                "csrf={}&etag={}",
+                csrf_field(&html),
+                field_value(&html, "etag").unwrap()
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(html.contains("Earlier version restored"), "{html}");
+    let (_, _, bytes) = send(
+        &app,
+        get_with_cookies(&format!("/vaults/{id}/download"), &cookies),
+    )
+    .await;
+    assert_eq!(bytes.as_bytes(), vault_bytes(1).as_slice());
+}
+
 /// The listing shows what is left of the quota; the count limit and the byte
 /// quota themselves are the API suite's gate.
 #[tokio::test]

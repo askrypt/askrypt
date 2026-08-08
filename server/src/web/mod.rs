@@ -89,6 +89,14 @@ pub fn routes(
         .route("/vaults/{id}/name", post(vaults::rename))
         .route("/vaults/{id}/delete", post(vaults::remove))
         .route("/vaults/{id}/download", get(vaults::download))
+        .route(
+            "/vaults/{id}/versions/{version_id}/download",
+            get(vaults::download_version),
+        )
+        .route(
+            "/vaults/{id}/versions/{version_id}/restore",
+            post(vaults::restore),
+        )
         // Same trick as the API's vault routes: declared here, inside the
         // router's global limit, so it overrides it for uploads only.
         .layer(DefaultBodyLimit::max(

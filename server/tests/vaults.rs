@@ -1,7 +1,7 @@
 //! Phase 4 gate tests: the vault file API driven as a headless client —
 //! upload → list → download → rename → delete lifecycle, ETag optimistic
-//! concurrency, per-account isolation, and the size/quota limits. Runs
-//! against the in-memory fakes.
+//! concurrency, per-account isolation, the size/quota limits, and the
+//! version history a save leaves behind. Runs against the in-memory fakes.
 
 use std::path::Path;
 
@@ -9,7 +9,9 @@ use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::VaultMeta;
-use askrypt_server::vaults::{ACCOUNT_QUOTA_BYTES, MAX_VAULTS_PER_ACCOUNT, MAX_VAULT_BYTES};
+use askrypt_server::vaults::{
+    ACCOUNT_QUOTA_BYTES, MAX_VAULT_BYTES, MAX_VAULT_VERSIONS, MAX_VAULTS_PER_ACCOUNT,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
@@ -378,4 +380,214 @@ async fn size_quota_and_count_limits_are_enforced() {
     let (status, body) = send(&t.app, upload("one-more.askrypt", &token, VAULT_V1)).await;
     assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
     assert_eq!(body["error"]["code"], "vault_limit_reached");
+}
+
+fn restore_req(id: &str, version_id: &str, token: &str) -> Request<Body> {
+    Request::post(format!(
+        "/api/v1/vaults/{id}/versions/{version_id}/restore"
+    ))
+    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+    .body(Body::empty())
+    .unwrap()
+}
+
+/// Uploads a vault and overwrites it with each of `revisions` in turn,
+/// answering the vault id and the ETag of the file as it stands at the end.
+async fn upload_and_revise(app: &Router, token: &str, revisions: &[&[u8]]) -> (String, String) {
+    let (status, body) = send(app, upload("history.askrypt", token, VAULT_V1)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let mut etag = body["etag"].as_str().unwrap().to_string();
+    for bytes in revisions {
+        let (status, body) = send(app, replace(&id, token, Some(&format!("\"{etag}\"")), bytes)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        etag = body["etag"].as_str().unwrap().to_string();
+    }
+    (id, etag)
+}
+
+#[tokio::test]
+async fn a_save_keeps_the_bytes_it_replaced_and_can_put_them_back() {
+    let t = test_app();
+    let token = register_and_login(&t.app, "a@example.com").await;
+
+    // A brand-new vault has no history: there is nothing it replaced.
+    let (status, body) = send(&t.app, upload("history.askrypt", &token, VAULT_V1)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["id"].as_str().unwrap().to_string();
+    let v1_etag = body["etag"].as_str().unwrap().to_string();
+    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!([]));
+
+    // Overwriting files the previous generation away.
+    let (status, body) = send(
+        &t.app,
+        replace(&id, &token, Some(&format!("\"{v1_etag}\"")), VAULT_V2),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v2_etag = body["etag"].as_str().unwrap().to_string();
+
+    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["etag"], v1_etag.as_str());
+    assert_eq!(body[0]["size"], VAULT_V1.len());
+    assert_eq!(body[0]["vault_id"], id.as_str());
+    assert_eq!(body[0]["name"], "history.askrypt");
+    assert!(body[0]["archived_at"].is_string());
+    let version_id = body[0]["id"].as_str().unwrap().to_string();
+
+    // The archived bytes come back exactly as they went in, under their own
+    // ETag, and revalidate.
+    let uri = format!("/api/v1/vaults/{id}/versions/{version_id}");
+    let (status, headers, bytes) = send_raw(&t.app, get_authed(&uri, &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, VAULT_V1);
+    assert_eq!(
+        headers[header::ETAG].to_str().unwrap(),
+        format!("\"{v1_etag}\"")
+    );
+    let (status, _, bytes) = send_raw(
+        &t.app,
+        Request::get(&uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::IF_NONE_MATCH, format!("\"{v1_etag}\""))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(bytes.is_empty());
+
+    // Restoring makes it current again — and keeps what it displaced, so the
+    // restore is itself undoable.
+    let (status, body) = send(&t.app, restore_req(&id, &version_id, &token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["etag"], v1_etag.as_str());
+    assert_eq!(body["size"], VAULT_V1.len());
+    let (status, _, bytes) = send_raw(&t.app, get_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, VAULT_V1);
+
+    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 2);
+    // Newest first: the v2 that the restore replaced.
+    assert_eq!(body[0]["etag"], v2_etag.as_str());
+    assert_eq!(body[1]["etag"], v1_etag.as_str());
+}
+
+#[tokio::test]
+async fn re_uploading_identical_bytes_does_not_add_a_generation() {
+    let t = test_app();
+    let token = register_and_login(&t.app, "a@example.com").await;
+    // A client syncing on a timer sends the same file over and over; only a
+    // real change is worth a slot in a five-deep history.
+    let (id, _) = upload_and_revise(&t.app, &token, &[VAULT_V1, VAULT_V1, VAULT_V2]).await;
+
+    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body[0]["size"], VAULT_V1.len());
+}
+
+#[tokio::test]
+async fn only_the_newest_generations_are_kept() {
+    let t = test_app();
+    let token = register_and_login(&t.app, "a@example.com").await;
+
+    // Two more saves than the history is deep.
+    let revisions: Vec<Vec<u8>> = (0..MAX_VAULT_VERSIONS + 2)
+        .map(|i| format!("PK\x03\x04 revision {i}").into_bytes())
+        .collect();
+    let borrowed: Vec<&[u8]> = revisions.iter().map(|v| v.as_slice()).collect();
+    let (id, _) = upload_and_revise(&t.app, &token, &borrowed).await;
+
+    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = body.as_array().unwrap();
+    assert_eq!(listed.len(), MAX_VAULT_VERSIONS);
+    // Newest first, and the ones that fell off are the oldest: the last
+    // kept generation is the revision before the current one.
+    let sizes: Vec<u64> = listed.iter().map(|v| v["size"].as_u64().unwrap()).collect();
+    assert_eq!(
+        sizes[0],
+        revisions[revisions.len() - 2].len() as u64,
+        "newest kept generation should be what the last save replaced"
+    );
+    let archived: Vec<&str> = listed.iter().map(|v| v["archived_at"].as_str().unwrap()).collect();
+    let mut sorted = archived.clone();
+    sorted.sort_unstable();
+    sorted.reverse();
+    assert_eq!(archived, sorted, "history must read newest first");
+
+    // The dropped generations are unreachable, not merely unlisted.
+    let (status, _) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions/{}", Uuid::new_v4()), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn history_belongs_to_one_vault_one_account_and_dies_with_the_file() {
+    let t = test_app();
+    let alice = register_and_login(&t.app, "alice@example.com").await;
+    let bob = register_and_login(&t.app, "bob@example.com").await;
+
+    let (id, _) = upload_and_revise(&t.app, &alice, &[VAULT_V2]).await;
+    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &alice)).await;
+    assert_eq!(status, StatusCode::OK);
+    let version_id = body[0]["id"].as_str().unwrap().to_string();
+
+    // Bob cannot list, read or restore any of it.
+    for request in [
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &bob),
+        get_authed(&format!("/api/v1/vaults/{id}/versions/{version_id}"), &bob),
+        restore_req(&id, &version_id, &bob),
+    ] {
+        let (status, _) = send(&t.app, request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // Neither can Alice reach it through a different vault of her own: a
+    // version id is only meaningful under the file it belongs to.
+    let (status, body) = send(&t.app, upload("other.askrypt", &alice, VAULT_V1)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let other_id = body["id"].as_str().unwrap().to_string();
+    let (status, _) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{other_id}/versions/{version_id}"), &alice),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Deleting the vault takes its history with it, bytes included.
+    let (status, _) = send(&t.app, delete_authed(&format!("/api/v1/vaults/{id}"), &alice)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &alice)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Behind the API too: no index row survives, and neither do the bytes.
+    let (_, me) = send(&t.app, get_authed("/api/v1/me", &alice)).await;
+    let account_id: Uuid = me["id"].as_str().unwrap().parse().unwrap();
+    assert!(
+        t.state
+            .vault_versions
+            .list_for_account(account_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let orphan_id: Uuid = version_id.parse().unwrap();
+    assert!(
+        t.state
+            .vault_version_blobs
+            .get(account_id, orphan_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
