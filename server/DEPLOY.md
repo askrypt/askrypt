@@ -137,7 +137,9 @@ Applied to every response by `src/hardening.rs`:
 - `Content-Security-Policy: default-src 'self'; script-src 'self'; …` — no
   `unsafe-inline`, no `unsafe-eval`, `frame-ancestors 'none'`. The website's
   pages are written to fit this, not the other way round.
-- `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+- `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`
+  (**not** `no-referrer`, which would make browsers stamp same-origin form
+  posts `Origin: null` and get them refused by the CSRF check),
   `X-Frame-Options: DENY`, `Permissions-Policy`, COOP/CORP `same-origin`,
   and HSTS when enabled.
 - `Cache-Control: no-store` on `/api/v1` and on every HTML page (vault

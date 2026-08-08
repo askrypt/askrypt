@@ -235,6 +235,12 @@ fn csrf_rejected() -> WebError {
 ///
 /// Compares against the `Host` header, which the reverse proxy in
 /// `deploy/Caddyfile` passes through unchanged.
+///
+/// A browser that states `Origin: null` is refused: `null` is an opaque
+/// origin, not this site. Note that the response's `Referrer-Policy`
+/// decides whether *same-origin* form posts arrive that way — see
+/// [`crate::hardening::REFERRER_POLICY`], which exists because of this
+/// function.
 fn check_origin(headers: &HeaderMap) -> Result<(), WebError> {
     let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
         return Ok(());
@@ -335,6 +341,22 @@ mod tests {
             (header::ORIGIN, "https://askrypt.example.evil.test"),
         ]);
         assert!(check_origin(&lookalike).is_err());
+    }
+
+    #[test]
+    fn an_opaque_origin_is_refused() {
+        let headers = headers_with(&[
+            (header::HOST, "askrypt.example"),
+            (header::ORIGIN, "null"),
+        ]);
+        assert!(check_origin(&headers).is_err());
+    }
+
+    /// The site's own pages must never provoke the `null` above. See
+    /// [`crate::hardening::REFERRER_POLICY`].
+    #[test]
+    fn our_referrer_policy_does_not_null_out_same_origin_form_posts() {
+        assert_ne!(crate::hardening::REFERRER_POLICY, "no-referrer");
     }
 
     #[test]

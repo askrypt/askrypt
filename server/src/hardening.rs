@@ -41,6 +41,23 @@ base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const PERMISSIONS_POLICY: &str = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
 magnetometer=(), microphone=(), payment=(), usb=()";
 
+/// Full referrer to ourselves, nothing at all to anyone else.
+///
+/// **Not `no-referrer`**, which looks stricter and is a trap. Fetch's
+/// "append a request `Origin` header" step sets the header to `null` for any
+/// non-CORS request with a method other than GET/HEAD when the referrer
+/// policy is `no-referrer` — that is, for every ordinary HTML form
+/// submission. [`crate::web::csrf::check_origin`] then sees an opaque origin
+/// and refuses the request, so the sign-out button (the one form on the site
+/// that is a plain navigation rather than an htmx `XMLHttpRequest`, which is
+/// exempt because its mode is `cors`) returned 403 to every visitor.
+///
+/// `same-origin` leaks exactly as little cross-origin — the header is
+/// omitted entirely off-site — while leaving same-origin form posts stamped
+/// with the real origin. Cross-origin posts still arrive as `null` and are
+/// still refused.
+pub(crate) const REFERRER_POLICY: &str = "same-origin";
+
 /// One year, the usual preload-eligible value.
 const HSTS: &str = "max-age=31536000; includeSubDomains";
 
@@ -74,7 +91,7 @@ pub async fn security_headers(
     );
     headers.insert(
         header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
+        HeaderValue::from_static(REFERRER_POLICY),
     );
     // Redundant with `frame-ancestors 'none'` for modern browsers, kept for
     // the ones that only understand this.

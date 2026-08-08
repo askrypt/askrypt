@@ -519,6 +519,29 @@ async fn a_post_from_another_origin_is_refused_even_with_a_valid_token() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+/// `Origin: null` is an opaque origin — a sandboxed frame, or a post that
+/// crossed a redirect. It is also what a browser sends for *any* plain form
+/// submission when the page carried `Referrer-Policy: no-referrer`, which is
+/// why `hardening::REFERRER_POLICY` doesn't.
+#[tokio::test]
+async fn a_post_from_an_opaque_origin_is_refused() {
+    let app = app();
+    let (_, headers, html) = send(&app, get("/register")).await;
+    let cookies = jar("", &headers);
+    let body = format!(
+        "csrf={}&email=opaque@example.com&password={PASSWORD}",
+        csrf_field(&html)
+    );
+
+    let mut request = post_form("/register", &cookies, &body);
+    request
+        .headers_mut()
+        .insert(header::ORIGIN, "null".parse().unwrap());
+    let (status, _, _) = send(&app, request).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 /// Bearer requests are not CSRF-able and must not be made to carry a token.
 #[tokio::test]
 async fn the_json_api_is_untouched_by_the_csrf_layer() {

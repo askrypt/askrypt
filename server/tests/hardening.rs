@@ -99,7 +99,10 @@ async fn security_headers_ride_every_response_shape() {
         );
         assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP, "{path}");
         assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{path}");
-        assert_eq!(headers[header::REFERRER_POLICY], "no-referrer", "{path}");
+        // Deliberately not `no-referrer`: that one makes browsers stamp
+        // same-origin form posts `Origin: null`, which the CSRF layer
+        // refuses. See `hardening::REFERRER_POLICY`.
+        assert_eq!(headers[header::REFERRER_POLICY], "same-origin", "{path}");
         assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{path}");
         assert!(headers.contains_key("permissions-policy"), "{path}");
         assert!(headers.contains_key("cross-origin-opener-policy"), "{path}");
