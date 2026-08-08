@@ -109,7 +109,15 @@ pub struct VaultMeta {
     pub size: u64,
     /// Content hash used as the ETag for optimistic concurrency.
     pub etag: String,
+    /// When the server last stored these bytes.
     pub updated_at: DateTime<Utc>,
+    /// The machine that wrote the file, as the file itself records it in its
+    /// unencrypted params ([`crate::vaultfile`]). `None` for files written
+    /// before the stamp existed.
+    pub host: Option<String>,
+    /// When the file says it was written — the client's clock, not the
+    /// server's, and about the save rather than the upload.
+    pub saved_at: Option<DateTime<Utc>>,
 }
 
 #[async_trait]
@@ -150,6 +158,10 @@ pub struct VaultVersion {
     pub updated_at: DateTime<Utc>,
     /// When they were superseded.
     pub archived_at: DateTime<Utc>,
+    /// The write stamp these bytes carry, copied from the vault row at
+    /// archival time (see [`VaultMeta::host`]).
+    pub host: Option<String>,
+    pub saved_at: Option<DateTime<Utc>>,
 }
 
 /// Index over the archived generations of an account's vaults.

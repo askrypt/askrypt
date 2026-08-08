@@ -24,6 +24,37 @@ use uuid::Uuid;
 const VAULT_V1: &[u8] = b"PK\x03\x04 pretend vault v1";
 const VAULT_V2: &[u8] = b"PK\x03\x04 pretend vault v2, a bit longer";
 
+/// A vault-shaped archive carrying the two unencrypted stamp fields, as the
+/// desktop and mobile apps write them. Everything the file would also hold
+/// is encrypted and irrelevant here — the server never reads past `params`.
+fn stamped_vault(host: &str, saved_at: &str) -> Vec<u8> {
+    let json = json!({
+        "version": "1",
+        "question0": "aGFzaA==",
+        "params": {
+            "kdf": "pbkdf2-sha256",
+            "iterations": 600_000,
+            "salt": "c2FsdA==",
+            "translit": false,
+            "host": host,
+            "updated_at": saved_at,
+        },
+        "qs": "encrypted",
+        "master": "encrypted",
+        "data": "encrypted",
+    })
+    .to_string();
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        zip.start_file("askrypt.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, json.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
 struct TestApp {
     app: Router,
     /// Kept so tests can seed the stores behind the API (limit tests).
@@ -328,6 +359,8 @@ async fn seed_meta(state: &AppState, account_id: Uuid, name: &str, size: u64) {
             size,
             etag: "seeded".into(),
             updated_at: Utc::now(),
+            host: None,
+            saved_at: None,
         })
         .await
         .unwrap();
@@ -477,6 +510,60 @@ async fn a_save_keeps_the_bytes_it_replaced_and_can_put_them_back() {
     // Newest first: the v2 that the restore replaced.
     assert_eq!(body[0]["etag"], v2_etag.as_str());
     assert_eq!(body[1]["etag"], v1_etag.as_str());
+}
+
+#[tokio::test]
+async fn a_save_reports_the_device_and_time_the_file_records() {
+    let t = test_app();
+    let token = register_and_login(&t.app, "a@example.com").await;
+
+    let laptop = stamped_vault("lenovo-x1", "2026-08-08T10:15:30Z");
+    let (status, body) = send(&t.app, upload("personal.askrypt", &token, &laptop)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let etag = body["etag"].as_str().unwrap().to_string();
+    assert_eq!(body["host"], "lenovo-x1");
+    assert_eq!(body["saved_at"], "2026-08-08T10:15:30Z");
+
+    // The stamp is metadata like any other: it comes back in the listing.
+    let (_, body) = send(&t.app, get_authed("/api/v1/vaults", &token)).await;
+    assert_eq!(body[0]["host"], "lenovo-x1");
+    assert_eq!(body[0]["saved_at"], "2026-08-08T10:15:30Z");
+    // ...and the server's own receive time stays a separate figure.
+    assert_ne!(body[0]["updated_at"], body[0]["saved_at"]);
+
+    // A save from another device moves the live stamp; the generation it
+    // replaced keeps the one it was written with.
+    let phone = stamped_vault("pixel-8", "2026-08-08T18:40:00Z");
+    let (status, body) = send(
+        &t.app,
+        replace(&id, &token, Some(&format!("\"{etag}\"")), &phone),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["host"], "pixel-8");
+    assert_eq!(body["saved_at"], "2026-08-08T18:40:00Z");
+    let etag = body["etag"].as_str().unwrap().to_string();
+
+    let (_, body) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &token),
+    )
+    .await;
+    assert_eq!(body.as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(body[0]["host"], "lenovo-x1");
+    assert_eq!(body[0]["saved_at"], "2026-08-08T10:15:30Z");
+
+    // A file with no stamp — an older app, or the opaque bytes the rest of
+    // this suite uploads — clears it rather than inheriting the last one.
+    let (status, body) = send(
+        &t.app,
+        replace(&id, &token, Some(&format!("\"{etag}\"")), VAULT_V1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["host"], Value::Null);
+    assert_eq!(body["saved_at"], Value::Null);
 }
 
 #[tokio::test]

@@ -209,6 +209,32 @@ fn vault_bytes(marker: u8) -> Vec<u8> {
     bytes
 }
 
+/// A real vault-shaped archive: the two unencrypted stamp fields the server
+/// reads, in the entry it reads them from. The rest of a vault's JSON is
+/// encrypted and plays no part here.
+fn stamped_vault_bytes(host: &str, saved_at: &str) -> Vec<u8> {
+    let json = serde_json::json!({
+        "version": "1",
+        "params": {
+            "kdf": "pbkdf2-sha256",
+            "iterations": 600_000,
+            "salt": "c2FsdA==",
+            "host": host,
+            "updated_at": saved_at,
+        },
+    })
+    .to_string();
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        zip.start_file("askrypt.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, json.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
 /// Signs in through the browser and returns the jar plus the `/vaults` page.
 async fn with_vaults_page(app: &Router, email: &str) -> (String, String) {
     let cookies = register(app, email).await;
@@ -1142,6 +1168,100 @@ async fn the_file_manager_can_download_and_restore_an_earlier_version() {
     )
     .await;
     assert_eq!(bytes.as_bytes(), vault_bytes(1).as_slice());
+}
+
+/// The listing tells the visitor where and when a file was saved, taken from
+/// the vault's own unencrypted stamp — the point being that several devices
+/// write to one account and the table has to say which one wrote last.
+#[tokio::test]
+async fn the_listing_shows_the_device_and_time_a_file_records() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "stamped@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "stamped.askrypt")],
+            Some((
+                "stamped.askrypt",
+                &stamped_vault_bytes("lenovo-x1", "2026-08-08T10:15:30Z"),
+            )),
+        ),
+    )
+    .await;
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = first_vault_id(&html);
+    assert!(html.contains("lenovo-x1 · 2026-08-08 10:15 UTC"), "{html}");
+
+    // A save from a second device takes over the row, and the copy it
+    // replaced keeps its own stamp in the history.
+    let (status, _, html) = send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &csrf_field(&html),
+            &[("etag", &field_value(&html, "etag").unwrap())],
+            Some((
+                "stamped.askrypt",
+                &stamped_vault_bytes("pixel-8", "2026-08-08T18:40:00Z"),
+            )),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{html}");
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    assert!(html.contains("pixel-8 · 2026-08-08 18:40 UTC"), "{html}");
+    assert!(
+        html.contains("Saved lenovo-x1 · 2026-08-08 10:15 UTC"),
+        "the replaced generation should keep its own stamp: {html}"
+    );
+
+    // A file with no stamp — every other upload in this suite — says so
+    // rather than showing a blank cell.
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "plain.askrypt")],
+            Some(("plain.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    assert!(html.contains("Not recorded"), "{html}");
+}
+
+/// The host name is text another machine wrote, and it lands in a table
+/// cell: it must be escaped like any other untrusted string.
+#[tokio::test]
+async fn a_host_name_from_a_file_cannot_inject_markup() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "xss@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "evil.askrypt")],
+            Some((
+                "evil.askrypt",
+                &stamped_vault_bytes("<script>alert(1)</script>", "2026-08-08T10:15:30Z"),
+            )),
+        ),
+    )
+    .await;
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    assert!(!html.contains("<script>alert"), "{html}");
+    assert!(html.contains("&#60;script&#62;alert(1)"), "{html}");
 }
 
 /// The listing shows what is left of the quota; the count limit and the byte

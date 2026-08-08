@@ -275,6 +275,8 @@ struct VaultMetaRow {
     size: i64,
     etag: String,
     updated_at: DateTime<Utc>,
+    host: Option<String>,
+    saved_at: Option<DateTime<Utc>>,
 }
 
 impl VaultMetaRow {
@@ -286,9 +288,14 @@ impl VaultMetaRow {
             size: self.size as u64,
             etag: self.etag,
             updated_at: self.updated_at,
+            host: self.host,
+            saved_at: self.saved_at,
         })
     }
 }
+
+/// The columns every vault query selects, in [`VaultMetaRow`]'s order.
+const VAULT_COLUMNS: &str = "id, account_id, name, size, etag, updated_at, host, saved_at";
 
 #[derive(Clone)]
 pub struct SqliteVaultMetaStore {
@@ -319,11 +326,12 @@ impl VaultMetaStore for SqliteVaultMetaStore {
         // out, not silently replace the other vault's row (as OR REPLACE
         // would).
         sqlx::query(
-            "INSERT INTO vaults (id, account_id, name, size, etag, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+            "INSERT INTO vaults (id, account_id, name, size, etag, updated_at, host, saved_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
              ON CONFLICT (account_id, id) DO UPDATE SET \
              name = excluded.name, size = excluded.size, etag = excluded.etag, \
-             updated_at = excluded.updated_at",
+             updated_at = excluded.updated_at, host = excluded.host, \
+             saved_at = excluded.saved_at",
         )
         .bind(meta.id.to_string())
         .bind(meta.account_id.to_string())
@@ -331,6 +339,8 @@ impl VaultMetaStore for SqliteVaultMetaStore {
         .bind(meta.size as i64)
         .bind(&meta.etag)
         .bind(meta.updated_at)
+        .bind(&meta.host)
+        .bind(meta.saved_at)
         .execute(&self.pool)
         .await
         .map_err(vault_write_err)?;
@@ -342,10 +352,9 @@ impl VaultMetaStore for SqliteVaultMetaStore {
         account_id: AccountId,
         vault_id: VaultId,
     ) -> Result<Option<VaultMeta>, StoreError> {
-        let row: Option<VaultMetaRow> = sqlx::query_as(
-            "SELECT id, account_id, name, size, etag, updated_at FROM vaults \
-             WHERE account_id = ?1 AND id = ?2",
-        )
+        let row: Option<VaultMetaRow> = sqlx::query_as(&format!(
+            "SELECT {VAULT_COLUMNS} FROM vaults WHERE account_id = ?1 AND id = ?2"
+        ))
         .bind(account_id.to_string())
         .bind(vault_id.to_string())
         .fetch_optional(&self.pool)
@@ -355,10 +364,9 @@ impl VaultMetaStore for SqliteVaultMetaStore {
     }
 
     async fn list_for_account(&self, account_id: AccountId) -> Result<Vec<VaultMeta>, StoreError> {
-        let rows: Vec<VaultMetaRow> = sqlx::query_as(
-            "SELECT id, account_id, name, size, etag, updated_at FROM vaults \
-             WHERE account_id = ?1 ORDER BY name",
-        )
+        let rows: Vec<VaultMetaRow> = sqlx::query_as(&format!(
+            "SELECT {VAULT_COLUMNS} FROM vaults WHERE account_id = ?1 ORDER BY name"
+        ))
         .bind(account_id.to_string())
         .fetch_all(&self.pool)
         .await
@@ -399,6 +407,8 @@ struct VaultVersionRow {
     etag: String,
     updated_at: DateTime<Utc>,
     archived_at: DateTime<Utc>,
+    host: Option<String>,
+    saved_at: Option<DateTime<Utc>>,
 }
 
 impl VaultVersionRow {
@@ -412,13 +422,15 @@ impl VaultVersionRow {
             etag: self.etag,
             updated_at: self.updated_at,
             archived_at: self.archived_at,
+            host: self.host,
+            saved_at: self.saved_at,
         })
     }
 }
 
 /// The columns every version query selects, in [`VaultVersionRow`]'s order.
 const VERSION_COLUMNS: &str =
-    "id, vault_id, account_id, name, size, etag, updated_at, archived_at";
+    "id, vault_id, account_id, name, size, etag, updated_at, archived_at, host, saved_at";
 
 #[derive(Clone)]
 pub struct SqliteVaultVersionStore {
@@ -436,8 +448,8 @@ impl VaultVersionStore for SqliteVaultVersionStore {
     async fn insert(&self, version: VaultVersion) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO vault_versions \
-             (id, vault_id, account_id, name, size, etag, updated_at, archived_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, vault_id, account_id, name, size, etag, updated_at, archived_at, host, saved_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )
         .bind(version.id.to_string())
         .bind(version.vault_id.to_string())
@@ -447,6 +459,8 @@ impl VaultVersionStore for SqliteVaultVersionStore {
         .bind(&version.etag)
         .bind(version.updated_at)
         .bind(version.archived_at)
+        .bind(&version.host)
+        .bind(version.saved_at)
         .execute(&self.pool)
         .await
         .map_err(backend_err)?;
@@ -679,7 +693,18 @@ mod tests {
             size: 1234,
             etag: "etag-1".to_string(),
             updated_at: Utc::now(),
+            // The stamp read out of the file; it round-trips through the
+            // nullable columns with everything else.
+            host: Some("lenovo-x1".to_string()),
+            saved_at: Some(stamp_time()),
         }
+    }
+
+    /// A second-precision instant, the way a vault file records one.
+    fn stamp_time() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-08T10:15:30Z")
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
     #[tokio::test]
@@ -759,6 +784,8 @@ mod tests {
             etag: format!("etag-{age_secs}"),
             updated_at: archived_at,
             archived_at,
+            host: meta.host.clone(),
+            saved_at: meta.saved_at,
         }
     }
 

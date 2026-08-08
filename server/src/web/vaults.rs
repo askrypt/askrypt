@@ -17,6 +17,7 @@ use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::error::ApiError;
@@ -76,6 +77,10 @@ struct Row {
     name: String,
     size: String,
     updated: String,
+    /// Where and when the file itself says it was saved, `None` when it
+    /// carries no stamp. This is the client's own account of the save; the
+    /// `updated` column is the server's account of the upload.
+    saved: Option<String>,
     /// First 12 hex characters of the content hash — enough to tell two
     /// versions apart by eye, and it is not a secret.
     short_etag: String,
@@ -93,6 +98,7 @@ impl Row {
             name: meta.name.clone(),
             size: human_bytes(meta.size),
             updated: timestamp(meta.updated_at),
+            saved: saved_stamp(meta.host.as_deref(), meta.saved_at),
             short_etag: meta.etag.chars().take(12).collect(),
             etag: meta.etag.clone(),
             history: history.iter().map(HistoryRow::from).collect(),
@@ -108,6 +114,10 @@ struct HistoryRow {
     /// when picking which one to go back to.
     archived: String,
     short_etag: String,
+    /// The write stamp these bytes carry, as on the live row. Picking a
+    /// version to go back to is much easier when the line says which device
+    /// wrote it.
+    saved: Option<String>,
 }
 
 impl From<&VaultVersion> for HistoryRow {
@@ -117,7 +127,23 @@ impl From<&VaultVersion> for HistoryRow {
             size: human_bytes(version.size),
             archived: timestamp(version.archived_at),
             short_etag: version.etag.chars().take(12).collect(),
+            saved: saved_stamp(version.host.as_deref(), version.saved_at),
         }
+    }
+}
+
+/// The file's own "saved here, then" line, as one cell's worth of text.
+///
+/// The two halves are independent — an older app writes neither, a file with
+/// an unreadable timestamp still names its host — so each combination gets a
+/// sentence and a file that says nothing gets `None` rather than a row of
+/// placeholders.
+fn saved_stamp(host: Option<&str>, saved_at: Option<DateTime<Utc>>) -> Option<String> {
+    match (host, saved_at) {
+        (Some(host), Some(at)) => Some(format!("{host} · {}", timestamp(at))),
+        (Some(host), None) => Some(host.to_string()),
+        (None, Some(at)) => Some(timestamp(at)),
+        (None, None) => None,
     }
 }
 
@@ -495,6 +521,25 @@ mod tests {
         assert_eq!(human_bytes(1024), "1.0 KB");
         assert_eq!(human_bytes(1536), "1.5 KB");
         assert_eq!(human_bytes(10 * 1024 * 1024), "10.0 MB");
+    }
+
+    #[test]
+    fn the_saved_cell_says_what_the_file_knows_and_no_more() {
+        let at = DateTime::parse_from_rfc3339("2026-08-08T10:15:30Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            saved_stamp(Some("lenovo-x1"), Some(at)).as_deref(),
+            Some("lenovo-x1 · 2026-08-08 10:15 UTC")
+        );
+        assert_eq!(saved_stamp(Some("lenovo-x1"), None).as_deref(), Some("lenovo-x1"));
+        assert_eq!(
+            saved_stamp(None, Some(at)).as_deref(),
+            Some("2026-08-08 10:15 UTC")
+        );
+        // A file that carries no stamp gets no cell text at all — the
+        // template shows "Not recorded" rather than an empty date.
+        assert_eq!(saved_stamp(None, None), None);
     }
 
     #[test]

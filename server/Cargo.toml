@@ -33,6 +33,11 @@ tower-http = { version = "0.6", features = ["fs"] }
 argon2 = "0.5"
 getrandom = "0.3"
 sha2 = "0.10"
+# Read-only peek at a vault's two unencrypted stamp fields (`src/vaultfile.rs`).
+# Deflate alone: the server decompresses one small JSON member and never
+# writes an archive, and this must not become a second way into the format —
+# the scope rule keeps `askrypt-core` out of this crate.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # SMTP delivery for the `Mailer` seam. rustls (not native-tls) to match

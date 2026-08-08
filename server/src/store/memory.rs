@@ -538,6 +538,8 @@ mod tests {
             size: 1234,
             etag: "etag-1".to_string(),
             updated_at: Utc::now(),
+            host: None,
+            saved_at: None,
         }
     }
 

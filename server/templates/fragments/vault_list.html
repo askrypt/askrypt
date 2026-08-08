@@ -21,7 +21,10 @@
     <table class="listing">
       <thead>
         <tr>
-          <th>Name</th><th>Size</th><th>Last change</th><th>Version</th><th></th>
+          <th>Name</th><th>Size</th>
+          <th title="When this site last stored a change to the file">Last change</th>
+          <th title="The device and time recorded inside the file itself">Saved</th>
+          <th>Version</th><th></th>
         </tr>
       </thead>
       <tbody>
@@ -40,6 +43,10 @@
           </td>
           <td>{{ vault.size }}</td>
           <td>{{ vault.updated }}</td>
+          {#- The file's own account of the save: which machine wrote it and
+              when, straight out of the unencrypted params. Files written by
+              an app old enough not to stamp them say nothing. -#}
+          <td>{% if let Some(saved) = vault.saved %}{{ saved }}{% else %}<span class="hint">Not recorded</span>{% endif %}</td>
           <td><code title="Content hash">{{ vault.short_etag }}</code></td>
           <td class="row-actions">
             <a href="/vaults/{{ vault.id }}/download">Download</a>
@@ -71,7 +78,11 @@
 {%- for version in vault.history %}
                 <li>
                   <span>{{ version.archived }} &middot; {{ version.size }} &middot;
-                  <code title="Content hash">{{ version.short_etag }}</code></span>
+                  <code title="Content hash">{{ version.short_etag }}</code>
+{%- if let Some(saved) = version.saved %}
+                  <br><span class="hint">Saved {{ saved }}</span>
+{%- endif %}
+                  </span>
                   <a href="/vaults/{{ vault.id }}/versions/{{ version.id }}/download">Download</a>
                   <form method="post"
                         action="/vaults/{{ vault.id }}/versions/{{ version.id }}/restore"

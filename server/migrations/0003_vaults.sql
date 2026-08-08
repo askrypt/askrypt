@@ -9,7 +9,14 @@ CREATE TABLE vaults (
     size       INTEGER NOT NULL,
     -- Content hash used as the ETag for optimistic concurrency.
     etag       TEXT NOT NULL,
+    -- When the server last stored these bytes.
     updated_at TEXT NOT NULL,
+    -- The write stamp the file carries in its own unencrypted params, read
+    -- on upload by `src/vaultfile.rs`: which machine saved it and when.
+    -- Nullable — files written before the stamp existed carry none, and so
+    -- does anything the reader cannot make sense of.
+    host       TEXT,
+    saved_at   TEXT,
     PRIMARY KEY (account_id, id),
     UNIQUE (account_id, name)
 );

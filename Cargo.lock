@@ -326,6 +326,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "zip",
 ]
 
 [[package]]

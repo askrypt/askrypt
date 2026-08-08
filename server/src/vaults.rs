@@ -5,7 +5,8 @@
 //! /vaults/{id}`) and down (`GET /vaults/{id}`), metadata list, rename,
 //! delete. Everything is scoped to the authenticated account, and the
 //! bytes stay opaque — the only inspection is the ZIP-magic sanity check
-//! on upload.
+//! and the two unencrypted stamp fields [`crate::vaultfile`] reads on the
+//! way in, so a listing can say which machine saved a file and when.
 //!
 //! Optimistic concurrency for multi-device sync: every stored vault has a
 //! content-hash ETag, served on upload and download. Overwrites must send
@@ -40,6 +41,7 @@ use uuid::Uuid;
 use crate::auth::AuthSession;
 use crate::error::{ApiBytes, ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
+use crate::vaultfile;
 use crate::store::{
     AccountId, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId,
 };
@@ -69,7 +71,12 @@ pub struct VaultInfo {
     pub name: String,
     pub size: u64,
     pub etag: String,
+    /// When the server stored these bytes.
     pub updated_at: DateTime<Utc>,
+    /// The machine that saved the file, from its own unencrypted stamp.
+    pub host: Option<String>,
+    /// When the file says it was saved, from the same stamp.
+    pub saved_at: Option<DateTime<Utc>>,
 }
 
 impl From<&VaultMeta> for VaultInfo {
@@ -80,6 +87,8 @@ impl From<&VaultMeta> for VaultInfo {
             size: meta.size,
             etag: meta.etag.clone(),
             updated_at: meta.updated_at,
+            host: meta.host.clone(),
+            saved_at: meta.saved_at,
         }
     }
 }
@@ -152,6 +161,7 @@ pub(crate) async fn create(
     }
     check_quota(&existing, None, bytes.len())?;
 
+    let stamp = vaultfile::read_stamp(bytes);
     let meta = VaultMeta {
         id: Uuid::new_v4(),
         account_id,
@@ -159,6 +169,8 @@ pub(crate) async fn create(
         size: bytes.len() as u64,
         etag: content_etag(bytes),
         updated_at: Utc::now(),
+        host: stamp.host,
+        saved_at: stamp.saved_at,
     };
     // Bytes first, metadata second: a failure in between leaves an
     // invisible orphan blob (reaped with the account), never a listed
@@ -299,10 +311,16 @@ pub(crate) async fn overwrite(
     check_vault_bytes(bytes)?;
     check_quota(&existing, Some(vault_id), bytes.len())?;
 
+    let stamp = vaultfile::read_stamp(bytes);
     let updated = VaultMeta {
         size: bytes.len() as u64,
         etag: content_etag(bytes),
         updated_at: Utc::now(),
+        // The new bytes bring their own stamp, or none: a file saved by a
+        // device that does not write one must not inherit the last device's
+        // name.
+        host: stamp.host,
+        saved_at: stamp.saved_at,
         ..meta.clone()
     };
     // Only a real change is worth a generation: re-uploading identical bytes
@@ -350,6 +368,10 @@ async fn archive(state: &AppState, meta: &VaultMeta) -> Result<(), StoreError> {
         etag: meta.etag.clone(),
         updated_at: meta.updated_at,
         archived_at: Utc::now(),
+        // Copied, not re-read: these are the same bytes the vault row was
+        // written from, so its stamp is theirs.
+        host: meta.host.clone(),
+        saved_at: meta.saved_at,
     };
     // Bytes first, index second — same order as the live vault, and with the
     // same consequence: a failure between the two leaves an unreferenced
@@ -517,6 +539,10 @@ pub struct VersionInfo {
     pub updated_at: DateTime<Utc>,
     /// When they were superseded.
     pub archived_at: DateTime<Utc>,
+    /// The machine that saved these bytes, from the file's own stamp.
+    pub host: Option<String>,
+    /// When the file says they were saved.
+    pub saved_at: Option<DateTime<Utc>>,
 }
 
 impl From<&VaultVersion> for VersionInfo {
@@ -529,6 +555,8 @@ impl From<&VaultVersion> for VersionInfo {
             etag: version.etag.clone(),
             updated_at: version.updated_at,
             archived_at: version.archived_at,
+            host: version.host.clone(),
+            saved_at: version.saved_at,
         }
     }
 }
@@ -851,6 +879,8 @@ mod tests {
             size,
             etag: "e".into(),
             updated_at: Utc::now(),
+            host: None,
+            saved_at: None,
         };
         let big = Uuid::new_v4();
         let existing = vec![
@@ -890,6 +920,8 @@ mod tests {
                 etag: format!("etag-{age_secs}"),
                 updated_at: archived_at,
                 archived_at,
+                host: None,
+                saved_at: None,
             })
             .await
             .unwrap();

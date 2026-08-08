@@ -253,6 +253,29 @@ askrypt/
     - Deleting a vault, and deleting an account, remove the archived bytes
       too; the SQLite rows also cascade both ways.
 
+  - **Write stamps** *(added 2026-08-08, after the phase gate)*. The vault
+    format keeps two fields *outside* the encryption — `params.host` and
+    `params.updated_at`, the machine that last wrote the file and when — and
+    `src/vaultfile.rs` reads exactly those two on the way in, so a listing can
+    answer "where and when was this saved?" rather than only "when did the
+    server receive it?". They ride along in `VaultMeta`/`VaultVersion`
+    (nullable `host` / `saved_at` columns), in `VaultInfo`/`VersionInfo`, and
+    in a `Saved` column on the file manager's table. Design points:
+    - **It does not weaken the opaque-bytes contract.** The reader knows one
+      archive member and two fields in it; nothing encrypted is deserialized,
+      and `askrypt-core` stays out of this crate — the scope rule is the
+      reason the reader is written here rather than borrowed.
+    - **It can never refuse a save.** A file that is not a ZIP, has no
+      `askrypt.json`, or predates the stamp simply has none, and the two
+      halves are independent: an unparsable timestamp still leaves the host.
+    - **Bytes bring their own stamp.** An overwrite replaces both fields
+      rather than inheriting them, so a save from a device that writes no
+      stamp does not keep showing the previous device's name. Archived
+      generations keep the stamp they were saved with.
+    - The host name is another machine's text on its way to a table cell:
+      control characters are stripped, the length is capped, and the
+      templates escape it (`tests/web.rs` guards that).
+
 - **Phase 5 — Hardening & deployment.** ✅ *(done 2026-08-04)*
   - Security headers; HTTPS story (reverse proxy, e.g. Caddy/nginx).
     The CSP must be written so the Phase 7 pages fit it without loosening:

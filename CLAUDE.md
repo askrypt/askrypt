@@ -234,13 +234,27 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   shares the existing quota instead of multiplying disk use; re-uploading
   identical bytes makes no generation; a restore is an ordinary `overwrite`
   with old bytes, so it archives what it displaces and is itself undoable.
-  Bytes stay opaque apart from a ZIP-magic check. ETags are the SHA-256 of
+  Bytes stay opaque apart from the ZIP-magic check and the write stamp
+  `vaultfile::read_stamp` lifts off them in `create`/`overwrite` (see
+  `server/src/vaultfile.rs`); `archive` copies the live row's stamp onto the
+  generation it files away. ETags are the SHA-256 of
   the stored bytes: downloads honor `If-None-Match` (304), overwrites
   require `If-Match` (428 without it, 412 when stale) so multi-device sync
   detects conflicts. Enforces `MAX_VAULT_BYTES` (10 MiB),
   `ACCOUNT_QUOTA_BYTES` (100 MiB) and `MAX_VAULTS_PER_ACCOUNT` (100).
   Downloads set `Cache-Control: private, no-cache` so they opt out of the
   blanket `no-store` without losing ETag revalidation.
+- **`server/src/vaultfile.rs`** — The one look the server takes inside a
+  vault: `read_stamp` opens the ZIP, reads `askrypt.json`, and lifts the two
+  fields the format leaves *unencrypted* — `params.host` and
+  `params.updated_at` — into a `VaultStamp`. Written here rather than
+  borrowed from `askrypt-core`, which this crate must never link; it
+  deserializes nothing else, is read-only (`zip` is pulled in
+  `default-features = false, features = ["deflate-flate2-zlib-rs"]`), caps the
+  inflated JSON at 1 MiB, and **cannot fail a save** — a non-ZIP, a missing
+  entry or a pre-stamp file simply has no stamp, and the host/time halves are
+  independent. Host names are foreign text bound for a table cell: control
+  characters stripped, 128 chars max, escaped by askama at render time.
 - **`server/src/ratelimit.rs`** — In-memory fixed-window `RateLimiter` +
   axum middleware, keyed via `clientip::client_ip` (`client_key` is
   `pub(crate)` so `web` can bucket identically); 429s carry `Retry-After`.
@@ -268,7 +282,10 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   per-row revoke, typed-confirmation delete); `vaults.rs` the 7.4 file
   manager (multipart upload, cookie-authed download route, inline rename,
   replace carrying the row's ETag through the `If-Match` path, delete, quota
-  display, and a per-row history disclosure whose download route stamps the
+  display, a `Saved` column carrying the file's own `host`/`saved_at` stamp
+  next to the server's own "last change" time (`saved_stamp` formats the pair,
+  `None` when the file records neither), and a per-row history disclosure
+  whose download route stamps the
   archival date into the filename and whose restore form carries the row's
   ETag like replace does) plus `explain`, which turns the handful of reachable `ApiError`
   codes into sentences; `pages.rs` landing and the HTML 404. Templates must
@@ -288,7 +305,8 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   `SqliteSessionStore`/`SqliteVaultMetaStore`/`SqliteVaultVersionStore`
   (uuids as TEXT, timestamps via sqlx-chrono, sessions and vault rows cascade
   on account delete, version rows cascade on *both* vault and account delete,
-  vault names unique per account); `disk.rs` `DiskVaultBlobStore` storing
+  vault names unique per account, and the nullable `host`/`saved_at` stamp
+  columns on `vaults` + `vault_versions`); `disk.rs` `DiskVaultBlobStore` storing
   bytes at `<root>/<account-id>/<blob-id>.askrypt` with atomic temp-file +
   rename writes (path components are uuids, so no user string reaches the
   filesystem) — instantiated **twice** over `<data>/vaults`: `new` keyed by
@@ -318,18 +336,20 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   gate: providers, email update, change/set password, session list/revoke,
   account-delete cascade incl. the vault stores), `vaults.rs` (the Phase 4
   gate: upload → list → download → rename → delete, ETag conflict behavior,
-  per-account isolation, size/quota/count limits) and `hardening.rs` (the
+  per-account isolation, size/quota/count limits, and the write stamp a
+  real stamped archive puts in the listing) and `hardening.rs` (the
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 30 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 34 tests:
   template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
   `GET /api/v1/me/sessions` → revoke → signed out, the 7.3 profile round trip
   incl. self-revocation and the typed-confirmation delete, and the 7.4
   upload → list → byte-identical download → rename → delete with the
-  stale-ETag conflict and the oversize 413 page). Middleware needing a slow
+  stale-ETag conflict, the oversize 413 page, and the `Saved` column —
+  including that a host name out of a file cannot inject markup). Middleware needing a slow
   or parked handler (timeout, shedding) is unit-tested inside
   `src/hardening.rs` instead.
 - **`server/templates/` + `server/static/`** — The website's markup and its
@@ -367,7 +387,7 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 | `aes` + `cbc` + `cipher` | AES-256-CBC encryption |
 | `pbkdf2` + `sha2` | Key derivation |
 | `serde` + `serde_json` | Serialization |
-| `zip` | Vault file format (ZIP archive) |
+| `zip` | Vault file format (ZIP archive); in the server, read-only, for the write stamp |
 | `rfd` | Native file open/save dialogs |
 | `rand` | Random number generation |
 | `tokio` | `spawn_blocking` for off-main-thread vault decryption and server requests |

@@ -16,5 +16,6 @@ pub mod ratelimit;
 pub mod routes;
 pub mod state;
 pub mod store;
+pub mod vaultfile;
 pub mod vaults;
 pub mod web;

@@ -21,6 +21,10 @@ CREATE TABLE vault_versions (
     updated_at  TEXT NOT NULL,
     -- When they were superseded and archived.
     archived_at TEXT NOT NULL,
+    -- The archived bytes' own write stamp, copied from the vault row like
+    -- `name` and `etag`: history says which device wrote each generation.
+    host        TEXT,
+    saved_at    TEXT,
     PRIMARY KEY (account_id, id),
     FOREIGN KEY (account_id, vault_id) REFERENCES vaults(account_id, id) ON DELETE CASCADE
 );

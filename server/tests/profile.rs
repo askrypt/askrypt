@@ -382,6 +382,8 @@ async fn delete_account_cascades_to_sessions_and_vaults() {
             size: 8,
             etag: "etag-1".into(),
             updated_at: Utc::now(),
+            host: None,
+            saved_at: None,
         })
         .await
         .unwrap();
