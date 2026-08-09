@@ -86,10 +86,7 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .route("/{id}/name", put(vaults::rename))
         .route("/{id}/versions", get(vaults::list_versions))
         .route("/{id}/versions/{version_id}", get(vaults::download_version))
-        .route(
-            "/{id}/versions/{version_id}/restore",
-            post(vaults::restore),
-        )
+        .route("/{id}/versions/{version_id}/restore", post(vaults::restore))
         .layer(DefaultBodyLimit::max(vaults::MAX_VAULT_BYTES));
 
     let api_v1 = Router::new()

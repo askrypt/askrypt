@@ -221,14 +221,22 @@ async fn vault_lifecycle_upload_list_download_rename_delete() {
     assert_eq!(body["etag"], etag.as_str());
 
     // Delete, then everything about it is gone.
-    let (status, _) = send(&t.app, delete_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
+    let (status, _) = send(
+        &t.app,
+        delete_authed(&format!("/api/v1/vaults/{id}"), &token),
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, body) = send(&t.app, get_authed("/api/v1/vaults", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!([]));
     let (status, _) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = send(&t.app, delete_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
+    let (status, _) = send(
+        &t.app,
+        delete_authed(&format!("/api/v1/vaults/{id}"), &token),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -248,8 +256,7 @@ async fn overwrite_requires_matching_if_match() {
     let (status, body) = send(&t.app, replace(&id, &token, Some("\"stale\""), VAULT_V2)).await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
     assert_eq!(body["error"]["code"], "precondition_failed");
-    let (_, _, bytes) =
-        send_raw(&t.app, get_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
+    let (_, _, bytes) = send_raw(&t.app, get_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
     assert_eq!(bytes, VAULT_V1);
 
     // Matching If-Match overwrites and rotates the ETag.
@@ -382,7 +389,13 @@ async fn size_quota_and_count_limits_are_enforced() {
     // Byte quota: leave room for exactly one small vault — the upload that
     // fits is accepted, the next one over the line answers 507.
     let headroom = VAULT_V1.len() as u64 + 5;
-    seed_meta(&t.state, account_id, "big.askrypt", ACCOUNT_QUOTA_BYTES - headroom).await;
+    seed_meta(
+        &t.state,
+        account_id,
+        "big.askrypt",
+        ACCOUNT_QUOTA_BYTES - headroom,
+    )
+    .await;
     let (status, body) = send(&t.app, upload("fits.askrypt", &token, VAULT_V1)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = body["id"].as_str().unwrap().to_string();
@@ -416,12 +429,10 @@ async fn size_quota_and_count_limits_are_enforced() {
 }
 
 fn restore_req(id: &str, version_id: &str, token: &str) -> Request<Body> {
-    Request::post(format!(
-        "/api/v1/vaults/{id}/versions/{version_id}/restore"
-    ))
-    .header(header::AUTHORIZATION, format!("Bearer {token}"))
-    .body(Body::empty())
-    .unwrap()
+    Request::post(format!("/api/v1/vaults/{id}/versions/{version_id}/restore"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
 }
 
 /// Uploads a vault and overwrites it with each of `revisions` in turn,
@@ -432,7 +443,11 @@ async fn upload_and_revise(app: &Router, token: &str, revisions: &[&[u8]]) -> (S
     let id = body["id"].as_str().unwrap().to_string();
     let mut etag = body["etag"].as_str().unwrap().to_string();
     for bytes in revisions {
-        let (status, body) = send(app, replace(&id, token, Some(&format!("\"{etag}\"")), bytes)).await;
+        let (status, body) = send(
+            app,
+            replace(&id, token, Some(&format!("\"{etag}\"")), bytes),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         etag = body["etag"].as_str().unwrap().to_string();
     }
@@ -449,7 +464,11 @@ async fn a_save_keeps_the_bytes_it_replaced_and_can_put_them_back() {
     assert_eq!(status, StatusCode::CREATED);
     let id = body["id"].as_str().unwrap().to_string();
     let v1_etag = body["etag"].as_str().unwrap().to_string();
-    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    let (status, body) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!([]));
 
@@ -462,7 +481,11 @@ async fn a_save_keeps_the_bytes_it_replaced_and_can_put_them_back() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let v2_etag = body["etag"].as_str().unwrap().to_string();
 
-    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    let (status, body) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["etag"], v1_etag.as_str());
@@ -500,11 +523,16 @@ async fn a_save_keeps_the_bytes_it_replaced_and_can_put_them_back() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["etag"], v1_etag.as_str());
     assert_eq!(body["size"], VAULT_V1.len());
-    let (status, _, bytes) = send_raw(&t.app, get_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
+    let (status, _, bytes) =
+        send_raw(&t.app, get_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, VAULT_V1);
 
-    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    let (status, body) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 2);
     // Newest first: the v2 that the restore replaced.
@@ -574,7 +602,11 @@ async fn re_uploading_identical_bytes_does_not_add_a_generation() {
     // real change is worth a slot in a five-deep history.
     let (id, _) = upload_and_revise(&t.app, &token, &[VAULT_V1, VAULT_V1, VAULT_V2]).await;
 
-    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    let (status, body) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 1, "{body}");
     assert_eq!(body[0]["size"], VAULT_V1.len());
@@ -592,7 +624,11 @@ async fn only_the_newest_generations_are_kept() {
     let borrowed: Vec<&[u8]> = revisions.iter().map(|v| v.as_slice()).collect();
     let (id, _) = upload_and_revise(&t.app, &token, &borrowed).await;
 
-    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &token)).await;
+    let (status, body) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let listed = body.as_array().unwrap();
     assert_eq!(listed.len(), MAX_VAULT_VERSIONS);
@@ -604,7 +640,10 @@ async fn only_the_newest_generations_are_kept() {
         revisions[revisions.len() - 2].len() as u64,
         "newest kept generation should be what the last save replaced"
     );
-    let archived: Vec<&str> = listed.iter().map(|v| v["archived_at"].as_str().unwrap()).collect();
+    let archived: Vec<&str> = listed
+        .iter()
+        .map(|v| v["archived_at"].as_str().unwrap())
+        .collect();
     let mut sorted = archived.clone();
     sorted.sort_unstable();
     sorted.reverse();
@@ -613,7 +652,10 @@ async fn only_the_newest_generations_are_kept() {
     // The dropped generations are unreachable, not merely unlisted.
     let (status, _) = send(
         &t.app,
-        get_authed(&format!("/api/v1/vaults/{id}/versions/{}", Uuid::new_v4()), &token),
+        get_authed(
+            &format!("/api/v1/vaults/{id}/versions/{}", Uuid::new_v4()),
+            &token,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -626,7 +668,11 @@ async fn history_belongs_to_one_vault_one_account_and_dies_with_the_file() {
     let bob = register_and_login(&t.app, "bob@example.com").await;
 
     let (id, _) = upload_and_revise(&t.app, &alice, &[VAULT_V2]).await;
-    let (status, body) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &alice)).await;
+    let (status, body) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &alice),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let version_id = body[0]["id"].as_str().unwrap().to_string();
 
@@ -647,15 +693,26 @@ async fn history_belongs_to_one_vault_one_account_and_dies_with_the_file() {
     let other_id = body["id"].as_str().unwrap().to_string();
     let (status, _) = send(
         &t.app,
-        get_authed(&format!("/api/v1/vaults/{other_id}/versions/{version_id}"), &alice),
+        get_authed(
+            &format!("/api/v1/vaults/{other_id}/versions/{version_id}"),
+            &alice,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Deleting the vault takes its history with it, bytes included.
-    let (status, _) = send(&t.app, delete_authed(&format!("/api/v1/vaults/{id}"), &alice)).await;
+    let (status, _) = send(
+        &t.app,
+        delete_authed(&format!("/api/v1/vaults/{id}"), &alice),
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _) = send(&t.app, get_authed(&format!("/api/v1/vaults/{id}/versions"), &alice)).await;
+    let (status, _) = send(
+        &t.app,
+        get_authed(&format!("/api/v1/vaults/{id}/versions"), &alice),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Behind the API too: no index row survives, and neither do the bytes.
     let (_, me) = send(&t.app, get_authed("/api/v1/me", &alice)).await;

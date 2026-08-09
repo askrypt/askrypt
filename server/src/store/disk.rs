@@ -62,7 +62,8 @@ impl DiskVaultBlobStore {
     }
 
     fn vault_path(&self, account_id: AccountId, vault_id: VaultId) -> PathBuf {
-        self.account_dir(account_id).join(format!("{vault_id}.askrypt"))
+        self.account_dir(account_id)
+            .join(format!("{vault_id}.askrypt"))
     }
 }
 
@@ -137,13 +138,19 @@ mod tests {
         let account_id = Uuid::new_v4();
         let vault_id = Uuid::new_v4();
 
-        store.put(account_id, vault_id, b"PK\x03\x04v1").await.unwrap();
+        store
+            .put(account_id, vault_id, b"PK\x03\x04v1")
+            .await
+            .unwrap();
         assert_eq!(
             store.get(account_id, vault_id).await.unwrap(),
             Some(b"PK\x03\x04v1".to_vec())
         );
         // Overwrite replaces the content and leaves no temp files behind.
-        store.put(account_id, vault_id, b"PK\x03\x04v2").await.unwrap();
+        store
+            .put(account_id, vault_id, b"PK\x03\x04v2")
+            .await
+            .unwrap();
         assert_eq!(
             store.get(account_id, vault_id).await.unwrap(),
             Some(b"PK\x03\x04v2".to_vec())
@@ -175,7 +182,9 @@ mod tests {
         let vault_id = Uuid::new_v4();
         let version_id = Uuid::new_v4();
 
-        live.put(account_id, vault_id, b"PK\x03\x04live").await.unwrap();
+        live.put(account_id, vault_id, b"PK\x03\x04live")
+            .await
+            .unwrap();
         versions
             .put(account_id, version_id, b"PK\x03\x04old")
             .await
@@ -199,7 +208,13 @@ mod tests {
         // its own.
         live.delete_for_account(account_id).await.unwrap();
         assert!(!account_dir.exists());
-        assert!(versions.get(account_id, version_id).await.unwrap().is_none());
+        assert!(
+            versions
+                .get(account_id, version_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         // And removing just the history is still idempotent afterwards.
         versions.delete_for_account(account_id).await.unwrap();
     }

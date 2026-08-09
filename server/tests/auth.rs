@@ -354,7 +354,9 @@ async fn auth_endpoints_are_rate_limited() {
     let unauthed_logout = || {
         send(
             &t.app,
-            Request::post("/api/v1/auth/logout").body(Body::empty()).unwrap(),
+            Request::post("/api/v1/auth/logout")
+                .body(Body::empty())
+                .unwrap(),
         )
     };
     // The limiter allows 20/min per client; everything after that is 429.

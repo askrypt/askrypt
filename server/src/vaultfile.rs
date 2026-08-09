@@ -157,7 +157,10 @@ mod tests {
 
     #[test]
     fn an_offset_timestamp_is_normalized_to_utc() {
-        let bytes = archive_with(ENTRY, &vault_json(r#","updated_at":"2026-08-08T12:15:30+02:00""#));
+        let bytes = archive_with(
+            ENTRY,
+            &vault_json(r#","updated_at":"2026-08-08T12:15:30+02:00""#),
+        );
         assert_eq!(
             read_stamp(&bytes).saved_at.map(|at| at.to_rfc3339()),
             Some("2026-08-08T10:15:30+00:00".to_string())

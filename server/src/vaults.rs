@@ -41,10 +41,8 @@ use uuid::Uuid;
 use crate::auth::AuthSession;
 use crate::error::{ApiBytes, ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
+use crate::store::{AccountId, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId};
 use crate::vaultfile;
-use crate::store::{
-    AccountId, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId,
-};
 
 /// Hard cap on a single vault file. Real vaults are small ZIPs (tens of
 /// KBs); 10 MiB is deliberately generous. Also enforced as the request
@@ -333,7 +331,12 @@ pub(crate) async fn overwrite(
     state.vault_meta.upsert(updated.clone()).await?;
     // Trimming happens after the save has landed, so a full history can
     // never be the reason a save fails.
-    trim_history(state, account_id, used_bytes(&existing, Some(vault_id)) + updated.size).await;
+    trim_history(
+        state,
+        account_id,
+        used_bytes(&existing, Some(vault_id)) + updated.size,
+    )
+    .await;
     Ok(updated)
 }
 
@@ -941,10 +944,18 @@ mod tests {
 
         trim(&state, account_id, 0).await.unwrap();
 
-        let kept = state.vault_versions.list_for_account(account_id).await.unwrap();
+        let kept = state
+            .vault_versions
+            .list_for_account(account_id)
+            .await
+            .unwrap();
         assert_eq!(kept.len(), MAX_VAULT_VERSIONS);
         let kept_ids: Vec<VaultVersionId> = kept.iter().map(|v| v.id).collect();
-        assert_eq!(kept_ids, ids[..MAX_VAULT_VERSIONS], "the newest must survive");
+        assert_eq!(
+            kept_ids,
+            ids[..MAX_VAULT_VERSIONS],
+            "the newest must survive"
+        );
         // The bytes go with the index entry — a trim that only forgot the
         // row would leak disk forever.
         for dropped in &ids[MAX_VAULT_VERSIONS..] {
@@ -972,7 +983,11 @@ mod tests {
         trim(&state, account_id, ACCOUNT_QUOTA_BYTES - 2 * size)
             .await
             .unwrap();
-        let kept = state.vault_versions.list_for_account(account_id).await.unwrap();
+        let kept = state
+            .vault_versions
+            .list_for_account(account_id)
+            .await
+            .unwrap();
         assert_eq!(kept.len(), 2);
 
         // A full account keeps no history at all rather than exceeding the

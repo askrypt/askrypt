@@ -497,7 +497,9 @@ impl VaultVersionStore for SqliteVaultVersionStore {
         .fetch_all(&self.pool)
         .await
         .map_err(backend_err)?;
-        rows.into_iter().map(VaultVersionRow::into_version).collect()
+        rows.into_iter()
+            .map(VaultVersionRow::into_version)
+            .collect()
     }
 
     async fn list_for_account(
@@ -512,7 +514,9 @@ impl VaultVersionStore for SqliteVaultVersionStore {
         .fetch_all(&self.pool)
         .await
         .map_err(backend_err)?;
-        rows.into_iter().map(VaultVersionRow::into_version).collect()
+        rows.into_iter()
+            .map(VaultVersionRow::into_version)
+            .collect()
     }
 
     async fn delete(
@@ -717,11 +721,17 @@ mod tests {
 
         let meta = new_meta(account.id, "b.askrypt");
         store.upsert(meta.clone()).await.unwrap();
-        store.upsert(new_meta(account.id, "a.askrypt")).await.unwrap();
+        store
+            .upsert(new_meta(account.id, "a.askrypt"))
+            .await
+            .unwrap();
         let other_meta = new_meta(other.id, "other.askrypt");
         store.upsert(other_meta.clone()).await.unwrap();
 
-        assert_eq!(store.get(account.id, meta.id).await.unwrap(), Some(meta.clone()));
+        assert_eq!(
+            store.get(account.id, meta.id).await.unwrap(),
+            Some(meta.clone())
+        );
         // Scoped to the owner: another account's id does not resolve it.
         assert_eq!(store.get(other.id, meta.id).await.unwrap(), None);
         let listed = store.list_for_account(account.id).await.unwrap();
@@ -843,6 +853,12 @@ mod tests {
 
         // ...and so does deleting the account.
         accounts.delete(other.id).await.unwrap();
-        assert!(store.get(other.id, other_version.id).await.unwrap().is_none());
+        assert!(
+            store
+                .get(other.id, other_version.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

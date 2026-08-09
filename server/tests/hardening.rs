@@ -90,7 +90,13 @@ async fn security_headers_ride_every_response_shape() {
     let app = app();
     // A JSON endpoint, an error envelope, a static file, and the SPA
     // fallback — the four ways a response can be produced.
-    for path in ["/healthz", "/api/v1/about", "/api/v1/nope", "/", "/some/page"] {
+    for path in [
+        "/healthz",
+        "/api/v1/about",
+        "/api/v1/nope",
+        "/",
+        "/some/page",
+    ] {
         let (status, headers, _) =
             send_raw(&app, Request::get(path).body(Body::empty()).unwrap()).await;
         assert!(

@@ -195,7 +195,12 @@ mod tests {
 
     async fn status_of(app: &Router, path: &str) -> StatusCode {
         app.clone()
-            .oneshot(HttpRequest::builder().uri(path).body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap()
             .status()
@@ -288,14 +293,16 @@ mod tests {
 
     #[tokio::test]
     async fn security_headers_land_on_every_response() {
-        let app = Router::new()
-            .route("/x", get(|| async { "hi" }))
-            .layer(middleware::from_fn_with_state(
-                SecurityHeaders { hsts: true },
-                security_headers,
-            ));
+        let app = Router::new().route("/x", get(|| async { "hi" })).layer(
+            middleware::from_fn_with_state(SecurityHeaders { hsts: true }, security_headers),
+        );
         let response = app
-            .oneshot(HttpRequest::builder().uri("/x").body(Body::empty()).unwrap())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/x")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let headers = response.headers();
@@ -340,6 +347,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.headers()[header::CACHE_CONTROL], "private, no-cache");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-cache"
+        );
     }
 }

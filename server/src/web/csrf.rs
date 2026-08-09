@@ -345,10 +345,7 @@ mod tests {
 
     #[test]
     fn an_opaque_origin_is_refused() {
-        let headers = headers_with(&[
-            (header::HOST, "askrypt.example"),
-            (header::ORIGIN, "null"),
-        ]);
+        let headers = headers_with(&[(header::HOST, "askrypt.example"), (header::ORIGIN, "null")]);
         assert!(check_origin(&headers).is_err());
     }
 

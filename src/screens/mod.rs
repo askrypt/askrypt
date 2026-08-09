@@ -135,7 +135,11 @@ pub fn show_vault_stamp<'a, M: 'a>(session: &Session, column: Column<'a, M>) -> 
 /// whoever is reading it is on. A timestamp we cannot parse is shown verbatim.
 fn format_stamp_time(updated_at: &str) -> String {
     DateTime::parse_from_rfc3339(updated_at)
-        .map(|at| at.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
+        .map(|at| {
+            at.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
         .unwrap_or_else(|_| updated_at.to_string())
 }
 

@@ -48,8 +48,7 @@ const MAX_EMAIL_LEN: usize = 254;
 /// latter would charge one unlucky request ~19 MiB and a full hash.
 ///
 /// Its parameters must match `Argon2::default()` — see the unit test.
-const DUMMY_PASSWORD_HASH: &str =
-    "$argon2id$v=19$m=19456,t=2,p=1$YXNrcnlwdC1kdW1teS0wMQ$+wPV+26MRHinLIfLssyqlAinHuesHKQihpFRfjuueMM";
+const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YXNrcnlwdC1kdW1teS0wMQ$+wPV+26MRHinLIfLssyqlAinHuesHKQihpFRfjuueMM";
 
 /// Concurrent argon2 operations.
 ///

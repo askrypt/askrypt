@@ -476,7 +476,12 @@ async fn listing(
         csrf,
         vaults: metas
             .iter()
-            .map(|meta| Row::new(meta, history.remove(&meta.id).unwrap_or_default().as_slice()))
+            .map(|meta| {
+                Row::new(
+                    meta,
+                    history.remove(&meta.id).unwrap_or_default().as_slice(),
+                )
+            })
             .collect(),
         count: metas.len(),
         max_count: MAX_VAULTS_PER_ACCOUNT,
@@ -532,7 +537,10 @@ mod tests {
             saved_stamp(Some("lenovo-x1"), Some(at)).as_deref(),
             Some("lenovo-x1 · 2026-08-08 10:15 UTC")
         );
-        assert_eq!(saved_stamp(Some("lenovo-x1"), None).as_deref(), Some("lenovo-x1"));
+        assert_eq!(
+            saved_stamp(Some("lenovo-x1"), None).as_deref(),
+            Some("lenovo-x1")
+        );
         assert_eq!(
             saved_stamp(None, Some(at)).as_deref(),
             Some("2026-08-08 10:15 UTC")

@@ -189,7 +189,8 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     info!(?config.backend, data_dir = %config.data_dir.display(), "starting askrypt-server");
     log_build_revision();
 
-    let id_verifier: Arc<dyn IdTokenVerifier> = if config.google_client_ids.is_empty() {        info!("google sign-in disabled (ASKRYPT_GOOGLE_CLIENT_IDS not set)");
+    let id_verifier: Arc<dyn IdTokenVerifier> = if config.google_client_ids.is_empty() {
+        info!("google sign-in disabled (ASKRYPT_GOOGLE_CLIENT_IDS not set)");
         Arc::new(NotConfiguredIdTokenVerifier)
     } else {
         info!(

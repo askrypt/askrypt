@@ -63,7 +63,10 @@ pub fn client_ip(headers: &HeaderMap, extensions: &Extensions, policy: ClientIpP
 /// The policy installed by the router, defaulting to "don't trust" when the
 /// extension is missing.
 pub fn policy_of(extensions: &Extensions) -> ClientIpPolicy {
-    extensions.get::<ClientIpPolicy>().copied().unwrap_or_default()
+    extensions
+        .get::<ClientIpPolicy>()
+        .copied()
+        .unwrap_or_default()
 }
 
 fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -146,7 +149,11 @@ mod tests {
         );
         assert_eq!(ip, "::1");
         assert_eq!(
-            client_ip(&HeaderMap::new(), &extensions_with_peer("10.0.0.7:1"), TRUST),
+            client_ip(
+                &HeaderMap::new(),
+                &extensions_with_peer("10.0.0.7:1"),
+                TRUST
+            ),
             "10.0.0.7"
         );
     }
