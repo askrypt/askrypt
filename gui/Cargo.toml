@@ -1,0 +1,15 @@
+[package]
+name = "askrypt-gui"
+description = "The new three-pane Askrypt desktop UI, designed here before the port (fake data, no crypto)"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+# Deliberately no `askrypt-core`: this crate never touches a vault, a key or a
+# secret. The feature lists below intentionally match the root `askrypt`
+# package so both builds share one compiled `iced` instead of forcing a full
+# recompile every time you alternate between them.
+[dependencies]
+iced = { version = "0.14.0", features = ["image", "fira-sans", "tokio"] }
+chrono = { version = "0.4", features = ["serde"] }

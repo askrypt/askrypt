@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Askrypt is a cross-platform password manager. It authenticates users via security question answers (normalized and hashed with PBKDF2) rather than a master password, using AES-256-CBC encryption for vault data. The repository is a Cargo workspace holding a **desktop Rust app** plus a **pure-Dart Flutter mobile app** (`app/`) that re-implements the same vault format — see [Mobile app](#mobile-app-app) below.
+Askrypt is a cross-platform password manager. It authenticates users via security question answers (normalized and hashed with PBKDF2) rather than a master password, using AES-256-CBC encryption for vault data. The repository is a Cargo workspace holding a **desktop Rust app** plus a **pure-Dart Flutter mobile app** (`app/`) that re-implements the same vault format — see [Mobile app](#mobile-app-app) below. The workspace also carries `gui/`, the new desktop UI being designed to replace `src/`.
 
 **Warning**: The project is under active development and has not undergone extensive security testing.
 
@@ -22,7 +22,7 @@ Askrypt is a cross-platform password manager. It authenticates users via securit
 
 The crypto/format engine lives in the **`core/`** crate (`askrypt-core`, lib name `askrypt`) and is the source of truth for the vault format. The desktop Iced app in **`src/`** depends on it, and the Dart mobile core in **`app/lib/crypto/`** re-implements it (kept in lock-step by golden test vectors). Phase 0 extracted the engine into `core/`; older docs may still say it lives in `src/`.
 
-The dependency arrows only ever point one way: `askrypt` (desktop) → `askrypt-core`, and **`askrypt-server` depends on neither** — it stores vaults as opaque bytes and must never link the crypto core. The desktop talks to the server through `core`'s `server-storage` backend, which is a *client* of the HTTP API, so that rule is unaffected.
+The dependency arrows only ever point one way: `askrypt` (desktop) → `askrypt-core`, and **`askrypt-server` depends on neither** — it stores vaults as opaque bytes and must never link the crypto core. The desktop talks to the server through `core`'s `server-storage` backend, which is a *client* of the HTTP API, so that rule is unaffected. `askrypt-gui` depends on **no** in-repo crate at all (in particular not on `askrypt-core`), so it leaves the invariant untouched — that changes only when its port checklist actually starts.
 
 ### Core crate — `core/src/` (the security model)
 
@@ -48,6 +48,20 @@ The Iced GUI follows an Elm-like architecture, split into a small app shell plus
 - **`src/icon.rs`** — Bootstrap icon glyph constants for use in the UI.
 - **`src/tray.rs`** — System-tray integration.
 - **`src/settings.rs`** — Persistent user settings stored as JSON in platform config directories (`AppSettings::config_dir`): `%APPDATA%\askrypt\` (Windows), `~/Library/Application Support/askrypt/` (macOS), `~/.config/askrypt/` (Linux). Also defines `VaultLocation`, the serializable identity of a vault's storage backend (`#[serde(untagged)]`): `LocalFile(PathBuf)` serializes as a plain path string so old `settings.json` files stay compatible, and `Server { base_url, email, name }` as an object, which untagged deserialization tells apart — **`LocalFile` must stay the first variant**. Its `storage(client)` factory returns `Arc<dyn VaultStorage>` and fails with `StorageError::Auth` when a server location has no matching signed-in client. A server vault is keyed by *name*, not by the server-assigned id. `ServerSession` (`base_url`/`email`/`token`) is the saved sign-in, deliberately in its own `server_session.json` created `0600` on Unix rather than in `settings.json`: the token is a credential — it authorizes `PUT /me/email` and `DELETE /me`, neither of which re-asks for the password.
+
+### Desktop GUI (new) — `gui/`
+
+`askrypt-gui` is a standalone Iced binary (`cargo run -p askrypt-gui`) where the three-pane, Bitwarden-like layout in `uisample.jpg` is being designed: a left navigation rail, a middle item list, a right detail pane, a search strip on top and a status bar always pinned to the bottom. **This is the UI that will replace `src/`** — `src/` remains the shipping app until the port lands, and this crate is no longer throwaway (it was `uiproto/` until then). It still runs on fake data: **no `askrypt-core` dependency, no crypto and no vault I/O** — `gui/src/data.rs` holds a hard-coded `Entry` struct mirroring `SecretEntry`'s field names (plain, no `zeroize`, no `serde`: deriving `ZeroizeOnDrop` on fake data would falsely imply a security posture), and nothing is persisted. Controls with no meaning here write one line into the status bar.
+
+**`gui/README.md` is the port notes** — the vault lifecycle as `src/` implements it (with file:line pointers), the button-visibility table, the invariants a redesign can quietly break (the `location`+`storage` ETag pairing, `VaultLocation::LocalFile` staying the first untagged variant, PBKDF2 off the main thread, …), what is deliberately fake, and the port checklist. Keep it current alongside this file.
+
+It deliberately **copies** rather than shares the handful of helpers it needs from `src/ui.rs`, `src/icon.rs` and `src/screens/mod.rs::status_bar`, so `src/` stays untouched; the two will diverge and that's fine. `gui/Cargo.toml` pins the *same* iced feature set as the root package (`image`, `fira-sans`, `tokio`) purely so both builds share one compiled `iced` — cargo unifies features across the packages selected for a build, so a different list means a full iced recompile every time you alternate between the two commands. `include_bytes!` for the icon font is `"../../static/bootstrap-icons.ttf"` from `gui/src/main.rs`.
+
+Files: `main.rs` (`App`/`Section`/`Pane`/`Message`/`VaultMsg`, the `visible()`/`reconcile_selection()` filter pair, `default_pane()`/`effective_pane()`, and the outer `column![search, row![panes].height(Fill), status_bar]` that keeps the status bar on the bottom edge), `vault.rs`, `theme.rs` (the copied `src/ui.rs` helpers plus pane styles and layout constants), `icon.rs` (glyph codepoints read out of the repo's own `bootstrap-icons.ttf` — note the font has no bare `plus`, only `plus-lg`), `data.rs`, and `panes/{sidebar,list,detail,settings,unlock,wizard,statusbar}.rs`. Selection is an index into `entries`, never into the filtered view, so filtering can't invalidate it; `reconcile_selection` falls back to the first visible row when a filter hides the selection. Each list row draws `icon::placeholder(&entry.name, ..)` — a stand-in for the favicon or issuer logo a real item would carry, picked from a 16-glyph pool by hashing the name rather than actually randomized, because `view` runs every frame and a random pick would flicker. Unlike `src/app.rs::view`, this crate does **not** wrap its root in a centering container — the panes are full-bleed.
+
+The working area right of the rail is **not always two panes**: `view` branches on `Pane`, so `Items` splits it into list + detail while `Settings`, `Unlock` and `Wizard` each fill it with a single pane. Each of those owns its own `State`/`Msg`/`update` the way `src/screens/*` each do. `Settings` is the one place whose controls are not purely cosmetic — its theme picker drives `.theme(App::theme)` and really does repaint the window, which works because every pane style is palette-derived rather than hard-coded (worth keeping true, since the shipping app has no theme setting yet and this is where that would land).
+
+`gui/src/vault.rs` models the **five vault states** (`NoVault`, `Locked`, `PartiallyUnlocked`, `Unlocked`, `SmartLocked`) that `src/` derives from `Session` + the active `Screen`, and owns the visibility predicates for the rail's vault buttons (New Vault / Open Vault / Unlock / Smart Lock / Lock-Full Lock / Save / Save As, pinned at the rail's bottom with Settings below them on the very bottom edge) — the sidebar only asks, never matches on the status itself. Buttons are *hidden*, not disabled, when a state disallows them, and the item filters plus the search strip exist only while unlocked (`effective_pane()` also refuses to render the item list over a locked vault). New Vault is the one action that lands *unlocked* — `Vault::create()` leaves `source: None` and `modified: true`, the combination that makes a first Save become a Save As and the only way to reach the list pane's empty state; it skips the questions editor the real flow runs first. Open, Save and Save As all route through the single `panes::wizard` source picker (Local file, Askrypt Server, and a disabled Cloud-folder placeholder), which replaces `src/`'s split between Welcome-only Open, entries-only Save, and a "Save As" that means a native file dialog or a whole server screen depending on destination. Every transition is a field assignment — see `gui/README.md` for what the real ones do.
 
 ### Security / Encryption Model
 
@@ -423,6 +437,10 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo build -p askrypt
+# The new three-pane GUI (fake data, no crypto). The `--workspace`
+# commands above now cover it too; CI's bare `cargo build`/`cargo test` select
+# only the root package (no `default-members`) and skip it.
+cargo run -p askrypt-gui
 # Regenerate Dart parity vectors after any format/normalization change:
 cargo run -p askrypt-core --example gen_vectors
 # Server (also covered by the --workspace commands above):
