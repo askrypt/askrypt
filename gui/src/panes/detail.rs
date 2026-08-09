@@ -4,23 +4,20 @@
 use iced::widget::{Row, Text, button, column, container, row, rule, scrollable, space, text};
 use iced::{Element, Length, alignment::Vertical};
 
-use crate::data::{self, Entry};
+use askrypt::SecretEntry;
+
+use crate::data;
 use crate::{App, Message, icon, theme};
 
 /// Placeholder shown in place of a hidden password.
 const DOTS: &str = "••••••••";
 
 pub fn view(app: &App) -> Element<'_, Message> {
+    let Some(index) = app.selected else {
+        return empty_pane();
+    };
     let Some(entry) = app.selected_entry() else {
-        return container(
-            container(text("Select an item").size(14).style(text::secondary))
-                .center_x(Length::Fill)
-                .center_y(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(theme::detail_background)
-        .into();
+        return empty_pane();
     };
 
     let mut content = column![
@@ -31,39 +28,65 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .padding(20)
     .width(Length::Fill);
 
+    if !entry.notes.is_empty() {
+        content = content.push(theme::card(field_row(
+            "Notes",
+            text(&entry.notes).size(14).into(),
+            row![icon_action(
+                icon::copy(14),
+                "Copy notes",
+                Message::Copy {
+                    what: "notes",
+                    value: entry.notes.clone(),
+                },
+            )],
+        )));
+    }
+
+    if !entry.tags.is_empty() {
+        let mut tags = row![].spacing(6).align_y(Vertical::Center);
+        for tag in &entry.tags {
+            tags = tags.push(
+                theme::button_link(data::make_hash_tag(tag), "Filter by this tag", None)
+                    .on_press(Message::SectionSelected(crate::Section::Tag(tag.clone()))),
+            );
+        }
+        content = content.push(theme::card(field_row("Tags", tags.into(), row![])));
+    }
+
     if let Some(card) = website_card(entry) {
         content = content.push(card);
     }
 
     content = content.push(
-        row![
-            text("Updated:").size(12).font(theme::bold()),
-            text(data::format_timestamp_local(entry.modified)).size(12),
+        column![
+            stamp_row("Created:", entry.created),
+            stamp_row("Updated:", entry.modified),
         ]
-        .spacing(5),
+        .spacing(3),
     );
 
     let body = scrollable(content).width(Length::Fill).height(Length::Fill);
 
+    // Deleting takes two presses: the first arms the button, the second commits.
+    let armed = app.pending_delete == Some(index);
+
     let toolbar = container(
         row![
-            icon_action(
-                icon::pencil(14),
-                "Edit",
-                Message::Note("Edit — not implemented in the prototype"),
-            ),
-            icon_action(
-                icon::files(14),
-                "Duplicate",
-                Message::Note("Duplicate — not implemented in the prototype"),
-            ),
+            icon_action(icon::pencil(14), "Edit", Message::EditEntry(index)),
+            icon_action(icon::files(14), "Duplicate", Message::DuplicateEntry(index)),
             // Eats the slack, pushing delete flush right.
             space().width(Length::Fill),
-            danger_action(
-                icon::trash(14),
-                "Delete",
-                Message::Note("Delete — not implemented in the prototype"),
-            ),
+            if armed {
+                Element::from(
+                    button(text("Confirm delete").size(13))
+                        .padding([4, 10])
+                        .style(button::danger)
+                        .on_press(Message::DeleteEntry(index)),
+                )
+            } else {
+                danger_action(icon::trash(14), "Delete", Message::DeleteEntry(index))
+            },
         ]
         .spacing(8)
         .align_y(Vertical::Center),
@@ -85,14 +108,21 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
+fn empty_pane<'a>() -> Element<'a, Message> {
+    container(
+        container(text("Select an item").size(14).style(text::secondary))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(theme::detail_background)
+    .into()
+}
+
 /// Name / Username / Password, separated by hairlines.
-fn main_card(entry: &Entry, revealed: bool) -> Element<'_, Message> {
+fn main_card(entry: &SecretEntry, revealed: bool) -> Element<'_, Message> {
     let password_actions = row![
-        icon_action(
-            icon::check_circle(14),
-            "Check password",
-            Message::Note("Password check — not implemented in the prototype"),
-        ),
         icon_action(
             if revealed {
                 icon::eye_slash(14)
@@ -155,7 +185,7 @@ fn main_card(entry: &Entry, revealed: bool) -> Element<'_, Message> {
 
 /// The Website card — absent entirely when the entry has no URL, mirroring
 /// `src/screens/entries.rs`.
-fn website_card(entry: &Entry) -> Option<Element<'_, Message>> {
+fn website_card(entry: &SecretEntry) -> Option<Element<'_, Message>> {
     if entry.url.is_empty() {
         return None;
     }
@@ -186,6 +216,16 @@ fn website_card(entry: &Entry) -> Option<Element<'_, Message>> {
     .spacing(4);
 
     Some(theme::card(field_row("Website", value, actions)).into())
+}
+
+/// A labelled timestamp line at the foot of the pane.
+fn stamp_row<'a>(label: &'a str, timestamp: i64) -> Element<'a, Message> {
+    row![
+        text(label).size(12).font(theme::bold()),
+        text(data::format_timestamp_local(timestamp)).size(12),
+    ]
+    .spacing(5)
+    .into()
 }
 
 fn field_row<'a>(

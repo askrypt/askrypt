@@ -70,10 +70,6 @@ pub fn files(size: u16) -> Text<'static> {
     glyph('\u{F3C2}', size)
 }
 
-pub fn check_circle(size: u16) -> Text<'static> {
-    glyph('\u{F26B}', size)
-}
-
 pub fn pencil(size: u16) -> Text<'static> {
     glyph('\u{F4CB}', size)
 }
@@ -189,4 +185,15 @@ pub fn chevron_right(size: u16) -> Text<'static> {
 
 pub fn check_lg(size: u16) -> Text<'static> {
     glyph('\u{F633}', size)
+}
+
+/// `power` — the Quit row at the bottom of the rail.
+pub fn power(size: u16) -> Text<'static> {
+    glyph('\u{F4FF}', size)
+}
+
+/// The wand the shipping app uses for the password generator
+/// (`src/icon.rs::magic_icon`).
+pub fn magic(size: u16) -> Text<'static> {
+    glyph('\u{F675}', size)
 }

@@ -1,250 +1,43 @@
-//! Hard-coded sample data for the prototype.
+//! Item helpers over [`SecretEntry`], the vault's own entry type.
 //!
-//! [`Entry`] mirrors `askrypt::SecretEntry`'s field names so porting this
-//! layout back into `src/` is mechanical — but it is a plain struct with no
-//! `zeroize` and no `serde`: none of this is real, and deriving `ZeroizeOnDrop`
-//! here would falsely imply the prototype has a security posture.
+//! Ported from `src/screens/entries.rs`, which keeps these as private functions
+//! next to the view that uses them. They are pure, so they live on their own
+//! here and the panes share them.
 
+use askrypt::SecretEntry;
 use chrono::{DateTime, Local, Utc};
 
-#[derive(Debug, Clone)]
-pub struct Entry {
-    pub name: String,
-    pub user_name: String,
-    pub secret: String,
-    pub url: String,
-    pub notes: String,
-    pub entry_type: String,
-    pub tags: Vec<String>,
-    /// Unused by the prototype; kept so the field list mirrors `SecretEntry`.
-    #[allow(dead_code)]
-    pub created: i64,
-    pub modified: i64,
-    pub hidden: bool,
-}
-
-/// Entry types the sidebar groups by.
+/// The entry types the editor offers. `SecretEntry::entry_type` is a free-form
+/// string in the format, so this is a convenience, not a constraint — a vault
+/// written elsewhere may carry any type and the rail will still list it.
+pub const ENTRY_TYPES: [&str; 3] = [TYPE_LOGIN, TYPE_CARD, TYPE_NOTE];
 pub const TYPE_LOGIN: &str = "Login";
 pub const TYPE_CARD: &str = "Card";
 pub const TYPE_NOTE: &str = "Note";
 
-#[allow(clippy::too_many_arguments)]
-fn entry(
-    name: &str,
-    user_name: &str,
-    secret: &str,
-    url: &str,
-    notes: &str,
-    entry_type: &str,
-    tags: &[&str],
-    modified: i64,
-    hidden: bool,
-) -> Entry {
-    Entry {
-        name: name.to_string(),
-        user_name: user_name.to_string(),
-        secret: secret.to_string(),
-        url: url.to_string(),
-        notes: notes.to_string(),
-        entry_type: entry_type.to_string(),
-        tags: tags.iter().map(|t| t.to_string()).collect(),
-        created: modified - 86_400 * 30,
-        modified,
-        hidden,
+/// A blank entry, stamped with the current time.
+pub fn new_entry() -> SecretEntry {
+    let now = Utc::now().timestamp();
+    SecretEntry {
+        name: String::new(),
+        user_name: String::new(),
+        secret: String::new(),
+        url: String::new(),
+        notes: String::new(),
+        entry_type: TYPE_LOGIN.to_string(),
+        tags: Vec::new(),
+        created: now,
+        modified: now,
+        hidden: false,
     }
 }
 
-/// A dozen fake entries mirroring `uisample.jpg`.
-///
-/// `modified` values are fixed literals so the "Updated:" line is stable
-/// across runs, and distinct so the newest-first sort visibly reorders them.
-/// One entry has an empty `url` and one an empty `user_name` to exercise the
-/// empty-field paths; one is `hidden` so the Hidden section is non-empty.
-pub fn sample_entries() -> Vec<Entry> {
-    vec![
-        entry(
-            "Amazon",
-            "testingaccount",
-            "hunter2-amazon",
-            "https://amazon.com",
-            "Prime renews in March.",
-            TYPE_LOGIN,
-            &["shopping"],
-            1_581_428_873,
-            false,
-        ),
-        entry(
-            "Apple",
-            "testingaccount",
-            "correct-horse-battery",
-            "https://appleid.apple.com",
-            "",
-            TYPE_LOGIN,
-            &["personal"],
-            1_581_515_273,
-            false,
-        ),
-        entry(
-            "Bestbuy",
-            "testingaccount",
-            "s3cr3t-bestbuy",
-            "https://bestbuy.com",
-            "Store pickup only.",
-            TYPE_LOGIN,
-            &["shopping"],
-            1_581_601_673,
-            false,
-        ),
-        entry(
-            "Dropbox",
-            "testingaccount",
-            "dr0pb0x-pass",
-            "https://dropbox.com",
-            "",
-            TYPE_LOGIN,
-            &["work"],
-            1_581_688_073,
-            false,
-        ),
-        entry(
-            "Facebook",
-            "testingaccount",
-            "fb-pass-9182",
-            "https://facebook.com",
-            "",
-            TYPE_LOGIN,
-            &["personal"],
-            1_581_774_473,
-            false,
-        ),
-        entry(
-            "Google",
-            "testingaccount",
-            "g00gle-pass",
-            "https://accounts.google.com",
-            "Recovery phone ends 4471.",
-            TYPE_LOGIN,
-            &["work", "personal"],
-            1_581_860_873,
-            false,
-        ),
-        entry(
-            "Netflix",
-            "testingaccount",
-            "netflix-and-chill",
-            "https://netflix.com",
-            "Shared with family.",
-            TYPE_LOGIN,
-            &["personal"],
-            1_581_947_273,
-            false,
-        ),
-        entry(
-            "Strava",
-            "testingaccount",
-            "strava-pass-11",
-            "https://strava.com",
-            "",
-            TYPE_LOGIN,
-            &["personal"],
-            1_582_033_673,
-            false,
-        ),
-        entry(
-            "Target",
-            "testingaccount",
-            "t4rget-pass",
-            "https://target.com",
-            "",
-            TYPE_LOGIN,
-            &["shopping"],
-            1_582_120_073,
-            false,
-        ),
-        // No username: exercises the empty-field path in the detail pane.
-        entry(
-            "Visa •••• 4242",
-            "",
-            "4242 4242 4242 4242",
-            "https://mybank.example.com",
-            "Expires 09/29, CVV in the note above.",
-            TYPE_CARD,
-            &["finance"],
-            1_582_206_473,
-            false,
-        ),
-        // No URL: the Website card should drop out entirely.
-        entry(
-            "Recovery codes",
-            "",
-            "8fj2-19dk-22as-9wke",
-            "",
-            "Backup codes for the work account. Use once, then regenerate.",
-            TYPE_NOTE,
-            &["work"],
-            1_582_292_873,
-            false,
-        ),
-        entry(
-            "Old bank login",
-            "r.absaliamov",
-            "retired-pass-2019",
-            "https://oldbank.example.com",
-            "Account closed, kept for the statements.",
-            TYPE_LOGIN,
-            &["finance"],
-            1_582_379_273,
-            true,
-        ),
-    ]
-}
-
-// ---------------------------------------------------------------------------
-// Vault lifecycle sample data
-// ---------------------------------------------------------------------------
-
-/// The security questions the unlock pane asks.
-///
-/// In the real vault the first one is stored in the clear and the rest only
-/// appear once the first answer decrypts them — which is why the unlock pane
-/// shows question 0 alone before it shows these.
-pub fn sample_questions() -> &'static [&'static str] {
-    &[
-        "What was the name of your first pet?",
-        "What street did you grow up on?",
-        "What was your first employer called?",
-    ]
-}
-
-/// Fake recent files for the Open wizard: (display name, folder).
-pub fn sample_recent_files() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("MyVault.askrypt", "~/vaults"),
-        ("Work.askrypt", "~/Documents/askrypt"),
-        ("Archive-2024.askrypt", "/media/backup/vaults"),
-    ]
-}
-
-/// Fake account vaults for the server step: (name, last saved).
-pub fn sample_server_vaults() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("MyVault", "saved from thinkpad · 2 hours ago"),
-        ("Work", "saved from desktop · yesterday"),
-        ("Shared", "saved from phone · last week"),
-    ]
-}
-
-/// The server the wizard prefills, matching `ServerSession`'s remembered
-/// sign-in in the shipping app.
-pub const SAMPLE_SERVER_URL: &str = "https://askrypt.example.com";
-pub const SAMPLE_SERVER_EMAIL: &str = "me@example.com";
-
-// ---------------------------------------------------------------------------
-// Helpers copied from `src/screens/entries.rs`
-// ---------------------------------------------------------------------------
-
-pub fn entry_matches_filter(entry: &Entry, filter: &str) -> bool {
+pub fn entry_matches_filter(entry: &SecretEntry, filter: &str) -> bool {
     let filter_lower = filter.to_lowercase();
+    // Tags are displayed with a leading `#` but stored without one, so a query
+    // copied off the screen has to match too.
+    let tag_filter = clean_hash_tag(&filter_lower);
+
     entry.name.to_lowercase().contains(&filter_lower)
         || entry.user_name.to_lowercase().contains(&filter_lower)
         || entry.url.to_lowercase().contains(&filter_lower)
@@ -252,7 +45,7 @@ pub fn entry_matches_filter(entry: &Entry, filter: &str) -> bool {
         || entry
             .tags
             .iter()
-            .any(|tag| tag.to_lowercase().contains(&filter_lower))
+            .any(|tag| tag.to_lowercase().contains(&tag_filter))
 }
 
 pub fn is_url(string: &str) -> bool {
@@ -267,8 +60,100 @@ pub fn make_hash_tag(tag: &str) -> String {
     }
 }
 
+pub fn clean_hash_tag(tag: &str) -> String {
+    tag.strip_prefix('#').unwrap_or(tag).to_string()
+}
+
 pub fn format_timestamp_local(timestamp: i64) -> String {
     let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now);
     let local_datetime = datetime.with_timezone(&Local);
     local_datetime.format("%b. %d, %Y - %T").to_string()
+}
+
+/// The vault's unencrypted write stamp, rendered for a locked screen.
+///
+/// `params.host` and `params.updated_at` are the two fields the format leaves in
+/// the clear, so this is readable before a single answer is given. Either half
+/// may be missing; both missing means no stamp at all.
+pub fn format_stamp(host: Option<&str>, updated_at: Option<&str>) -> Option<String> {
+    let when = updated_at.map(format_stamp_time);
+    match (host, when) {
+        (Some(host), Some(when)) => Some(format!("{} · {}", host, when)),
+        (Some(host), None) => Some(host.to_string()),
+        (None, Some(when)) => Some(when),
+        (None, None) => None,
+    }
+}
+
+/// RFC 3339 UTC → local `YYYY-MM-DD HH:MM`, verbatim if it will not parse.
+fn format_stamp_time(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|parsed| {
+            parsed
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str) -> SecretEntry {
+        SecretEntry {
+            name: name.to_string(),
+            user_name: "testingaccount".to_string(),
+            secret: "hunter2".to_string(),
+            url: "https://example.com".to_string(),
+            notes: "some notes".to_string(),
+            entry_type: TYPE_LOGIN.to_string(),
+            tags: vec!["work".to_string()],
+            created: 0,
+            modified: 0,
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn the_filter_searches_every_visible_field_but_not_the_secret() {
+        let entry = entry("GitHub");
+
+        assert!(entry_matches_filter(&entry, "git"));
+        assert!(entry_matches_filter(&entry, "TESTINGACCOUNT"));
+        assert!(entry_matches_filter(&entry, "example.com"));
+        assert!(entry_matches_filter(&entry, "notes"));
+        assert!(entry_matches_filter(&entry, "work"));
+        // Tags read `#work` on screen but are stored bare.
+        assert!(entry_matches_filter(&entry, "#work"));
+        // The password itself is deliberately not searchable.
+        assert!(!entry_matches_filter(&entry, "hunter2"));
+    }
+
+    #[test]
+    fn hash_tags_round_trip() {
+        assert_eq!(make_hash_tag("work"), "#work");
+        assert_eq!(make_hash_tag("#work"), "#work");
+        assert_eq!(clean_hash_tag("#work"), "work");
+        assert_eq!(clean_hash_tag("work"), "work");
+    }
+
+    #[test]
+    fn a_stamp_drops_the_half_it_does_not_have() {
+        assert_eq!(
+            format_stamp(Some("thinkpad"), None),
+            Some("thinkpad".to_string())
+        );
+        assert_eq!(format_stamp(None, None), None);
+        assert!(
+            format_stamp(Some("thinkpad"), Some("2026-08-09T10:11:12Z"))
+                .is_some_and(|stamp| stamp.starts_with("thinkpad · "))
+        );
+    }
+
+    #[test]
+    fn an_unparseable_stamp_time_is_shown_verbatim() {
+        assert_eq!(format_stamp(None, Some("whenever")), Some("whenever".into()));
+    }
 }

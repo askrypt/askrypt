@@ -6,7 +6,7 @@
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{
-    Button, Container, Scrollable, Text, button, container, row, rule, scrollable, text,
+    Button, Container, Row, Scrollable, Text, button, container, row, rule, scrollable, text,
 };
 use iced::{Element, Font, Length, Theme};
 
@@ -110,6 +110,16 @@ pub fn caption_block<'a, M: 'a>(caption: &str) -> Scrollable<'a, M> {
     )
     .width(Length::Fill)
     .height(Length::Fill)
+}
+
+/// `frame` selects a spinner glyph; advance it on a timer to animate. Shown in
+/// place of the unlock/save controls while a background crypto task runs.
+pub fn spinner_row<'a, T: 'a>(frame: usize, label: &'a str) -> Row<'a, T> {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let glyph = FRAMES[frame % FRAMES.len()];
+    row![text(glyph).size(20), text(label.to_owned()).size(16)]
+        .spacing(10)
+        .align_y(Vertical::Center)
 }
 
 /// Wrap content in a full-width, rounded, bordered container.

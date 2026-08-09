@@ -1,24 +1,38 @@
 //! The vault source wizard: one pane serving Open, Save and Save As.
 //!
-//! The shipping app splits this work across a native `rfd` dialog (local
-//! files, `src/screens/welcome.rs` and `src/session.rs::save_vault_as`) and a
-//! whole screen of its own (the server, `src/screens/server.rs`), so Open is
-//! reachable only from Welcome and Save only from the entries screen. Here both
-//! directions run through the same two steps — pick a source, then fill it in —
-//! which is the point of the redesign.
+//! The shipping app splits this work across a native `rfd` dialog (local files,
+//! `src/screens/welcome.rs` and `src/session.rs::save_vault_as`) and a whole
+//! screen of its own (the server, `src/screens/server.rs`), so Open is reachable
+//! only from Welcome and Save only from the entries screen. Here both directions
+//! run through the same two steps — pick a source, then fill it in — which is
+//! the point of the redesign.
 //!
-//! Nothing is read or written. Confirming just hands a [`Source`] back.
+//! Opening hands the shell the [`VaultHandle`] carrying the storage instance
+//! that performed the read, never a rebuilt one: a `ServerStorage` records the
+//! ETag it saw and sends it back as `If-Match`, so a fresh instance would
+//! silently overwrite another device's edit.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use askrypt::{RemoteVault, ServerClient, ServerStorage, VaultStorage};
 use iced::widget::{button, column, container, row, rule, scrollable, space, text, text_input};
-use iced::{Element, Length, alignment::Vertical};
+use iced::{Element, Length, Task, alignment::Vertical};
+use zeroize::Zeroize;
 
-use crate::vault::{Source, Vault};
-use crate::{App, Message, data, icon, theme};
+use crate::panes::Action;
+use crate::session::{
+    Session, VaultError, VaultHandle, describe_open_error, describe_sign_in_error,
+};
+use crate::settings::VaultLocation;
+use crate::{App, Message, icon, theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
     Open,
-    Save,
+    /// Choosing a *new* home for the vault. A plain Save never reaches the
+    /// wizard — it goes straight to the backend the vault was opened with — so
+    /// there is no separate `Save` purpose.
     SaveAs,
 }
 
@@ -26,7 +40,6 @@ impl Purpose {
     fn caption(self) -> &'static str {
         match self {
             Purpose::Open => "OPEN VAULT",
-            Purpose::Save => "SAVE VAULT",
             Purpose::SaveAs => "SAVE VAULT AS",
         }
     }
@@ -34,19 +47,19 @@ impl Purpose {
     fn heading(self) -> &'static str {
         match self {
             Purpose::Open => "Where is the vault?",
-            Purpose::Save | Purpose::SaveAs => "Where should the vault go?",
+            Purpose::SaveAs => "Where should the vault go?",
         }
     }
 
     fn confirm_label(self) -> &'static str {
         match self {
             Purpose::Open => "Open",
-            Purpose::Save | Purpose::SaveAs => "Save",
+            Purpose::SaveAs => "Save",
         }
     }
 
     fn is_save(self) -> bool {
-        !matches!(self, Purpose::Open)
+        matches!(self, Purpose::SaveAs)
     }
 }
 
@@ -58,21 +71,25 @@ pub enum Step {
     Cloud,
 }
 
+/// The account's vaults, fetched once per sign-in and refreshed on demand.
+/// `None` means "not listed yet", which is what shows the empty server step.
+type Listing = Option<Vec<RemoteVault>>;
+
 pub struct State {
     purpose: Purpose,
     step: Step,
-    error: Option<&'static str>,
+    error: Option<String>,
 
     // File step.
     file_name: String,
     picked_recent: Option<usize>,
 
-    // Server step. `signed_in` splits the step in two exactly the way
-    // `src/screens/server.rs` does on `is_signed_in() && vaults.is_some()`.
-    signed_in: bool,
+    // Server step. Whether the user is *signed in* is not kept here — that lives
+    // on the session and deliberately outlives any one run of the wizard.
     base_url: String,
     email: String,
     password: String,
+    vaults: Listing,
     vault_name: String,
     picked_vault: Option<usize>,
 }
@@ -85,30 +102,43 @@ impl Default for State {
             error: None,
             file_name: String::new(),
             picked_recent: None,
-            signed_in: false,
-            base_url: data::SAMPLE_SERVER_URL.to_string(),
-            email: data::SAMPLE_SERVER_EMAIL.to_string(),
+            base_url: "https://".to_string(),
+            email: String::new(),
             password: String::new(),
+            vaults: None,
             vault_name: String::new(),
             picked_vault: None,
         }
     }
 }
 
+/// The typed password never needs to outlive the sign-in it is for.
+impl Drop for State {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
+}
+
 impl State {
-    /// Arm the wizard for a purpose, prefilling the names from the open vault.
+    /// Arm the wizard for a purpose, prefilling the names from the open vault
+    /// and the server fields from the remembered sign-in.
     ///
-    /// The sign-in survives across runs of the wizard — in the real app the
-    /// token outlives the vault (`src/session.rs::sign_out` deliberately leaves
-    /// an open vault alone), so signing in is not part of any one flow.
-    pub fn begin(&mut self, purpose: Purpose, vault: &Vault) {
-        let name = vault.display_name().to_string();
+    /// The sign-in itself survives across runs of the wizard: the token outlives
+    /// the vault (`Session::sign_out` deliberately leaves an open vault alone),
+    /// so signing in is not part of any one flow.
+    pub fn begin(&mut self, purpose: Purpose, session: &Session) {
+        // A vault with no home yet has no name to suggest either.
+        let name = match &session.location {
+            Some(location) => location.display_name(),
+            None => "MyVault.askrypt".to_string(),
+        };
 
         self.purpose = purpose;
         self.step = Step::PickSource;
         self.error = None;
         self.picked_recent = None;
         self.picked_vault = None;
+        self.password.zeroize();
         self.password.clear();
         self.file_name = if name.ends_with(".askrypt") {
             name.clone()
@@ -116,11 +146,27 @@ impl State {
             format!("{name}.askrypt")
         };
         self.vault_name = name.trim_end_matches(".askrypt").to_string();
-    }
 
-    pub fn purpose(&self) -> Purpose {
-        self.purpose
+        if let Some(email) = &session.server_email {
+            self.email = email.clone();
+        }
+        if let Some(client) = &session.server_client {
+            self.base_url = client.base_url().to_string();
+        }
+        // A stale listing from a previous sign-in would be misleading.
+        if !session.is_signed_in() {
+            self.vaults = None;
+        }
     }
+}
+
+/// A successful sign-in: the authenticated client plus the listing fetched in
+/// the same round trip.
+#[derive(Debug, Clone)]
+pub struct SignInResult {
+    pub client: Arc<ServerClient>,
+    pub email: String,
+    pub vaults: Vec<RemoteVault>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,134 +176,381 @@ pub enum Msg {
     Cancel,
     Confirm,
     RecentPicked(usize),
-    FileNameChanged(String),
+    /// The Open direction's native file dialog closed.
+    Browse,
+    FilePicked(Option<PathBuf>),
+    /// The Save direction's native save dialog closed.
+    SaveFilePicked(Option<PathBuf>),
     BaseUrlChanged(String),
     EmailChanged(String),
     PasswordChanged(String),
     SignIn,
+    SignedIn(Box<Result<SignInResult, VaultError>>),
     SignOut,
+    Refresh,
+    Listed(Result<Vec<RemoteVault>, VaultError>),
     ServerVaultPicked(usize),
     VaultNameChanged(String),
+    /// A vault finished downloading (or failed to).
+    Opened(Box<Result<VaultHandle, VaultError>>),
 }
 
-pub enum Outcome {
-    Chosen(Source),
-    Cancelled,
-}
-
-pub fn update(state: &mut State, message: Msg) -> Option<Outcome> {
-    state.error = None;
-
+pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action {
     match message {
         Msg::SourcePicked(step) => {
+            state.error = None;
+            // Saving to a local file needs nothing the system dialog does not
+            // already ask for, so the wizard has no file step in that
+            // direction: picking the source *is* the dialog.
+            if step == Step::File && state.purpose.is_save() {
+                return Action::Run(save_dialog(&state.file_name));
+            }
             state.step = step;
-            None
+            // Entering the server step while already signed in should show the
+            // account's vaults, not an empty list.
+            if step == Step::Server && session.is_signed_in() && state.vaults.is_none() {
+                return list_vaults(state, session);
+            }
+            Action::None
         }
         Msg::Back => {
+            state.error = None;
             state.step = Step::PickSource;
-            None
+            Action::None
         }
-        Msg::Cancel => Some(Outcome::Cancelled),
-        Msg::Confirm => confirm(state),
+        Msg::Cancel => Action::Run(Task::done(Message::ReturnToDefaultPane)),
+        Msg::Confirm => {
+            state.error = None;
+            confirm(state, session)
+        }
+        // A recent vault is a destination, not a setting: clicking one opens it
+        // straight away rather than arming a confirm button.
         Msg::RecentPicked(index) => {
+            state.error = None;
+            let Some(location) = session.settings.recent_vaults.get(index).cloned() else {
+                return Action::None;
+            };
             state.picked_recent = Some(index);
-            None
+            open_location(state, session, location)
         }
-        Msg::FileNameChanged(value) => {
-            state.file_name = value;
-            None
+        Msg::Browse => Action::Run(Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .add_filter("Askrypt Files", &["askrypt"])
+                    .add_filter("All files", &["*"])
+                    .pick_file()
+                    .await
+                    .map(|handle| handle.path().to_path_buf())
+            },
+            |picked| Message::Wizard(Msg::FilePicked(picked)),
+        )),
+        Msg::FilePicked(Some(path)) => open_location(state, session, VaultLocation::LocalFile(path)),
+        Msg::FilePicked(None) => Action::None,
+        Msg::SaveFilePicked(Some(path)) => {
+            // The shell owns the save task, because it also owns what happens
+            // after one (the pending lock/close/exit).
+            Action::Run(Task::done(Message::SaveTo(VaultLocation::LocalFile(path))))
         }
+        Msg::SaveFilePicked(None) => Action::None,
         Msg::BaseUrlChanged(value) => {
             state.base_url = value;
-            None
+            Action::None
         }
         Msg::EmailChanged(value) => {
             state.email = value;
-            None
+            Action::None
         }
         Msg::PasswordChanged(value) => {
+            state.password.zeroize();
             state.password = value;
-            None
+            Action::None
         }
-        Msg::SignIn => {
-            // The prototype's one-line stand-in for `ServerClient::login` plus
-            // the `client.list()` that the real screen folds into the same
-            // round trip.
-            if state.base_url.trim().is_empty() || state.email.trim().is_empty() {
-                state.error = Some("Enter a server address and an email.");
-            } else {
-                state.signed_in = true;
-                state.password.clear();
+        Msg::SignIn => sign_in(state, session),
+        Msg::SignedIn(result) => {
+            session.finish_work();
+            match *result {
+                Ok(signed_in) => {
+                    state.password.zeroize();
+                    state.password.clear();
+                    state.vaults = Some(signed_in.vaults);
+                    let email = signed_in.email.clone();
+                    session.sign_in(signed_in.client, &email);
+                    session.status_message = Some(format!("Signed in as {email}"));
+                    Action::None
+                }
+                Err(error) => {
+                    state.error = Some(describe_sign_in_error(&error));
+                    Action::None
+                }
             }
-            None
         }
         Msg::SignOut => {
-            state.signed_in = false;
+            session.sign_out();
+            state.vaults = None;
             state.picked_vault = None;
-            None
+            state.password.zeroize();
+            state.password.clear();
+            session.status_message = Some("Signed out".into());
+            Action::None
+        }
+        Msg::Refresh => list_vaults(state, session),
+        Msg::Listed(result) => {
+            session.finish_work();
+            match result {
+                Ok(vaults) => {
+                    state.vaults = Some(vaults);
+                    Action::None
+                }
+                Err(error) => {
+                    state.error = Some(describe_sign_in_error(&error));
+                    Action::None
+                }
+            }
         }
         Msg::ServerVaultPicked(index) => {
             state.picked_vault = Some(index);
-            None
+            state.error = None;
+            Action::None
         }
         Msg::VaultNameChanged(value) => {
             state.vault_name = value;
-            None
+            Action::None
+        }
+        Msg::Opened(result) => {
+            session.finish_work();
+            match *result {
+                Ok(handle) => {
+                    let name = handle.location.display_name();
+                    session.open_vault(handle.location, handle.storage, handle.file);
+                    session.status_message = Some(format!("Opened {name}"));
+                    Action::Run(Task::done(Message::Vault(crate::VaultMsg::Unlock)))
+                }
+                Err(error) => {
+                    state.error = Some(describe_open_error(&error));
+                    Action::None
+                }
+            }
         }
     }
 }
 
-fn confirm(state: &mut State) -> Option<Outcome> {
+fn confirm(state: &mut State, session: &mut Session) -> Action {
     match state.step {
-        Step::PickSource | Step::Cloud => None,
-        Step::File => {
-            if state.purpose.is_save() {
-                let name = state.file_name.trim();
-                if name.is_empty() {
-                    state.error = Some("Enter a file name.");
-                    return None;
-                }
-                Some(Outcome::Chosen(Source::File(format!("~/vaults/{name}"))))
-            } else {
-                let Some((name, folder)) = state
-                    .picked_recent
-                    .and_then(|index| data::sample_recent_files().get(index))
-                else {
-                    state.error = Some("Pick a vault file.");
-                    return None;
-                };
-                Some(Outcome::Chosen(Source::File(format!("{folder}/{name}"))))
-            }
-        }
+        // The cloud card is a reserved slot; it can never confirm. Neither can
+        // the file step: saving never lands there (the source card opens the
+        // dialog), and opening acts on the click — a recent row or `Browse…` —
+        // so it carries no confirm button.
+        Step::PickSource | Step::Cloud | Step::File => Action::None,
         Step::Server => {
-            if !state.signed_in {
-                state.error = Some("Sign in first.");
-                return None;
-            }
-
-            let name = if state.purpose.is_save() {
-                let typed = state.vault_name.trim();
-                if typed.is_empty() {
-                    state.error = Some("Enter a name for the vault.");
-                    return None;
-                }
-                typed.to_string()
-            } else {
-                let Some((name, _)) = state
-                    .picked_vault
-                    .and_then(|index| data::sample_server_vaults().get(index))
-                else {
-                    state.error = Some("Pick a vault.");
-                    return None;
-                };
-                (*name).to_string()
+            let Some(client) = session.server_client.clone() else {
+                state.error = Some("Sign in first.".to_string());
+                return Action::None;
             };
 
-            Some(Outcome::Chosen(Source::Server {
-                base_url: state.base_url.trim().to_string(),
-                name,
-            }))
+            if state.purpose.is_save() {
+                let name = state.vault_name.trim();
+                if name.is_empty() {
+                    state.error = Some("Enter a name for the vault.".to_string());
+                    return Action::None;
+                }
+                // Addressed by *name*: saving over an existing one replaces it,
+                // which is what the collision warning below is about.
+                Action::Run(Task::done(Message::SaveTo(VaultLocation::Server {
+                    base_url: client.base_url().to_string(),
+                    email: session.server_email.clone().unwrap_or_default(),
+                    name: name.to_string(),
+                })))
+            } else {
+                let Some(vault) = state
+                    .picked_vault
+                    .and_then(|index| state.vaults.as_ref()?.get(index))
+                    .cloned()
+                else {
+                    state.error = Some("Pick a vault.".to_string());
+                    return Action::None;
+                };
+                download(state, session, client, vault)
+            }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Background work
+// ---------------------------------------------------------------------------
+
+/// The native save dialog, prefilled with the vault's current name. It asks for
+/// the folder and the file name in one step, which is why the wizard asks for
+/// neither.
+fn save_dialog(suggested: &str) -> Task<Message> {
+    let name = suggested.trim();
+    let name = if name.is_empty() {
+        "MyVault.askrypt".to_string()
+    } else {
+        name.to_string()
+    };
+
+    Task::perform(
+        async move {
+            rfd::AsyncFileDialog::new()
+                .add_filter("Askrypt Files", &["askrypt"])
+                .add_filter("All files", &["*"])
+                .set_file_name(name)
+                .save_file()
+                .await
+                .map(|handle| handle.path().to_path_buf())
+        },
+        |picked| Message::Wizard(Msg::SaveFilePicked(picked)),
+    )
+}
+
+/// Read a local vault off the main thread. Not a key derivation, but still a
+/// file read and a ZIP parse — and for a server location, a download.
+fn open_location(state: &mut State, session: &mut Session, location: VaultLocation) -> Action {
+    if session.busy {
+        return Action::None;
+    }
+
+    let storage = match session.storage_for(&location) {
+        Ok(storage) => storage,
+        Err(e) => {
+            state.error = Some(describe_open_error(&VaultError::log(
+                "Failed to reach the vault",
+                &e,
+            )));
+            return Action::None;
+        }
+    };
+
+    session.begin_work("Opening…");
+    Action::Run(load_task(location, storage))
+}
+
+/// Download a server vault through the instance pre-seeded with its id and
+/// ETag, so opening costs one request and the ETag is the one we then write
+/// against.
+fn download(
+    state: &mut State,
+    session: &mut Session,
+    client: Arc<ServerClient>,
+    vault: RemoteVault,
+) -> Action {
+    if session.busy {
+        return Action::None;
+    }
+    let _ = state;
+
+    let location = VaultLocation::Server {
+        base_url: client.base_url().to_string(),
+        email: session.server_email.clone().unwrap_or_default(),
+        name: vault.name.clone(),
+    };
+    let storage: Arc<dyn VaultStorage> = Arc::new(ServerStorage::existing(client, &vault));
+
+    session.begin_work("Downloading…");
+    Action::Run(load_task(location, storage))
+}
+
+fn load_task(location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                storage
+                    .load_vault()
+                    .map(|file| VaultHandle {
+                        file,
+                        location,
+                        storage: Arc::clone(&storage),
+                    })
+                    .map_err(|e| VaultError::log("Failed to open vault", &e))
+            })
+            .await
+            .expect("load vault task panicked")
+        },
+        |result| Message::Wizard(Msg::Opened(Box::new(result))),
+    )
+}
+
+/// Sign in and list in one round trip, the way `src/screens/server.rs` does.
+fn sign_in(state: &mut State, session: &mut Session) -> Action {
+    if session.busy {
+        return Action::None;
+    }
+    if state.base_url.trim().is_empty() || state.email.trim().is_empty() {
+        state.error = Some("Enter a server address and an email.".to_string());
+        return Action::None;
+    }
+    if state.password.is_empty() {
+        state.error = Some("Enter your password.".to_string());
+        return Action::None;
+    }
+
+    let base_url = state.base_url.trim().to_string();
+    let email = state.email.trim().to_string();
+    let password = state.password.clone();
+
+    session.begin_work("Signing in…");
+    Action::Run(Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let client = ServerClient::login(
+                    &base_url,
+                    &email,
+                    &password,
+                    Some("Askrypt desktop"),
+                )
+                .map_err(|e| VaultError::log("Failed to sign in", &e))?;
+                let client = Arc::new(client);
+                let vaults = client
+                    .list()
+                    .map_err(|e| VaultError::log("Failed to list vaults", &e))?;
+                Ok::<_, VaultError>(SignInResult {
+                    client,
+                    email,
+                    vaults,
+                })
+            })
+            .await
+            .expect("sign in task panicked")
+        },
+        |result| Message::Wizard(Msg::SignedIn(Box::new(result))),
+    ))
+}
+
+fn list_vaults(state: &mut State, session: &mut Session) -> Action {
+    if session.busy {
+        return Action::None;
+    }
+    let Some(client) = session.server_client.clone() else {
+        state.error = Some("Not signed in to a server.".to_string());
+        return Action::None;
+    };
+
+    session.begin_work("Loading…");
+    Action::Run(Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                client
+                    .list()
+                    .map_err(|e| VaultError::log("Failed to list vaults", &e))
+            })
+            .await
+            .expect("list vaults task panicked")
+        },
+        |result| Message::Wizard(Msg::Listed(result)),
+    ))
+}
+
+/// Human-readable byte size for the vault listing.
+fn human_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let bytes = bytes as f64;
+    if bytes < KIB {
+        format!("{} B", bytes as u64)
+    } else if bytes < KIB * KIB {
+        format!("{:.1} KiB", bytes / KIB)
+    } else {
+        format!("{:.1} MiB", bytes / (KIB * KIB))
     }
 }
 
@@ -267,6 +560,7 @@ fn confirm(state: &mut State) -> Option<Outcome> {
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let state = &app.wizard;
+    let session = &app.session;
 
     let mut body = column![
         text(state.purpose.caption())
@@ -284,10 +578,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .push(pick_source(state)),
         Step::File => body
             .push(text("Local file").size(20).font(theme::bold()))
-            .push(file_step(state)),
+            .push(file_step(state, session)),
         Step::Server => body
             .push(text("Askrypt Server").size(20).font(theme::bold()))
-            .push(server_step(state)),
+            .push(server_step(state, session)),
         Step::Cloud => body
             .push(text("Cloud folder").size(20).font(theme::bold()))
             .push(theme::card(
@@ -300,11 +594,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
             )),
     };
 
-    if let Some(error) = state.error {
-        body = body.push(text(error).size(12).style(text::danger));
+    if let Some(error) = &state.error {
+        body = body.push(text(error.clone()).size(12).style(text::danger));
     }
 
-    body = body.push(footer(state));
+    body = body.push(footer(state, session));
 
     container(scrollable(body).width(Length::Fill).height(Length::Fill))
         .width(Length::Fill)
@@ -379,74 +673,61 @@ fn source_card<'a>(
     .into()
 }
 
-fn file_step(state: &State) -> Element<'_, Message> {
-    if state.purpose.is_save() {
-        return theme::card(
-            container(
-                column![
-                    text("File name").size(13),
-                    text_input("MyVault.askrypt", &state.file_name)
-                        .on_input(|value| Message::Wizard(Msg::FileNameChanged(value)))
-                        .on_submit(Message::Wizard(Msg::Confirm))
-                        .padding(8)
-                        .size(14),
-                    text("Folder: ~/vaults").size(12).style(text::secondary),
-                    text("A native save dialog would pick the folder here.")
-                        .size(11)
-                        .style(text::secondary),
-                ]
-                .spacing(8),
-            )
-            .padding(14),
-        )
-        .into();
-    }
+fn file_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
+    let recent = &session.settings.recent_vaults;
+    let mut column = column![].spacing(10);
 
-    let mut rows = column![].width(Length::Fill);
-    for (index, (name, folder)) in data::sample_recent_files().iter().enumerate() {
-        if index > 0 {
-            rows = rows.push(rule::horizontal(1).style(theme::pane_divider));
+    if recent.is_empty() {
+        column = column.push(
+            text("No vaults opened yet — browse for one.")
+                .size(12)
+                .style(text::secondary),
+        );
+    } else {
+        let mut rows = iced::widget::column![].width(Length::Fill);
+        for (index, location) in recent.iter().enumerate() {
+            if index > 0 {
+                rows = rows.push(rule::horizontal(1).style(theme::pane_divider));
+            }
+            rows = rows.push(picker_row(
+                location.display_name(),
+                location.display_location(),
+                state.picked_recent == Some(index),
+                icon::chevron_right(12).into(),
+                Message::Wizard(Msg::RecentPicked(index)),
+            ));
         }
-        rows = rows.push(picker_row(
-            name,
-            folder,
-            state.picked_recent == Some(index),
-            Message::Wizard(Msg::RecentPicked(index)),
-        ));
+        column = column
+            .push(text("RECENT VAULTS").size(11).style(text::secondary))
+            .push(theme::card(rows));
     }
 
-    column![
-        text("RECENT VAULTS").size(11).style(text::secondary),
-        theme::card(rows),
-        button(
-            row![icon::folder2_open(14), text("Browse…").size(14)]
-                .spacing(8)
-                .align_y(Vertical::Center)
+    column
+        .push(
+            button(
+                row![icon::folder2_open(14), text("Browse…").size(14)]
+                    .spacing(8)
+                    .align_y(Vertical::Center),
+            )
+            .padding([8, 16])
+            .style(button::secondary)
+            .on_press(Message::Wizard(Msg::Browse)),
         )
-        .padding([8, 16])
-        .style(button::secondary)
-        .on_press(Message::Note(
-            "A native file dialog would open here — not implemented in the prototype",
-        )),
-    ]
-    .spacing(10)
-    .into()
+        .into()
 }
 
 /// One selectable row — a recent file or a server vault. Reuses the item
-/// list's row styling so a pick reads the same way everywhere.
+/// list's row styling so a pick reads the same way everywhere. The trailing
+/// `mark` is what tells the two apart: the server list is a selection, so it
+/// ticks the picked row, while a recent vault opens on the click and points
+/// ahead like the source cards do.
 fn picker_row<'a>(
-    title: &'a str,
-    subtitle: &'a str,
+    title: String,
+    subtitle: String,
     selected: bool,
+    mark: Element<'a, Message>,
     message: Message,
 ) -> Element<'a, Message> {
-    let mark: Element<'a, Message> = if selected {
-        icon::check_lg(14).into()
-    } else {
-        space().width(Length::Fixed(14.0)).into()
-    };
-
     button(
         row![
             column![
@@ -467,8 +748,8 @@ fn picker_row<'a>(
     .into()
 }
 
-fn server_step(state: &State) -> Element<'_, Message> {
-    if !state.signed_in {
+fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
+    if !session.is_signed_in() {
         return theme::card(
             container(
                 column![
@@ -501,20 +782,28 @@ fn server_step(state: &State) -> Element<'_, Message> {
     }
 
     let account = row![
-        text(format!("Signed in as {}", state.email))
-            .size(12)
-            .style(text::secondary)
-            .width(Length::Fill),
+        text(format!(
+            "Signed in as {}",
+            session.server_email.clone().unwrap_or_default()
+        ))
+        .size(12)
+        .style(text::secondary)
+        .width(Length::Fill),
+        theme::button_link("Refresh", "Fetch the vault list again", None)
+            .on_press(Message::Wizard(Msg::Refresh)),
         theme::button_link("Sign out", "Forget this sign-in", None)
             .on_press(Message::Wizard(Msg::SignOut)),
     ]
+    .spacing(12)
     .align_y(Vertical::Center);
 
     if state.purpose.is_save() {
         let typed = state.vault_name.trim();
-        let collides = data::sample_server_vaults()
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case(typed));
+        let collides = state.vaults.as_ref().is_some_and(|vaults| {
+            vaults
+                .iter()
+                .any(|vault| vault.name.eq_ignore_ascii_case(typed))
+        });
 
         let mut fields = column![
             text("Vault name").size(13),
@@ -526,8 +815,8 @@ fn server_step(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8);
 
-        // The shipping app shows the same warning, because a server vault is
-        // addressed by name and an existing one is overwritten in place.
+        // A server vault is addressed by name, so an existing one is replaced
+        // in place rather than duplicated.
         if collides {
             fields = fields.push(
                 text("A vault with this name already exists and will be replaced.")
@@ -541,15 +830,34 @@ fn server_step(state: &State) -> Element<'_, Message> {
             .into();
     }
 
-    let mut rows = column![].width(Length::Fill);
-    for (index, (name, saved)) in data::sample_server_vaults().iter().enumerate() {
+    let listed = state.vaults.as_deref().unwrap_or_default();
+    if listed.is_empty() {
+        return column![
+            account,
+            text("No vaults on this account yet.")
+                .size(12)
+                .style(text::secondary),
+        ]
+        .spacing(10)
+        .into();
+    }
+
+    let mut rows = iced::widget::column![].width(Length::Fill);
+    for (index, vault) in listed.iter().enumerate() {
         if index > 0 {
             rows = rows.push(rule::horizontal(1).style(theme::pane_divider));
         }
+        let selected = state.picked_vault == Some(index);
+        let mark: Element<'_, Message> = if selected {
+            icon::check_lg(14).into()
+        } else {
+            space().width(Length::Fixed(14.0)).into()
+        };
         rows = rows.push(picker_row(
-            name,
-            saved,
-            state.picked_vault == Some(index),
+            vault.name.clone(),
+            format!("{} · {}", human_size(vault.size), vault.updated_at),
+            selected,
+            mark,
             Message::Wizard(Msg::ServerVaultPicked(index)),
         ));
     }
@@ -563,7 +871,13 @@ fn server_step(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn footer(state: &State) -> Element<'_, Message> {
+fn footer<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
+    // While a sign-in, listing or download is running the controls give way to
+    // the spinner, so the same request cannot be fired twice.
+    if session.busy {
+        return theme::spinner_row(session.spinner_frame, session.spinner_label).into();
+    }
+
     let mut buttons = row![].spacing(10);
 
     if state.step != Step::PickSource {
@@ -586,8 +900,9 @@ fn footer(state: &State) -> Element<'_, Message> {
             .on_press(Message::Wizard(Msg::Cancel)),
     );
 
-    // Only the steps that can produce a `Source` offer the confirm button.
-    if matches!(state.step, Step::File | Step::Server) {
+    // Only the server step still asks for something to confirm; the file step
+    // acts on the click (a recent vault, or the native dialog).
+    if matches!(state.step, Step::Server) {
         buttons = buttons.push(
             button(text(state.purpose.confirm_label()).size(14))
                 .padding([8, 16])
@@ -596,4 +911,17 @@ fn footer(state: &State) -> Element<'_, Message> {
     }
 
     buttons.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_are_human_readable() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2048), "2.0 KiB");
+        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MiB");
+    }
 }

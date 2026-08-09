@@ -53,6 +53,16 @@ opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
 
+# Same reasoning for the vault's own KDF: every unlock and every save derives a
+# key over 600,000 PBKDF2 iterations, which takes minutes rather than a second
+# when these are built unoptimized. A debug desktop build is otherwise unusable.
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.aes]
+opt-level = 3
+
 [profile.deb]
 inherits = "release"
 

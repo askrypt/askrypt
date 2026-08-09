@@ -1,22 +1,24 @@
-//! The left navigation rail: item filters on top, Settings and the vault
-//! actions pinned at the bottom.
+//! The left navigation rail: item filters on top, the vault actions, then Quit
+//! and Settings pinned at the bottom.
 //!
 //! The item filters exist only while the vault is unlocked — there is nothing
 //! to filter otherwise — and each vault action is *hidden*, not disabled, when
 //! the current state does not allow it. The rules live in
-//! [`crate::vault::Vault`]; this module only asks.
+//! [`crate::vault::Status`]; this module only asks.
 
 use iced::widget::{Text, button, column, container, row, rule, scrollable, text};
 use iced::{Element, Length, alignment::Vertical};
 
 use crate::data::{TYPE_CARD, TYPE_NOTE, make_hash_tag};
-use crate::{App, Message, Pane, Section, VaultMsg, icon, theme};
+use crate::{App, GlobalMsg, Message, Pane, Section, VaultMsg, icon, theme};
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let items = if app.vault.is_unlocked() {
+    let status = app.status();
+
+    let items = if status.is_unlocked() {
         filters(app)
     } else {
-        let caption = if app.vault.is_open() {
+        let caption = if status.is_open() {
             "Vault locked — unlock it to browse."
         } else {
             "No vault open."
@@ -86,10 +88,10 @@ fn filters(app: &App) -> iced::widget::Column<'_, Message> {
     items
 }
 
-/// Settings, then the vault actions below it. Which actions appear is the
+/// The vault actions, then Quit, then Settings. Which actions appear is the
 /// whole readout of the vault's state.
 fn pinned(app: &App) -> Element<'_, Message> {
-    let vault = &app.vault;
+    let vault = app.status();
 
     let mut actions = column![].spacing(2).width(Length::Fill);
 
@@ -142,12 +144,34 @@ fn pinned(app: &App) -> Element<'_, Message> {
             Message::Vault(VaultMsg::SaveAs),
         ));
     }
+    if vault.can_edit_questions() {
+        actions = actions.push(action_row(
+            icon::key(14),
+            "Edit Questions",
+            Message::Vault(VaultMsg::EditQuestions),
+        ));
+    }
+    // The generator is useful with or without a vault open.
+    actions = actions.push(action_row(
+        icon::magic(14),
+        "Password Generator",
+        Message::Vault(VaultMsg::PassGen),
+    ));
 
     // Settings sits on the very bottom edge, below the vault actions: it is the
-    // one row that is never about the vault in front of you.
+    // one row that is never about the vault in front of you. Quit goes just
+    // above it, in a band of its own — it leaves the app rather than doing
+    // anything to the vault, and a stray click on it is expensive.
     column![
         rule::horizontal(1).style(theme::pane_divider),
         container(actions).padding([6, 8]),
+        rule::horizontal(1).style(theme::pane_divider),
+        container(action_row(
+            icon::power(14),
+            "Quit",
+            Message::Global(GlobalMsg::ExitApp),
+        ))
+        .padding([6, 8]),
         rule::horizontal(1).style(theme::pane_divider),
         container(pane_row(
             icon::gear(14),

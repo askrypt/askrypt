@@ -3,7 +3,8 @@
 use iced::widget::{button, column, container, row, rule, scrollable, space, text};
 use iced::{Element, Length, Theme, alignment::Vertical};
 
-use crate::data::Entry;
+use askrypt::SecretEntry;
+
 use crate::{App, Message, icon, theme};
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -12,7 +13,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = if rows.is_empty() {
         // A brand-new vault has nothing in it yet, which is a different empty
         // state from a filter that matched nothing.
-        theme::caption_block(if app.entries.is_empty() {
+        theme::caption_block(if app.session.entries.is_empty() {
             "This vault is empty — add the first item."
         } else {
             "No items match the filter criteria."
@@ -34,7 +35,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .width(Length::Fill)
             .padding([8, 0])
             .style(button::subtle)
-            .on_press(Message::Note("Add item — not implemented in the prototype")),
+            .on_press(Message::AddEntry),
     )
     .padding(8);
 
@@ -54,7 +55,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn row_widget(index: usize, entry: &Entry, selected: bool) -> Element<'_, Message> {
+fn row_widget(index: usize, entry: &SecretEntry, selected: bool) -> Element<'_, Message> {
     let accent = container(space())
         .width(Length::Fixed(theme::ACCENT_WIDTH))
         .height(Length::Fill)
