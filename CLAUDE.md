@@ -304,7 +304,11 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   `None` when the file records neither), and a per-row history disclosure
   whose download route stamps the
   archival date into the filename and whose restore form carries the row's
-  ETag like replace does) plus `explain`, which turns the handful of reachable `ApiError`
+  ETag like replace does). The table is ordered **newest change first** —
+  `listing` re-sorts by `updated_at` descending, and since the sort is stable
+  over the name-sorted list `list_for` returns, files stored in the same
+  instant stay in name order; the JSON `/api/v1/vaults` listing keeps the
+  plain name order. Plus `explain`, which turns the handful of reachable `ApiError`
   codes into sentences; `pages.rs` landing and the HTML 404. Templates must
   not contain inline `<script>`/`<style>`, `hx-on:` or `js:` htmx
   expressions — the CSP forbids them and `tests/web.rs` guards it.

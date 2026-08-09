@@ -13,6 +13,8 @@
 //! field instead of a header, and a "changed on another device" message
 //! instead of a bare 412.
 
+use std::cmp::Reverse;
+
 use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -464,7 +466,11 @@ async fn listing(
     csrf: String,
     notice: Option<Notice>,
 ) -> WebResult<Listing> {
-    let metas = crate::vaults::list_for(state, web.account.id).await?;
+    let mut metas = crate::vaults::list_for(state, web.account.id).await?;
+    // The table reads newest-change-first: the file someone just saved from
+    // another device is the one they came here to look at. `list_for` hands
+    // them over name-sorted, so equal timestamps keep that order.
+    metas.sort_by_key(|meta| Reverse(meta.updated_at));
     // One query for the whole page's history, not one per row.
     let mut history = crate::vaults::versions_by_vault(state, web.account.id).await?;
     let live: u64 = metas.iter().map(|m| m.size).sum();

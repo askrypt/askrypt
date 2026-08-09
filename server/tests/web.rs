@@ -1289,6 +1289,39 @@ async fn the_listing_shows_quota_usage() {
     assert!(html.contains("1 of 100 files"), "{html}");
 }
 
+/// The table is ordered by when the server last stored each file, newest
+/// first — the upload order reversed, which here is neither the name order
+/// nor its reverse.
+#[tokio::test]
+async fn the_listing_shows_the_most_recently_updated_file_first() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "recency@example.com").await;
+    let token = csrf_field(&html);
+
+    for (marker, name) in [
+        (1, "gamma.askrypt"),
+        (2, "alpha.askrypt"),
+        (3, "beta.askrypt"),
+    ] {
+        send(
+            &app,
+            post_multipart(
+                "/vaults",
+                &cookies,
+                &token,
+                &[("name", name)],
+                Some((name, &vault_bytes(marker))),
+            ),
+        )
+        .await;
+    }
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let at = |name: &str| html.find(name).unwrap_or_else(|| panic!("{name} missing"));
+    assert!(at("beta.askrypt") < at("alpha.askrypt"), "{html}");
+    assert!(at("alpha.askrypt") < at("gamma.askrypt"), "{html}");
+}
+
 /// An upload that skips the token is refused, and so is a `multipart` body
 /// that puts the token after the file — the check has to happen before the
 /// bytes are taken.
