@@ -20,6 +20,7 @@ use iced::widget::{button, column, container, row, rule, scrollable, space, text
 use iced::{Element, Length, Task, alignment::Vertical};
 use zeroize::Zeroize;
 
+use crate::data;
 use crate::panes::Action;
 use crate::session::{
     Session, VaultError, VaultHandle, describe_open_error, describe_sign_in_error,
@@ -853,7 +854,11 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
         };
         rows = rows.push(picker_row(
             vault.name.clone(),
-            format!("{} · {}", human_size(vault.size), vault.updated_at),
+            format!(
+                "{} · {}",
+                human_size(vault.size),
+                data::format_rfc3339_local(&vault.updated_at)
+            ),
             selected,
             mark,
             Message::Wizard(Msg::ServerVaultPicked(index)),

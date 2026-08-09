@@ -64,10 +64,33 @@ pub fn clean_hash_tag(tag: &str) -> String {
     tag.strip_prefix('#').unwrap_or(tag).to_string()
 }
 
+/// The one datetime format the UI uses, everywhere it shows a date and time:
+/// local time zone, `Aug 9, 2026 14:32`. Every rendering path below goes
+/// through it, so entry stamps, the vault write stamp and the server vault
+/// listing all read the same.
+pub const DATETIME_FORMAT: &str = "%b %-d, %Y %H:%M";
+
+/// A Unix timestamp (seconds, UTC) in [`DATETIME_FORMAT`].
 pub fn format_timestamp_local(timestamp: i64) -> String {
     let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now);
     let local_datetime = datetime.with_timezone(&Local);
-    local_datetime.format("%b. %d, %Y - %T").to_string()
+    local_datetime.format(DATETIME_FORMAT).to_string()
+}
+
+/// An RFC 3339 timestamp in [`DATETIME_FORMAT`], verbatim if it will not parse.
+///
+/// Both the vault's own write stamp and the server's `updated_at` arrive as
+/// RFC 3339 text, so neither is trusted to be well-formed: an unparseable value
+/// is shown as it came rather than swallowed.
+pub fn format_rfc3339_local(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|parsed| {
+            parsed
+                .with_timezone(&Local)
+                .format(DATETIME_FORMAT)
+                .to_string()
+        })
+        .unwrap_or_else(|_| raw.to_string())
 }
 
 /// The vault's unencrypted write stamp, rendered for a locked screen.
@@ -76,25 +99,13 @@ pub fn format_timestamp_local(timestamp: i64) -> String {
 /// the clear, so this is readable before a single answer is given. Either half
 /// may be missing; both missing means no stamp at all.
 pub fn format_stamp(host: Option<&str>, updated_at: Option<&str>) -> Option<String> {
-    let when = updated_at.map(format_stamp_time);
+    let when = updated_at.map(format_rfc3339_local);
     match (host, when) {
         (Some(host), Some(when)) => Some(format!("{} · {}", host, when)),
         (Some(host), None) => Some(host.to_string()),
         (None, Some(when)) => Some(when),
         (None, None) => None,
     }
-}
-
-/// RFC 3339 UTC → local `YYYY-MM-DD HH:MM`, verbatim if it will not parse.
-fn format_stamp_time(raw: &str) -> String {
-    DateTime::parse_from_rfc3339(raw)
-        .map(|parsed| {
-            parsed
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
-        })
-        .unwrap_or_else(|_| raw.to_string())
 }
 
 #[cfg(test)]
@@ -158,5 +169,16 @@ mod tests {
             format_stamp(None, Some("whenever")),
             Some("whenever".into())
         );
+        assert_eq!(format_rfc3339_local("whenever"), "whenever");
+    }
+
+    #[test]
+    fn both_clocks_render_the_same_instant_the_same_way() {
+        // The server listing hands over RFC 3339 text and an entry carries a
+        // Unix timestamp; the same moment has to read identically either way.
+        let raw = "2026-08-09T10:11:12Z";
+        let unix = DateTime::parse_from_rfc3339(raw).unwrap().timestamp();
+
+        assert_eq!(format_rfc3339_local(raw), format_timestamp_local(unix));
     }
 }

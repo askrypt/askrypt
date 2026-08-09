@@ -54,7 +54,7 @@ wrapped in a centering container — the panes are full-bleed.
 | `vault.rs` | `Status` — derived from `Session`, **and** the button-visibility rules |
 | `theme.rs` | helpers copied from `src/ui.rs` plus pane styles, the spinner and layout constants |
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf` |
-| `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, timestamps, the write stamp |
+| `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, the write stamp, and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
 | `panes/mod.rs` | `Action` — the pane → shell navigation contract |
 | `panes/sidebar.rs` | the nav rail: filters, the vault actions, Quit, Settings |
 | `panes/list.rs`, `panes/detail.rs` | the item split |
