@@ -55,6 +55,16 @@ pub struct Account {
     /// Google account id (`sub` claim) when Google sign-in is linked.
     pub google_sub: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// When an administrator locked this account out, if they have. A banned
+    /// account cannot sign in and its existing sessions stop resolving; its
+    /// stored vaults are left alone, so unbanning restores everything.
+    pub banned_at: Option<DateTime<Utc>>,
+}
+
+impl Account {
+    pub fn is_banned(&self) -> bool {
+        self.banned_at.is_some()
+    }
 }
 
 /// Input for [`AccountStore::create`]; the store assigns id and timestamps.
@@ -75,6 +85,46 @@ pub trait AccountStore: Send + Sync {
     /// Replaces the stored record with the same id.
     async fn update(&self, account: &Account) -> Result<(), StoreError>;
     async fn delete(&self, id: AccountId) -> Result<(), StoreError>;
+    /// One page of accounts, oldest first. Deliberately bounded: the admin
+    /// user list must never pull an unbounded result set into memory.
+    async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Account>, StoreError>;
+    /// How many accounts exist, for paging and the first-account rule.
+    async fn count(&self) -> Result<u64, StoreError>;
+}
+
+/// The one role the migration embeds. Named rather than looked up by id so
+/// callers never carry a uuid literal around.
+pub const ADMIN_ROLE: &str = "ADMIN";
+
+/// An entry in the role vocabulary. Roles are seeded by the migration, not
+/// created at runtime, so there is no `NewRole`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Role {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+}
+
+/// Which accounts hold which roles. Grants are a set: the same role twice is
+/// the same grant, and revoking one that was never held is not an error, so
+/// a double-submitted form cannot fail.
+#[async_trait]
+pub trait RoleStore: Send + Sync {
+    /// The whole vocabulary, name-ordered.
+    async fn list(&self) -> Result<Vec<Role>, StoreError>;
+    /// Role names held by one account, name-ordered.
+    async fn roles_for(&self, account: AccountId) -> Result<Vec<String>, StoreError>;
+    /// Every account holding `role`. Drives both the admin badge in the user
+    /// list and the "don't remove the last admin" guard, so it is one query
+    /// rather than a lookup per row. An unknown role name yields an empty
+    /// list rather than an error — nobody holds a role that does not exist.
+    async fn accounts_with(&self, role: &str) -> Result<Vec<AccountId>, StoreError>;
+    /// Idempotent. [`StoreError::NotFound`] if `role` is not in the vocabulary.
+    async fn grant(&self, account: AccountId, role: &str) -> Result<(), StoreError>;
+    /// Idempotent. [`StoreError::NotFound`] if `role` is not in the vocabulary.
+    async fn revoke(&self, account: AccountId, role: &str) -> Result<(), StoreError>;
+    /// Drops every grant held by `account`, as account deletion requires.
+    async fn delete_for_account(&self, account: AccountId) -> Result<(), StoreError>;
 }
 
 /// An authenticated device session, keyed by its opaque bearer token.

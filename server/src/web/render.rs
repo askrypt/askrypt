@@ -73,6 +73,10 @@ pub struct Chrome {
     /// pages themselves, and on error pages, where the signed-in state
     /// isn't known.
     pub auth_links: bool,
+    /// Whether the nav offers the admin Users link. Defaults to off, so a
+    /// page that forgets to set it hides the link rather than advertising a
+    /// route the visitor would only be refused at.
+    pub is_admin: bool,
 }
 
 impl Chrome {
@@ -85,6 +89,7 @@ impl Chrome {
             csrf: String::new(),
             flash: None,
             auth_links: false,
+            is_admin: false,
         }
     }
 }
@@ -110,6 +115,7 @@ impl Shell {
                 csrf,
                 flash: flash.map(flash::Flash::message),
                 auth_links: true,
+                is_admin: false,
             },
             cookies,
         }
@@ -119,6 +125,14 @@ impl Shell {
     /// pages, where they would point at the page you are already on.
     pub fn without_auth_links(mut self) -> Self {
         self.chrome.auth_links = false;
+        self
+    }
+
+    /// Offers the admin Users link in the nav. A chained setter rather than
+    /// another `build` argument, because most callers have nothing to say
+    /// about it and the default is the safe one.
+    pub fn as_admin(mut self, is_admin: bool) -> Self {
+        self.chrome.is_admin = is_admin;
         self
     }
 

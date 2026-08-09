@@ -5,6 +5,7 @@
 //! `askrypt-core` crate. All crypto stays in the desktop and mobile clients.
 //! See `server/PLAN.md` for the phased plan.
 
+pub mod admin;
 pub mod audit;
 pub mod auth;
 pub mod clientip;

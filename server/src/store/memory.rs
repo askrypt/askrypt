@@ -3,7 +3,7 @@
 //! Used as the `memory` backend and by integration tests, so the whole
 //! server can run and be tested without SQLite or a real filesystem.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -11,9 +11,10 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::{
-    Account, AccountId, AccountStore, IdTokenError, IdTokenVerifier, Mailer, MailerError,
-    NewAccount, Session, SessionStore, StoreError, VaultBlobStore, VaultId, VaultMeta,
-    VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore, VerifiedIdToken,
+    ADMIN_ROLE, Account, AccountId, AccountStore, IdTokenError, IdTokenVerifier, Mailer,
+    MailerError, NewAccount, Role, RoleStore, Session, SessionStore, StoreError, VaultBlobStore,
+    VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
+    VerifiedIdToken,
 };
 
 #[derive(Debug, Default)]
@@ -32,6 +33,7 @@ impl AccountStore for MemoryAccountStore {
             password_hash: new.password_hash,
             google_sub: new.google_sub,
             created_at: Utc::now(),
+            banned_at: None,
         };
         accounts.insert(account.id, account.clone());
         Ok(account)
@@ -68,6 +70,109 @@ impl AccountStore for MemoryAccountStore {
             Some(_) => Ok(()),
             None => Err(StoreError::NotFound),
         }
+    }
+
+    async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Account>, StoreError> {
+        let accounts = self.accounts.lock().unwrap();
+        let mut all: Vec<Account> = accounts.values().cloned().collect();
+        // Same order as the SQLite backend, id tiebreak included, so paging
+        // behaves identically on both.
+        all.sort_by_key(|a| (a.created_at, a.id));
+        Ok(all
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect())
+    }
+
+    async fn count(&self) -> Result<u64, StoreError> {
+        Ok(self.accounts.lock().unwrap().len() as u64)
+    }
+}
+
+/// In-memory [`RoleStore`], seeded with the same embedded `ADMIN` role the
+/// migration inserts — including its uuid, so the two backends agree on it.
+#[derive(Debug)]
+pub struct MemoryRoleStore {
+    roles: Vec<Role>,
+    grants: Mutex<HashSet<(AccountId, Uuid)>>,
+}
+
+/// The uuid `migrations/0002_auth.sql` gives the embedded ADMIN role.
+const ADMIN_ROLE_ID: Uuid = Uuid::from_u128(0xa000_0000_0000_4000_8000_0000_0000_0001);
+
+impl Default for MemoryRoleStore {
+    fn default() -> Self {
+        Self {
+            roles: vec![Role {
+                id: ADMIN_ROLE_ID,
+                name: ADMIN_ROLE.to_string(),
+                description: "Full administrative access to the user list.".to_string(),
+            }],
+            grants: Mutex::new(HashSet::new()),
+        }
+    }
+}
+
+impl MemoryRoleStore {
+    fn role_id(&self, role: &str) -> Result<Uuid, StoreError> {
+        self.roles
+            .iter()
+            .find(|r| r.name == role)
+            .map(|r| r.id)
+            .ok_or(StoreError::NotFound)
+    }
+}
+
+#[async_trait]
+impl RoleStore for MemoryRoleStore {
+    async fn list(&self) -> Result<Vec<Role>, StoreError> {
+        let mut roles = self.roles.clone();
+        roles.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(roles)
+    }
+
+    async fn roles_for(&self, account: AccountId) -> Result<Vec<String>, StoreError> {
+        let grants = self.grants.lock().unwrap();
+        let mut names: Vec<String> = self
+            .roles
+            .iter()
+            .filter(|role| grants.contains(&(account, role.id)))
+            .map(|role| role.name.clone())
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    async fn accounts_with(&self, role: &str) -> Result<Vec<AccountId>, StoreError> {
+        // An unknown role is held by nobody rather than an error, matching
+        // the JOIN the SQLite backend does.
+        let Ok(role_id) = self.role_id(role) else {
+            return Ok(Vec::new());
+        };
+        let grants = self.grants.lock().unwrap();
+        Ok(grants
+            .iter()
+            .filter(|(_, r)| *r == role_id)
+            .map(|(account, _)| *account)
+            .collect())
+    }
+
+    async fn grant(&self, account: AccountId, role: &str) -> Result<(), StoreError> {
+        let role_id = self.role_id(role)?;
+        self.grants.lock().unwrap().insert((account, role_id));
+        Ok(())
+    }
+
+    async fn revoke(&self, account: AccountId, role: &str) -> Result<(), StoreError> {
+        let role_id = self.role_id(role)?;
+        self.grants.lock().unwrap().remove(&(account, role_id));
+        Ok(())
+    }
+
+    async fn delete_for_account(&self, account: AccountId) -> Result<(), StoreError> {
+        self.grants.lock().unwrap().retain(|(a, _)| *a != account);
+        Ok(())
     }
 }
 
@@ -448,6 +553,76 @@ mod tests {
             store.delete(account.id).await,
             Err(StoreError::NotFound)
         ));
+    }
+
+    /// The two backends have to agree on ordering and on the seeded role, or
+    /// `memory` stops being a faithful stand-in for tests.
+    #[tokio::test]
+    async fn accounts_page_oldest_first() {
+        let store = MemoryAccountStore::default();
+        let mut created = Vec::new();
+        for email in ["a@example.com", "b@example.com", "c@example.com"] {
+            created.push(store.create(new_account(email)).await.unwrap());
+        }
+        created.sort_by_key(|a| (a.created_at, a.id));
+
+        assert_eq!(store.count().await.unwrap(), 3);
+        assert_eq!(
+            store
+                .list(2, 0)
+                .await
+                .unwrap()
+                .iter()
+                .map(|a| a.id)
+                .collect::<Vec<_>>(),
+            created[..2].iter().map(|a| a.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            store
+                .list(2, 2)
+                .await
+                .unwrap()
+                .iter()
+                .map(|a| a.id)
+                .collect::<Vec<_>>(),
+            vec![created[2].id]
+        );
+        // Past the end is empty, not an error: a stale page link is a
+        // browser doing something reasonable.
+        assert!(store.list(2, 99).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn roles_seed_admin_and_grants_are_a_set() {
+        let store = MemoryRoleStore::default();
+        let roles = store.list().await.unwrap();
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].name, ADMIN_ROLE);
+        // The uuid the migration writes, so both backends name the same role.
+        assert_eq!(
+            roles[0].id.to_string(),
+            "a0000000-0000-4000-8000-000000000001"
+        );
+
+        let one = Uuid::new_v4();
+        let two = Uuid::new_v4();
+        store.grant(one, ADMIN_ROLE).await.unwrap();
+        store.grant(one, ADMIN_ROLE).await.unwrap();
+        assert_eq!(store.roles_for(one).await.unwrap(), vec![ADMIN_ROLE]);
+        assert_eq!(store.accounts_with(ADMIN_ROLE).await.unwrap(), vec![one]);
+        assert!(store.roles_for(two).await.unwrap().is_empty());
+
+        // Revoking something never held is a no-op; an unknown role is not a
+        // role anyone can hold.
+        store.revoke(two, ADMIN_ROLE).await.unwrap();
+        assert!(matches!(
+            store.grant(two, "NOPE").await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(store.accounts_with("NOPE").await.unwrap().is_empty());
+
+        store.delete_for_account(one).await.unwrap();
+        assert!(store.accounts_with(ADMIN_ROLE).await.unwrap().is_empty());
     }
 
     #[tokio::test]

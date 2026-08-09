@@ -12,9 +12,11 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
 
+use crate::admin;
 use crate::auth;
 use crate::state::AppState;
 use crate::store::{Account, Session};
+use crate::web::error::WebError;
 use crate::web::render::{HX_REDIRECT, is_htmx, with_cookies};
 
 pub const SESSION_COOKIE: &str = "askrypt_session";
@@ -38,6 +40,11 @@ pub const LOGIN_PATH: &str = "/login";
 pub struct WebSession {
     pub account: Account,
     pub session: Session,
+    /// Whether this visitor holds [`crate::store::ADMIN_ROLE`]. Resolved
+    /// once here rather than by each handler, because the shared nav has to
+    /// know on *every* page whether to offer the Users link — not only on
+    /// the admin pages themselves.
+    pub is_admin: bool,
 }
 
 impl FromRequestParts<AppState> for WebSession {
@@ -51,6 +58,30 @@ impl FromRequestParts<AppState> for WebSession {
     }
 }
 
+/// A signed-in browser that also holds [`crate::store::ADMIN_ROLE`].
+///
+/// Layered on [`WebSession`] rather than replacing it, so the two failures
+/// stay distinct: a signed-*out* visitor is sent to the sign-in page as
+/// usual, while a signed-in one who simply isn't an administrator gets a
+/// plain 403 page. Redirecting the latter to a login they have already
+/// completed would be a loop.
+pub struct AdminSession(pub WebSession);
+
+impl FromRequestParts<AppState> for AdminSession {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        let web = WebSession::from_request_parts(parts, state).await?;
+        if !web.is_admin {
+            return Err(
+                WebError::forbidden("This page is only available to administrators.")
+                    .into_response(),
+            );
+        }
+        Ok(Self(web))
+    }
+}
+
 /// [`WebSession`] for pages that render either way — the landing page needs
 /// to know whether to greet you or offer a sign-in link.
 pub struct MaybeWebSession(pub Option<WebSession>);
@@ -58,6 +89,12 @@ pub struct MaybeWebSession(pub Option<WebSession>);
 impl MaybeWebSession {
     pub fn email(&self) -> Option<String> {
         self.0.as_ref().map(|s| s.account.email.clone())
+    }
+
+    /// Whether the nav should offer the admin link on a page that renders
+    /// for signed-out visitors too.
+    pub fn is_admin(&self) -> bool {
+        self.0.as_ref().is_some_and(|s| s.is_admin)
     }
 }
 
@@ -74,9 +111,17 @@ impl FromRequestParts<AppState> for MaybeWebSession {
 
 async fn lookup(headers: &HeaderMap, state: &AppState) -> Option<WebSession> {
     let token = cookie_value(headers, SESSION_COOKIE)?;
-    // Same expiry handling and best-effort cleanup as the bearer path.
+    // Same expiry handling, ban check and best-effort cleanup as the bearer
+    // path.
     let (account, session) = auth::resolve_session(state, &token).await.ok()?;
-    Some(WebSession { account, session })
+    // A store failure here must not sign the visitor out — it costs them the
+    // Users link, not the session.
+    let is_admin = admin::is_admin(state, account.id).await.unwrap_or(false);
+    Some(WebSession {
+        account,
+        session,
+        is_admin,
+    })
 }
 
 /// Rejection response for a missing, expired or revoked session.

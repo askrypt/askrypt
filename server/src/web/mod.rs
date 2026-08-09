@@ -22,6 +22,7 @@
 //! have yet (see `server/PLAN.md`).
 
 pub mod account;
+pub mod admin;
 pub mod auth;
 pub mod csrf;
 pub mod error;
@@ -45,7 +46,7 @@ use crate::state::AppState;
 
 pub use error::{WebError, WebResult};
 pub use pages::not_found;
-pub use session::{MaybeWebSession, WebSession};
+pub use session::{AdminSession, MaybeWebSession, WebSession};
 
 /// Headroom over [`crate::vaults::MAX_VAULT_BYTES`] for the multipart
 /// envelope: part headers, boundaries and the handful of text fields that
@@ -75,13 +76,27 @@ pub fn routes(
     let account_sensitive = Router::new()
         .route("/account/email", post(account::update_email))
         .route("/account/password", post(account::update_password))
-        .route_layer(middleware::from_fn_with_state(profile_limiter, rate_limit));
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&profile_limiter),
+            rate_limit,
+        ));
 
     let account_routes = Router::new()
         .route("/account", get(account::page))
         .route("/account/devices/{id}", post(account::revoke_device))
         .route("/account/delete", post(account::delete_account))
         .merge(account_sensitive);
+
+    // Administration is gated by role, not by guessing, so the limiter here
+    // is only about a runaway client: it shares the sensitive-action bucket
+    // rather than getting one of its own.
+    let admin_routes = Router::new()
+        .route("/admin/users", get(admin::page))
+        .route("/admin/users/{id}/ban", post(admin::ban))
+        .route("/admin/users/{id}/unban", post(admin::unban))
+        .route("/admin/users/{id}/role", post(admin::set_role))
+        .route("/admin/users/{id}/delete", post(admin::delete))
+        .route_layer(middleware::from_fn_with_state(profile_limiter, rate_limit));
 
     let vault_routes = Router::new()
         .route("/vaults", get(vaults::page).post(vaults::upload))
@@ -108,6 +123,7 @@ pub fn routes(
         .route("/logout", post(auth::logout))
         .merge(auth_routes)
         .merge(account_routes)
+        .merge(admin_routes)
         .merge(vault_routes)
         // Pages are per-session by definition; none of them may sit in a
         // shared cache. `/assets` is mounted outside this router and keeps

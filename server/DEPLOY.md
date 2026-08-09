@@ -153,6 +153,31 @@ INFO askrypt_server: build revision=03f19d1 commit="feat(desktop): …" version=
 The same values are on the image as `org.opencontainers.image.revision` and
 `…description`.
 
+### The first administrator
+
+**Register your own account before you tell anyone else the address.** The
+first account created on a server is granted the `ADMIN` role automatically,
+and that is the only automatic grant there is — a later registration is never
+promoted, not even if every administrator is later deleted. Whoever registers
+first gets the Users page at `/admin/users`, from which they can suspend,
+promote and delete accounts.
+
+If a server somehow ends up with no administrator (two people registering in
+the same instant, or a hand-edited database), grant the role from a shell on
+the host:
+
+```sh
+docker compose exec askrypt askrypt-server grant-admin you@example.com
+```
+
+It needs `ASKRYPT_BACKEND=sqlite` and an account that already exists.
+
+**Upgrading an existing deployment:** this feature added columns and tables to
+`migrations/0002_auth.sql` rather than a new numbered migration, so a database
+created before it **will not** pick them up. Back it up, delete it, and let the
+server recreate it — accounts and vaults are lost, so on a server with real
+data, don't upgrade past this point without a plan for it.
+
 ### State
 
 Four named volumes, prefixed with the compose project name, which is pinned to
@@ -210,6 +235,18 @@ Applied to every response by `src/hardening.rs`:
   downloads use `private, no-cache` so `ETag` revalidation still works;
   `/assets` caches normally).
 
+Accounts and roles:
+
+- The `roles` table is seeded by the migration with one role, `ADMIN`; it is
+  granted automatically to the first account registered and otherwise only
+  from the Users page or `grant-admin`.
+- A suspended account (`banned_at` set) cannot sign in by password or by
+  Google, and its existing sessions stop resolving on the very next request —
+  bearer tokens and browser cookies alike. Its stored vaults are kept
+  untouched, so lifting the suspension restores them.
+- The server always keeps at least one administrator, and an administrator
+  cannot suspend, demote or delete their own account from the Users page.
+
 The browser session:
 
 - The web session cookie is `HttpOnly; Secure; SameSite=Lax; Path=/` and
@@ -229,7 +266,8 @@ Limits and backpressure:
 - 256 in-flight requests → 503 `overloaded` with `Retry-After`. `/healthz` is
   never shed.
 - 20 requests/minute per client on `/api/v1/auth/*` and on the email/password
-  mutations → 429 `rate_limited` with `Retry-After`.
+  mutations → 429 `rate_limited` with `Retry-After`. The admin actions share
+  that second bucket.
 - Per account: 100 MiB total, 100 vaults, 10 MiB per file. Each vault also
   keeps the 5 generations its last saves replaced; those bytes are charged to
   the same 100 MiB, and the oldest are dropped to make room rather than a
@@ -243,10 +281,15 @@ Account-security events go to the `askrypt_server::audit` tracing target:
 register (ok/denied), login (ok/failed with reason), Google sign-in
 (ok/denied, distinguishing new accounts from newly linked ones), logout,
 password set/changed, failed current-password re-auth, email change, session
-revocation, and account deletion.
+revocation, and account deletion. Administrative actions are recorded too:
+`account.banned` / `account.unbanned`, `role.granted` / `role.revoked`, and
+`account.deleted_by_admin`.
 
 Each record carries the client IP (accurate only with `ASKRYPT_TRUST_PROXY`
-correctly set), a truncated user agent, and the account id.
+correctly set), a truncated user agent, and the account id. On the
+administrative events the account id is the account acted *on*, and the
+administrator who did it is named in `detail` — so the log answers both
+halves of "who did this to whom".
 
 Deliberately absent: bearer tokens (sessions appear as the same SHA-256
 digest the API exposes), passwords, vault bytes, and the email address on a
@@ -381,6 +424,9 @@ would try to replay them over the restored one. `10001` is the image's
       off-host.
 - [ ] A restore has actually been performed into a scratch directory.
 - [ ] `ASKRYPT_ARGON2_PARALLELISM` fits the box's RAM (~19 MiB each).
+- [ ] **You registered the first account**, and `/admin/users` loads for it —
+      whoever registers first is the administrator, and there is no second
+      chance at it short of `grant-admin`.
 - [ ] Browser devtools show no CSP violations on the landing page.
 - [ ] Response headers on a live request include `Content-Security-Policy`,
       `Strict-Transport-Security` and `X-Content-Type-Options`.

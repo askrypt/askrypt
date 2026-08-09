@@ -10,9 +10,10 @@ use askrypt_server::store::google::{GoogleIdTokenVerifier, NotConfiguredIdTokenV
 use askrypt_server::store::memory::MemoryMailer;
 use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
-    self, SqliteAccountStore, SqliteSessionStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
+    self, SqliteAccountStore, SqliteRoleStore, SqliteSessionStore, SqliteVaultMetaStore,
+    SqliteVaultVersionStore,
 };
-use askrypt_server::store::{IdTokenVerifier, Mailer};
+use askrypt_server::store::{ADMIN_ROLE, AccountStore, IdTokenVerifier, Mailer, RoleStore};
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -25,8 +26,9 @@ const DEFAULT_LOG_FILTER: &str = "askrypt_server=debug,info";
 
 const USAGE: &str = "\
 usage:
-  askrypt-server                 run the server
-  askrypt-server backup <path>   snapshot the SQLite database to <path>
+  askrypt-server                      run the server
+  askrypt-server backup <path>        snapshot the SQLite database to <path>
+  askrypt-server grant-admin <email>  make an existing account an administrator
 ";
 
 #[tokio::main]
@@ -37,6 +39,7 @@ async fn main() {
     let command = match args.next().as_deref() {
         None => Command::Serve,
         Some("backup") => Command::Backup(args.next().map(PathBuf::from)),
+        Some("grant-admin") => Command::GrantAdmin(args.next()),
         Some("--help" | "-h" | "help") => {
             print!("{USAGE}");
             return;
@@ -67,6 +70,7 @@ async fn main() {
     let (what, result) = match command {
         Command::Serve => ("server", run(config).await),
         Command::Backup(dest) => ("backup", backup(config, dest).await),
+        Command::GrantAdmin(email) => ("grant-admin", grant_admin(config, email).await),
     };
 
     if let Err(err) = result {
@@ -81,6 +85,7 @@ async fn main() {
 enum Command {
     Serve,
     Backup(Option<PathBuf>),
+    GrantAdmin(Option<String>),
 }
 
 /// Installs the subscriber: always the console, plus a daily-rotated file in
@@ -240,6 +245,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             info!(db = %config.db_path().display(), "sqlite ready, migrations applied");
             AppState {
                 accounts: Arc::new(SqliteAccountStore::new(pool.clone())),
+                roles: Arc::new(SqliteRoleStore::new(pool.clone())),
                 sessions: Arc::new(SqliteSessionStore::new(pool.clone())),
                 vault_meta: Arc::new(SqliteVaultMetaStore::new(pool.clone())),
                 vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),
@@ -325,6 +331,47 @@ async fn backup(config: Config, dest: Option<PathBuf>) -> Result<(), Box<dyn std
     pool.close().await;
     info!(source = %db_path.display(), dest = %dest.display(), "database snapshot written");
     Ok(())
+}
+
+/// `askrypt-server grant-admin <email>` — the way back in.
+///
+/// Administrator access is granted automatically only to the very first
+/// account registered, and the Users page refuses to remove the last
+/// administrator, so a server should never end up without one. "Should
+/// never" is not "cannot": two registrations racing the bootstrap check, or
+/// a hand-edited database, would leave nobody able to reach the page. This
+/// needs shell access on the host, which is exactly the right bar for it.
+async fn grant_admin(
+    config: Config,
+    email: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(email) = email else {
+        return Err(format!("grant-admin needs an email address\n\n{USAGE}").into());
+    };
+    if config.backend != Backend::Sqlite {
+        return Err("grant-admin requires ASKRYPT_BACKEND=sqlite".into());
+    }
+    let db_path = config.db_path();
+    if !db_path.is_file() {
+        return Err(format!("no database at {}", db_path.display()).into());
+    }
+    // Registration lowercases addresses, so a copied-and-pasted one with
+    // capitals must still find its account.
+    let email = email.trim().to_ascii_lowercase();
+
+    let pool = sqlite::open(&db_path).await?;
+    let accounts = SqliteAccountStore::new(pool.clone());
+    let roles = SqliteRoleStore::new(pool.clone());
+    let result = match accounts.find_by_email(&email).await? {
+        Some(account) => {
+            roles.grant(account.id, ADMIN_ROLE).await?;
+            info!(account = %account.id, %email, "granted {ADMIN_ROLE}");
+            Ok(())
+        }
+        None => Err(format!("no account registered as {email}").into()),
+    };
+    pool.close().await;
+    result
 }
 
 async fn shutdown_signal() {

@@ -6,17 +6,20 @@
 use std::sync::Arc;
 
 use crate::store::memory::{
-    FakeIdTokenVerifier, MemoryAccountStore, MemoryMailer, MemorySessionStore,
+    FakeIdTokenVerifier, MemoryAccountStore, MemoryMailer, MemoryRoleStore, MemorySessionStore,
     MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
 };
 use crate::store::{
-    AccountStore, IdTokenVerifier, Mailer, SessionStore, VaultBlobStore, VaultMetaStore,
+    AccountStore, IdTokenVerifier, Mailer, RoleStore, SessionStore, VaultBlobStore, VaultMetaStore,
     VaultVersionStore,
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub accounts: Arc<dyn AccountStore>,
+    /// Which accounts hold which roles. The vocabulary itself is seeded by
+    /// the migration, so this seam only ever reads it and writes grants.
+    pub roles: Arc<dyn RoleStore>,
     pub sessions: Arc<dyn SessionStore>,
     pub vault_meta: Arc<dyn VaultMetaStore>,
     pub vault_blobs: Arc<dyn VaultBlobStore>,
@@ -40,6 +43,7 @@ impl AppState {
     pub fn in_memory() -> Self {
         Self {
             accounts: Arc::new(MemoryAccountStore::default()),
+            roles: Arc::new(MemoryRoleStore::default()),
             sessions: Arc::new(MemorySessionStore::default()),
             vault_meta: Arc::new(MemoryVaultMetaStore::default()),
             vault_blobs: Arc::new(MemoryVaultBlobStore::default()),

@@ -162,7 +162,9 @@ pub async fn page(
     web: WebSession,
     headers: HeaderMap,
 ) -> WebResult<Response> {
-    let (chrome, cookies) = Shell::build(&headers, Some(web.account.email.clone())).into_parts();
+    let (chrome, cookies) = Shell::build(&headers, Some(web.account.email.clone()))
+        .as_admin(web.is_admin)
+        .into_parts();
     let page = VaultsPage {
         listing: listing(&state, &web, chrome.csrf.clone(), None).await?,
         upload: UploadForm {
@@ -384,7 +386,9 @@ async fn finish(
             vec![flash::set(flash)],
         ));
     }
-    let (chrome, cookies) = Shell::build(headers, Some(web.account.email.clone())).into_parts();
+    let (chrome, cookies) = Shell::build(headers, Some(web.account.email.clone()))
+        .as_admin(web.is_admin)
+        .into_parts();
     let notice = Notice {
         text: flash.message().to_string(),
         danger: false,
@@ -411,7 +415,9 @@ async fn refused(
         text: explain(&err),
         danger: true,
     };
-    let (chrome, cookies) = Shell::build(headers, Some(web.account.email.clone())).into_parts();
+    let (chrome, cookies) = Shell::build(headers, Some(web.account.email.clone()))
+        .as_admin(web.is_admin)
+        .into_parts();
     let listing = listing(state, web, chrome.csrf.clone(), Some(notice)).await?;
     if is_htmx(headers) {
         return Ok(with_cookies(Page(listing).into_response(), cookies));

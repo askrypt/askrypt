@@ -29,6 +29,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
+use crate::admin;
 use crate::audit::{self, ClientInfo};
 use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
@@ -208,6 +209,9 @@ pub(crate) async fn register_account(
             }
         })?;
     audit::emit(audit::REGISTER_OK, client, Some(account.id), &account.email);
+    // Whoever sets the server up is its administrator. Never fails the
+    // registration; see `admin::bootstrap_first_admin`.
+    admin::bootstrap_first_admin(state, &account).await;
     Ok(account)
 }
 
@@ -258,7 +262,27 @@ pub(crate) async fn authenticate(
         );
         return Err(invalid_credentials());
     }
+    // Deliberately *after* the password check. Refusing a banned account
+    // earlier would answer faster than a wrong password does, which would
+    // turn the login endpoint into an oracle for which addresses are
+    // registered — the very thing DUMMY_PASSWORD_HASH exists to prevent.
+    // Someone who got this far already proved they own the account, so
+    // telling them it is suspended reveals nothing they did not know.
+    if account.is_banned() {
+        audit::emit(audit::LOGIN_FAILED, client, Some(account.id), "banned");
+        return Err(account_banned());
+    }
     Ok(account)
+}
+
+/// The one refusal a banned user sees. Distinct from `invalid_credentials`:
+/// by the time it is reached the credentials were correct.
+fn account_banned() -> ApiError {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "account_banned",
+        "this account has been suspended by an administrator",
+    )
 }
 
 /// Creates or links the account behind a *verified* Google ID token,
@@ -313,16 +337,30 @@ pub(crate) async fn upsert_google_account(
         },
         None => {
             outcome = "new_account";
-            state
+            let account = state
                 .accounts
                 .create(NewAccount {
                     email,
                     password_hash: None,
                     google_sub: Some(claims.subject),
                 })
-                .await?
+                .await?;
+            admin::bootstrap_first_admin(state, &account).await;
+            account
         }
     };
+    // A ban has to hold on this path too — `authenticate` is not on it, so
+    // without this a suspended account could still sign in with Google. A
+    // freshly created account can never be banned, hence after the match.
+    if account.is_banned() {
+        audit::emit(
+            audit::LOGIN_GOOGLE_DENIED,
+            client,
+            Some(account.id),
+            "banned",
+        );
+        return Err(account_banned());
+    }
     Ok((account, outcome))
 }
 
@@ -399,6 +437,14 @@ pub(crate) async fn resolve_session(
         .get(session.account_id)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
+    // A ban issued mid-session takes effect on the very next request rather
+    // than whenever the token happens to expire. This is the choke point for
+    // both bearer tokens and browser cookies, so one check covers every
+    // authenticated surface.
+    if account.is_banned() {
+        let _ = state.sessions.delete(token).await;
+        return Err(ApiError::unauthorized());
+    }
     Ok((account, session))
 }
 

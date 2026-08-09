@@ -22,6 +22,9 @@
   <nav>
 {%- if let Some(email) = chrome.email.as_deref() %}
     <a href="/vaults">Vaults</a>
+{%- if chrome.is_admin %}
+    <a href="/admin/users">Users</a>
+{%- endif %}
     <a href="/account">{{ email }}</a>
     <form class="inline" method="post" action="/logout">
       <input type="hidden" name="csrf" value="{{ chrome.csrf }}">

@@ -24,7 +24,7 @@ struct NotFound {
 }
 
 pub async fn landing(session: MaybeWebSession, headers: HeaderMap) -> Response {
-    let shell = Shell::build(&headers, session.email());
+    let shell = Shell::build(&headers, session.email()).as_admin(session.is_admin());
     let (chrome, cookies) = shell.into_parts();
     with_cookies(Page(Landing { chrome }).into_response(), cookies)
 }
@@ -34,7 +34,7 @@ pub async fn landing(session: MaybeWebSession, headers: HeaderMap) -> Response {
 /// A real handler rather than a bare [`crate::web::WebError`] so a signed-in
 /// visitor still sees their own nav on a mistyped URL.
 pub async fn not_found(session: MaybeWebSession, headers: HeaderMap) -> Response {
-    let shell = Shell::build(&headers, session.email());
+    let shell = Shell::build(&headers, session.email()).as_admin(session.is_admin());
     let (chrome, cookies) = shell.into_parts();
     let error = crate::web::WebError::not_found();
     let page = Page(NotFound {

@@ -340,6 +340,9 @@ pub(crate) async fn delete_account_data(
     state.vault_blobs.delete_for_account(id).await?;
     state.vault_meta.delete_for_account(id).await?;
     state.sessions.delete_for_account(id).await?;
+    // SQLite cascades this from the foreign key, but the in-memory backend
+    // does not, and the explicit order is what the cascade is documented by.
+    state.roles.delete_for_account(id).await?;
     match state.accounts.delete(id).await {
         Ok(()) | Err(StoreError::NotFound) => {
             audit::emit(audit::ACCOUNT_DELETED, client, Some(id), "");

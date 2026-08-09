@@ -305,7 +305,9 @@ async fn no_page_carries_an_inline_script_or_style() {
     let app = app();
     let cookies = register(&app, "csp@example.com").await;
     let signed_out = ["/", "/login", "/register", "/nope"];
-    let signed_in = ["/account", "/vaults"];
+    // The first account registered on a server is its administrator, so this
+    // jar reaches the Users page too.
+    let signed_in = ["/account", "/vaults", "/admin/users"];
     for (path, jar) in signed_out
         .iter()
         .map(|p| (*p, ""))

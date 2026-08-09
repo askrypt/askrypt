@@ -1,6 +1,7 @@
 //! SQLite backend: connection pool, embedded migration runner, and the
 //! SQLite implementations of [`AccountStore`], [`SessionStore`] (Phase 2),
-//! [`VaultMetaStore`] (Phase 4) and [`VaultVersionStore`].
+//! [`VaultMetaStore`] (Phase 4), [`VaultVersionStore`] and [`RoleStore`]
+//! (Phase 8).
 //!
 //! Uuids are stored as hyphenated TEXT, timestamps as TEXT via sqlx's
 //! chrono mapping. Migrations are embedded in the binary from
@@ -16,8 +17,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::{
-    Account, AccountId, AccountStore, NewAccount, Session, SessionStore, StoreError, VaultId,
-    VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
+    Account, AccountId, AccountStore, NewAccount, Role, RoleStore, Session, SessionStore,
+    StoreError, VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId,
+    VaultVersionStore,
 };
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -59,6 +61,9 @@ fn parse_uuid(raw: &str) -> Result<Uuid, StoreError> {
     Uuid::parse_str(raw).map_err(|e| StoreError::Backend(format!("corrupt uuid in database: {e}")))
 }
 
+/// Every column of `accounts`, in the order the queries below list them.
+const ACCOUNT_COLUMNS: &str = "id, email, password_hash, google_sub, created_at, banned_at";
+
 #[derive(sqlx::FromRow)]
 struct AccountRow {
     id: String,
@@ -66,6 +71,7 @@ struct AccountRow {
     password_hash: Option<String>,
     google_sub: Option<String>,
     created_at: DateTime<Utc>,
+    banned_at: Option<DateTime<Utc>>,
 }
 
 impl AccountRow {
@@ -76,6 +82,7 @@ impl AccountRow {
             password_hash: self.password_hash,
             google_sub: self.google_sub,
             created_at: self.created_at,
+            banned_at: self.banned_at,
         })
     }
 }
@@ -100,16 +107,18 @@ impl AccountStore for SqliteAccountStore {
             password_hash: new.password_hash,
             google_sub: new.google_sub,
             created_at: Utc::now(),
+            banned_at: None,
         };
         sqlx::query(
-            "INSERT INTO accounts (id, email, password_hash, google_sub, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO accounts (id, email, password_hash, google_sub, created_at, banned_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(account.id.to_string())
         .bind(&account.email)
         .bind(&account.password_hash)
         .bind(&account.google_sub)
         .bind(account.created_at)
+        .bind(account.banned_at)
         .execute(&self.pool)
         .await
         .map_err(account_write_err)?;
@@ -117,9 +126,9 @@ impl AccountStore for SqliteAccountStore {
     }
 
     async fn get(&self, id: AccountId) -> Result<Option<Account>, StoreError> {
-        let row: Option<AccountRow> = sqlx::query_as(
-            "SELECT id, email, password_hash, google_sub, created_at FROM accounts WHERE id = ?1",
-        )
+        let row: Option<AccountRow> = sqlx::query_as(&format!(
+            "SELECT {ACCOUNT_COLUMNS} FROM accounts WHERE id = ?1"
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await
@@ -128,10 +137,9 @@ impl AccountStore for SqliteAccountStore {
     }
 
     async fn find_by_email(&self, email: &str) -> Result<Option<Account>, StoreError> {
-        let row: Option<AccountRow> = sqlx::query_as(
-            "SELECT id, email, password_hash, google_sub, created_at FROM accounts \
-             WHERE email = ?1",
-        )
+        let row: Option<AccountRow> = sqlx::query_as(&format!(
+            "SELECT {ACCOUNT_COLUMNS} FROM accounts WHERE email = ?1"
+        ))
         .bind(email)
         .fetch_optional(&self.pool)
         .await
@@ -142,13 +150,14 @@ impl AccountStore for SqliteAccountStore {
     async fn update(&self, account: &Account) -> Result<(), StoreError> {
         let result = sqlx::query(
             "UPDATE accounts SET email = ?2, password_hash = ?3, google_sub = ?4, \
-             created_at = ?5 WHERE id = ?1",
+             created_at = ?5, banned_at = ?6 WHERE id = ?1",
         )
         .bind(account.id.to_string())
         .bind(&account.email)
         .bind(&account.password_hash)
         .bind(&account.google_sub)
         .bind(account.created_at)
+        .bind(account.banned_at)
         .execute(&self.pool)
         .await
         .map_err(account_write_err)?;
@@ -167,6 +176,142 @@ impl AccountStore for SqliteAccountStore {
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound);
         }
+        Ok(())
+    }
+
+    async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Account>, StoreError> {
+        // The id tiebreak keeps paging stable when two accounts share a
+        // creation timestamp — without it a row could appear on both pages.
+        let rows: Vec<AccountRow> = sqlx::query_as(&format!(
+            "SELECT {ACCOUNT_COLUMNS} FROM accounts \
+             ORDER BY created_at, id LIMIT ?1 OFFSET ?2"
+        ))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        rows.into_iter().map(AccountRow::into_account).collect()
+    }
+
+    async fn count(&self) -> Result<u64, StoreError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(count.max(0) as u64)
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct RoleRow {
+    id: String,
+    name: String,
+    description: String,
+}
+
+impl RoleRow {
+    fn into_role(self) -> Result<Role, StoreError> {
+        Ok(Role {
+            id: parse_uuid(&self.id)?,
+            name: self.name,
+            description: self.description,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteRoleStore {
+    pool: SqlitePool,
+}
+
+impl SqliteRoleStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// The vocabulary is seeded by the migration and never written to, so a
+    /// name that resolves to nothing is a programming error, not a race.
+    async fn role_id(&self, role: &str) -> Result<Uuid, StoreError> {
+        let id: Option<String> = sqlx::query_scalar("SELECT id FROM roles WHERE name = ?1")
+            .bind(role)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        parse_uuid(&id.ok_or(StoreError::NotFound)?)
+    }
+}
+
+#[async_trait]
+impl RoleStore for SqliteRoleStore {
+    async fn list(&self) -> Result<Vec<Role>, StoreError> {
+        let rows: Vec<RoleRow> =
+            sqlx::query_as("SELECT id, name, description FROM roles ORDER BY name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(backend_err)?;
+        rows.into_iter().map(RoleRow::into_role).collect()
+    }
+
+    async fn roles_for(&self, account: AccountId) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT roles.name FROM roles \
+             JOIN account_roles ON account_roles.role_id = roles.id \
+             WHERE account_roles.account_id = ?1 ORDER BY roles.name",
+        )
+        .bind(account.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_err)
+    }
+
+    async fn accounts_with(&self, role: &str) -> Result<Vec<AccountId>, StoreError> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT account_roles.account_id FROM account_roles \
+             JOIN roles ON roles.id = account_roles.role_id WHERE roles.name = ?1",
+        )
+        .bind(role)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        ids.iter().map(|id| parse_uuid(id)).collect()
+    }
+
+    async fn grant(&self, account: AccountId, role: &str) -> Result<(), StoreError> {
+        let role_id = self.role_id(role).await?;
+        // OR IGNORE makes a repeated grant a no-op rather than a conflict,
+        // so a double-submitted form cannot fail.
+        sqlx::query(
+            "INSERT OR IGNORE INTO account_roles (account_id, role_id, granted_at) \
+             VALUES (?1, ?2, ?3)",
+        )
+        .bind(account.to_string())
+        .bind(role_id.to_string())
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        Ok(())
+    }
+
+    async fn revoke(&self, account: AccountId, role: &str) -> Result<(), StoreError> {
+        let role_id = self.role_id(role).await?;
+        // Revoking a role the account never held is a no-op, matching grant.
+        sqlx::query("DELETE FROM account_roles WHERE account_id = ?1 AND role_id = ?2")
+            .bind(account.to_string())
+            .bind(role_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(())
+    }
+
+    async fn delete_for_account(&self, account: AccountId) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM account_roles WHERE account_id = ?1")
+            .bind(account.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
         Ok(())
     }
 }
@@ -550,6 +695,7 @@ impl VaultVersionStore for SqliteVaultVersionStore {
 mod tests {
     use chrono::Duration;
 
+    use super::super::ADMIN_ROLE;
     use super::*;
 
     async fn setup() -> (tempfile::TempDir, SqlitePool) {
@@ -860,5 +1006,80 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn the_migration_seeds_exactly_the_admin_role() {
+        let (_dir, pool) = setup().await;
+        let roles = SqliteRoleStore::new(pool).list().await.unwrap();
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].name, ADMIN_ROLE);
+        // The id is fixed by the migration; the in-memory fake copies it, and
+        // a change here would silently split the two backends.
+        assert_eq!(
+            roles[0].id.to_string(),
+            "a0000000-0000-4000-8000-000000000001"
+        );
+    }
+
+    #[tokio::test]
+    async fn role_grants_are_idempotent_and_cascade_with_the_account() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let roles = SqliteRoleStore::new(pool.clone());
+        let admin = accounts.create(new_account("a@example.com")).await.unwrap();
+        let plain = accounts.create(new_account("b@example.com")).await.unwrap();
+
+        // Granting twice is one grant, not a conflict.
+        roles.grant(admin.id, ADMIN_ROLE).await.unwrap();
+        roles.grant(admin.id, ADMIN_ROLE).await.unwrap();
+        assert_eq!(roles.roles_for(admin.id).await.unwrap(), vec![ADMIN_ROLE]);
+        assert!(roles.roles_for(plain.id).await.unwrap().is_empty());
+        assert_eq!(
+            roles.accounts_with(ADMIN_ROLE).await.unwrap(),
+            vec![admin.id]
+        );
+
+        // Revoking one that was never held is a no-op, matching grant.
+        roles.revoke(plain.id, ADMIN_ROLE).await.unwrap();
+        // An unknown role is an error to write and nobody to read.
+        assert!(matches!(
+            roles.grant(plain.id, "NOPE").await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(roles.accounts_with("NOPE").await.unwrap().is_empty());
+
+        // The foreign key takes the grant with the account.
+        accounts.delete(admin.id).await.unwrap();
+        assert!(roles.accounts_with(ADMIN_ROLE).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn accounts_are_listed_oldest_first_and_can_be_banned() {
+        let (_dir, pool) = setup().await;
+        let store = SqliteAccountStore::new(pool);
+        let mut first = store.create(new_account("a@example.com")).await.unwrap();
+        let second = store.create(new_account("b@example.com")).await.unwrap();
+        let third = store.create(new_account("c@example.com")).await.unwrap();
+
+        assert_eq!(store.count().await.unwrap(), 3);
+        let page = store.list(2, 0).await.unwrap();
+        assert_eq!(
+            page.iter().map(|a| a.id).collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+        let page = store.list(2, 2).await.unwrap();
+        assert_eq!(
+            page.iter().map(|a| a.id).collect::<Vec<_>>(),
+            vec![third.id]
+        );
+
+        // The ban stamp round-trips through a full-row update.
+        assert!(!first.is_banned());
+        first.banned_at = Some(Utc::now());
+        store.update(&first).await.unwrap();
+        let reloaded = store.get(first.id).await.unwrap().unwrap();
+        assert!(reloaded.is_banned());
+        assert_eq!(reloaded.banned_at, first.banned_at);
     }
 }

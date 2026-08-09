@@ -1,0 +1,129 @@
+{#-
+  The account table. Every mutating form in here targets this whole section
+  rather than its own row: suspending, promoting and deleting all move the
+  account total and the administrator count the guards depend on, so a
+  swapped row would sit inside a stale table.
+
+  The confirmation steps are <details> disclosures rather than a scripted
+  dialog: the CSP forbids inline handlers, and this works with JavaScript
+  switched off, which the pages have to.
+
+  The administrator's own row deliberately offers no destructive action —
+  `web::admin` refuses them anyway, but the safest button is the one that
+  isn't there.
+-#}
+<section class="card" id="user-list">
+  <h2>Accounts</h2>
+{%- if let Some(notice) = notice %}
+  <p class="{% if notice.danger %}error{% else %}flash{% endif %}" role="alert">{{ notice.text }}</p>
+{%- endif %}
+
+  <div class="table-scroll">
+    <table class="listing">
+      <thead>
+        <tr>
+          <th>Email</th><th>Signed up</th><th>Sign-in</th>
+          <th>Status</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+{%- for user in users %}
+        <tr>
+          <td>
+            {{ user.email }}
+{%- if user.is_self %}
+            <span class="tag">you</span>
+{%- endif %}
+{%- if user.is_admin %}
+            <span class="tag">admin</span>
+{%- endif %}
+          </td>
+          <td>{{ user.created }}</td>
+          <td>{{ user.providers }}</td>
+          <td>
+{%- if let Some(banned) = user.banned.as_deref() %}
+            <span class="error">Suspended {{ banned }}</span>
+{%- else %}
+            Active
+{%- endif %}
+          </td>
+          <td class="row-actions">
+{%- if user.is_self %}
+            <span class="hint">Manage your own account from the
+            <a href="/account">account page</a>.</span>
+{%- else %}
+{%- if user.banned.is_some() %}
+            <form method="post" action="/admin/users/{{ user.id }}/unban"
+                  hx-post="/admin/users/{{ user.id }}/unban" hx-target="#user-list"
+                  hx-swap="outerHTML">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="linklike" type="submit">Lift suspension</button>
+            </form>
+{%- else %}
+            <details class="confirm">
+              <summary>Suspend</summary>
+              <form method="post" action="/admin/users/{{ user.id }}/ban"
+                    hx-post="/admin/users/{{ user.id }}/ban" hx-target="#user-list"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <p class="hint">Blocks sign-in for <strong>{{ user.email }}</strong>
+                and signs the account out everywhere. Its vaults are kept and
+                come back if you lift the suspension.</p>
+                <button class="button small" type="submit">Suspend account</button>
+              </form>
+            </details>
+{%- endif %}
+            <details class="confirm">
+              <summary>{% if user.is_admin %}Demote{% else %}Make admin{% endif %}</summary>
+              <form method="post" action="/admin/users/{{ user.id }}/role"
+                    hx-post="/admin/users/{{ user.id }}/role" hx-target="#user-list"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <input type="hidden" name="action"
+                       value="{% if user.is_admin %}revoke{% else %}grant{% endif %}">
+{%- if user.is_admin %}
+                <p class="hint">Takes administrator access away from
+                <strong>{{ user.email }}</strong>. They keep their account and
+                their vaults.</p>
+                <button class="button small" type="submit">Remove admin</button>
+{%- else %}
+                <p class="hint">Gives <strong>{{ user.email }}</strong> this
+                page, including the ability to suspend and delete accounts.</p>
+                <button class="button small" type="submit">Make administrator</button>
+{%- endif %}
+              </form>
+            </details>
+            <details class="confirm">
+              <summary class="danger">Delete</summary>
+              <form method="post" action="/admin/users/{{ user.id }}/delete"
+                    hx-post="/admin/users/{{ user.id }}/delete" hx-target="#user-list"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <p class="hint">Deletes the account and every vault it stored,
+                earlier versions included. This cannot be undone.</p>
+                <label for="confirm-{{ user.id }}">Type <strong>{{ user.email }}</strong>
+                to confirm</label>
+                <input id="confirm-{{ user.id }}" name="confirm" type="text"
+                       autocomplete="off" spellcheck="false" required>
+                <button class="button danger small" type="submit">Delete permanently</button>
+              </form>
+            </details>
+{%- endif %}
+          </td>
+        </tr>
+{%- endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="usage">
+    <span>{{ total }} account{% if total != 1 %}s{% endif %} &middot;
+    page {{ page_number }}</span>
+{%- if let Some(prev) = prev_page %}
+    <a href="/admin/users?page={{ prev }}">Previous</a>
+{%- endif %}
+{%- if let Some(next) = next_page %}
+    <a href="/admin/users?page={{ next }}">Next</a>
+{%- endif %}
+  </p>
+</section>

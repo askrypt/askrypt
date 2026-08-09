@@ -101,14 +101,29 @@ server-rendered website — it never handles questions, answers, or vault
 crypto, and it must **never depend on `askrypt-core`**. The phased plan lives
 in **`server/PLAN.md`**; Phases 0 (scaffolding), 1 (landing page + API
 namespacing), 2 (auth: register, login, Google sign-in), 3 (profile API), 4
-(vault cloud storage), 5 (hardening & deployment) and 7 (the website: 7.1
+(vault cloud storage), 5 (hardening & deployment), 7 (the website: 7.1
 foundations, 7.2 browser sessions/CSRF, 7.3 profile pages, 7.4 vault file
-manager) are done. Still open: Phase 6 (CI/CD) and browser Google sign-in.
+manager) and 8 (roles + the admin Users page) are done. Still open: Phase 6
+(CI/CD) and browser Google sign-in.
 Self-hosting is documented in **`server/DEPLOY.md`**.
+
+**Roles and the first account.** The `roles` table is seeded by the migration
+with exactly one role, `ADMIN` (fixed uuid, so both backends name the same
+row); `account_roles` is the many-to-many grant table. `admin::bootstrap_first_admin`
+grants `ADMIN` to the **first account ever registered** — the rule is narrow
+on purpose (no administrator exists *and* `accounts.count() == 1`), so a later
+registration can never be promoted just because the administrators were
+deleted; `askrypt-server grant-admin <email>` is the recovery path. Banning is
+an `accounts.banned_at` stamp, checked in `auth::authenticate` (after the
+password verify, to keep login timing non-enumerable),
+`auth::upsert_google_account`, and `auth::resolve_session` — the last of which
+covers bearer tokens and browser cookies alike, so a ban bites on the very
+next request.
 
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
-  wires `SqliteAccountStore`/`SqliteSessionStore`/`SqliteVaultMetaStore`/
+  wires `SqliteAccountStore`/`SqliteRoleStore`/`SqliteSessionStore`/
+  `SqliteVaultMetaStore`/
   `SqliteVaultVersionStore` plus **two** on-disk `DiskVaultBlobStore`s over
   the *same* root — `new` for the live vaults, `versions` for the archived
   generations — with `vaults_dir()` created at startup so a backup script
@@ -122,6 +137,8 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   limiting and the audit log can key on peer IPs. `std::env::args()` is parsed
   *first* (so `--help` works whatever the environment says) into `Command`,
   then config (it selects `ASKRYPT_LOG_FORMAT`), then `init_tracing`; the
+  `grant-admin <email>` subcommand grants `ADMIN` to an existing account (the
+  way back in when a server has no administrator); the
   `backup <path>` subcommand is `VACUUM INTO` and refuses to clobber or to run
   on the `memory` backend — no `clap` dependency. `init_tracing` builds a
   `registry` with an `EnvFilter` plus one boxed `fmt` layer per sink: the
@@ -198,7 +215,10 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 - **`server/src/audit.rs`** — Structured account-security events on the
   `askrypt_server::audit` tracing target (register/login/Google/logout,
   password set/change + failed re-auth, email change, session revocation,
-  account deletion), plus the infallible `ClientInfo` extractor (IP + capped
+  account deletion, and the Phase 8 admin actions — ban/unban, role
+  grant/revoke, admin-initiated deletion, where the `account` field names the
+  account acted *on* and the acting administrator goes in `detail`), plus the
+  infallible `ClientInfo` extractor (IP + capped
   user agent). Never logs tokens, passwords, or the email on a *failed* login.
 - **`server/src/auth.rs`** — Phase 2 auth: register (email normalization +
   validation, ≥8-char passwords, argon2 hashing on `spawn_blocking`), login
@@ -217,7 +237,21 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   `resolve_session`, `revoke_session_token` and `upsert_google_account` are
   `pub(crate)` free functions over `AppState`, and both the JSON handlers and
   `web/` call them. **Never re-implement a rule in `web/`** — in particular
-  `authenticate` is where the login timing equalization lives.
+  `authenticate` is where the login timing equalization lives. Phase 8 hung
+  three things off those same functions: both account-creation paths call
+  `admin::bootstrap_first_admin`, and the banned check lives in
+  `authenticate` (403 `account_banned`, **after** the argon2 verify — moving
+  it earlier would make the endpoint an existence oracle),
+  `upsert_google_account`, and `resolve_session`.
+- **`server/src/admin.rs`** — Phase 8 administrative rules, the same
+  handlers-are-wrappers split as `profile.rs`: `list_users` (two store calls
+  and a count, never one per row), `set_banned` (which also drops the target's
+  sessions), `set_admin`, `delete_user` (reusing `profile::delete_account_data`
+  rather than a second cascade) and `bootstrap_first_admin`. The three guards
+  live here, so the htmx and no-JS paths cannot drift: `cannot_target_self`,
+  `last_admin`, `confirmation_mismatch`. **There is no JSON admin API** —
+  administration is a website capability, and no desktop or mobile client
+  needs it.
 - **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`
   (handlers are wrappers; the rules are the `pub(crate)` free functions
   `set_email`, `set_password`, `active_sessions`, `revoke_session_id`,
@@ -286,7 +320,10 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   `error.rs` `WebError` with `From<ApiError>` — 5xx messages are replaced,
   never forwarded; `session.rs` the `WebSession`/`MaybeWebSession` cookie
   extractors (7-day sessions labelled `"Web browser"`, rejecting with a 303
-  to `/login` or an `HX-Redirect`) plus hand-formatted `Set-Cookie` values
+  to `/login` or an `HX-Redirect`) plus `AdminSession`, which layers on
+  `WebSession` so a signed-*out* visitor still gets the redirect while a
+  signed-in non-administrator gets a 403 page instead of a login loop; plus
+  hand-formatted `Set-Cookie` values
   (`HttpOnly; Secure; SameSite=Lax; Path=/`); `csrf.rs` a random
   double-submit cookie — **deliberately not derived from the session token,
   because `profile::session_id` is `sha256(token)` and is published in the
@@ -309,7 +346,14 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   over the name-sorted list `list_for` returns, files stored in the same
   instant stay in name order; the JSON `/api/v1/vaults` listing keeps the
   plain name order. Plus `explain`, which turns the handful of reachable `ApiError`
-  codes into sentences; `pages.rs` landing and the HTML 404. Templates must
+  codes into sentences; `pages.rs` landing and the HTML 404; and `admin.rs`
+  the Phase 8 Users page (`/admin/users` behind `AdminSession`, with per-row
+  suspend/lift, promote/demote and typed-confirmation delete, paged 50 at a
+  time). Every admin action re-renders the **whole** `#user-list` fragment,
+  not the row: each one moves the account total and the administrator count
+  the guards depend on. `Chrome` carries `is_admin` (set by `Shell::as_admin`,
+  defaulting to *off*) so the nav can offer the Users link on every page —
+  hiding it is decoration, `AdminSession` is the gate. Templates must
   not contain inline `<script>`/`<style>`, `hx-on:` or `js:` htmx
   expressions — the CSP forbids them and `tests/web.rs` guards it.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
@@ -317,17 +361,27 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   `vault_blobs` (live files) and `vault_version_blobs` (archived generations,
   keyed by version id, under each account's `versions/` subdirectory).
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
+  `RoleStore`,
   `SessionStore`, `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
   `Mailer`,
   `IdTokenVerifier` (+ `StoreError`/`MailerError`/`IdTokenError`, all
-  `#[non_exhaustive]`); `memory.rs` in-memory fakes for all six (used by tests
-  and the `memory` backend); `sqlite.rs` SQLite pool + embedded migration
-  runner over `server/migrations/` plus `SqliteAccountStore`/
+  `#[non_exhaustive]`, and the `ADMIN_ROLE` name constant); `memory.rs`
+  in-memory fakes for all of them (used by tests
+  and the `memory` backend — `MemoryRoleStore::default` seeds `ADMIN` with the
+  *same fixed uuid* the migration writes, so the two backends agree);
+  `sqlite.rs` SQLite pool + embedded migration
+  runner over `server/migrations/` plus `SqliteAccountStore`/`SqliteRoleStore`/
   `SqliteSessionStore`/`SqliteVaultMetaStore`/`SqliteVaultVersionStore`
-  (uuids as TEXT, timestamps via sqlx-chrono, sessions and vault rows cascade
+  (uuids as TEXT, timestamps via sqlx-chrono, sessions, vault and
+  `account_roles` rows cascade
   on account delete, version rows cascade on *both* vault and account delete,
-  vault names unique per account, and the nullable `host`/`saved_at` stamp
-  columns on `vaults` + `vault_versions`); `disk.rs` `DiskVaultBlobStore` storing
+  vault names unique per account, the nullable `host`/`saved_at` stamp
+  columns on `vaults` + `vault_versions`, and the nullable `banned_at` on
+  `accounts`. `AccountStore::list` is bounded (`limit`/`offset`, ordered
+  `created_at, id` — the id tiebreak is what keeps paging stable) because the
+  admin page must never load every account at once. Adding an `accounts`
+  column means touching six places in `sqlite.rs`; `ACCOUNT_COLUMNS` covers
+  the three SELECTs, the INSERT and UPDATE lists are separate); `disk.rs` `DiskVaultBlobStore` storing
   bytes at `<root>/<account-id>/<blob-id>.askrypt` with atomic temp-file +
   rename writes (path components are uuids, so no user string reaches the
   filesystem) — instantiated **twice** over `<data>/vaults`: `new` keyed by
@@ -370,14 +424,24 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
   incl. self-revocation and the typed-confirmation delete, and the 7.4
   upload → list → byte-identical download → rename → delete with the
   stale-ETag conflict, the oversize 413 page, and the `Saved` column —
-  including that a host name out of a file cannot inject markup). Middleware needing a slow
+  including that a host name out of a file cannot inject markup) and
+  `admin.rs` (the Phase 8 gate, 9 tests: first-account-is-admin and the nav
+  link that follows, 403-vs-redirect for non-admin and signed-out visitors,
+  suspend → old session dies *and* a fresh JSON login is refused → lift
+  restores both, the self-guard, grant/revoke of ADMIN, the typed-confirmation
+  delete taking the target's vaults with it, CSRF rejection, and the htmx
+  fragment swap). Middleware needing a slow
   or parked handler (timeout, shedding) is unit-tested inside
-  `src/hardening.rs` instead.
+  `src/hardening.rs` instead. The `last_admin` guard is unreachable through
+  the website — only the sole administrator can act on themselves, and the
+  self-guard fires first — so it is covered by `src/admin.rs`'s unit tests.
 - **`server/templates/` + `server/static/`** — The website's markup and its
   only loose files. Templates (`layout.html`, `landing.html`,
-  `auth_page.html`, `account.html`, `vaults.html`, `error.html`, and
+  `auth_page.html`, `account.html`, `vaults.html`, `admin_users.html`,
+  `error.html`, and
   `fragments/` — `auth_form`, `email_form`, `password_form`, `devices`,
-  `delete_account`, `vault_upload`, `vault_list`) compile into the binary;
+  `delete_account`, `vault_upload`, `vault_list`, `user_list`) compile into
+  the binary;
   every page template carries a `chrome: Chrome` field because `layout.html`
   reads it, and each fragment is a self-contained element with an id its
   forms name as `hx-target`. Confirmation steps are `<details>` disclosures,

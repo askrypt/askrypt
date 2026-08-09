@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+{% block title %}Users &middot; Askrypt{% endblock %}
+{% block content %}
+<h1>Users</h1>
+<p class="hint">Every account on this server. Suspending an account blocks
+sign-in and signs it out everywhere; its stored vaults are kept, so lifting
+the suspension restores them untouched. Deleting one removes its vaults and
+their history for good.</p>
+
+{#- One section that renders and swaps itself; see web::admin. -#}
+{{ users|safe }}
+{% endblock %}

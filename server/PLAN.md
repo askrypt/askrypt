@@ -522,6 +522,49 @@ askrypt/
     status, `Set-Cookie` attributes, CSRF rejection and key markup); every
     page usable with JavaScript disabled.
 
+- **Phase 8 — Roles and the admin console.** ✅ *(done 2026-08-09)*
+  A self-hosted server had no operator surface at all: no way to see who had
+  registered, and no way to lock out or remove an account short of editing
+  SQLite by hand.
+
+  - **Roles are tables, not a flag.** `roles` (seeded by the migration with
+    exactly one row, `ADMIN`, at a fixed uuid) plus the `account_roles`
+    many-to-many grant table, both added to `migrations/0002_auth.sql` rather
+    than a new numbered script — dev databases get recreated. A second role
+    later is a data change, not a schema change.
+  - **The first registered account becomes the administrator.**
+    `admin::bootstrap_first_admin` runs after both account-creation paths
+    (password and Google) and grants `ADMIN` only when no administrator exists
+    *and* the new account is the only one. Deliberately narrow: it can never
+    promote a later registration because the administrators were deleted. It
+    logs and moves on rather than failing a registration.
+    `askrypt-server grant-admin <email>` is the documented way back in.
+  - **Ban is a reversible lock-out**, not a deletion: `accounts.banned_at`,
+    enforced in `auth::authenticate` (403 `account_banned`, **after** the
+    argon2 verify so login timing still cannot enumerate accounts),
+    `auth::upsert_google_account`, and `auth::resolve_session` — the last
+    covering bearer tokens and browser cookies with one check. Banning also
+    drops the account's sessions, so it bites immediately. Vault blobs are
+    untouched, and lifting the ban restores them unchanged.
+  - **The Users page is HTML only** (`/admin/users`, behind the new
+    `AdminSession` extractor): no `/api/v1/admin/*`, because no desktop or
+    mobile client needs administration and a second surface is a second thing
+    to secure. The rules live in `src/admin.rs` as `pub(crate)` free
+    functions, the same split `profile.rs`/`web/account.rs` already uses;
+    `delete_user` reuses `profile::delete_account_data` rather than repeating
+    the cascade.
+  - **Guardrails**, all in `src/admin.rs` so htmx and no-JS agree:
+    `cannot_target_self` (an administrator's own row offers no destructive
+    action and the server refuses one anyway), `last_admin` (the system always
+    keeps an administrator), and `confirmation_mismatch` (deleting someone
+    else needs their address typed, mirroring self-delete).
+  - **Phase gate:** ✅ first account is admin and the second is not; a
+    non-administrator gets 403 and a signed-out visitor gets the login
+    redirect; a ban kills live sessions *and* fresh logins and is reversible;
+    delete cascades the target's vaults; CSRF and htmx-fragment behaviour
+    match the rest of the site. `server/tests/admin.rs` (9 tests) plus unit
+    tests in `src/admin.rs` and both store backends.
+
 ## Open decisions (not blocking)
 
 - ~~Client-side sync UX for **desktop**~~ — decided and built: manual

@@ -29,6 +29,11 @@ pub enum Flash {
     VaultRenamed,
     VaultDeleted,
     VaultRestored,
+    UserBanned,
+    UserUnbanned,
+    UserDeleted,
+    AdminGranted,
+    AdminRevoked,
 }
 
 impl Flash {
@@ -47,6 +52,11 @@ impl Flash {
             Self::VaultRenamed => "vren",
             Self::VaultDeleted => "vdel",
             Self::VaultRestored => "vres",
+            Self::UserBanned => "uban",
+            Self::UserUnbanned => "uunban",
+            Self::UserDeleted => "udel",
+            Self::AdminGranted => "agrant",
+            Self::AdminRevoked => "arevoke",
         }
     }
 
@@ -65,6 +75,11 @@ impl Flash {
             "vren" => Some(Self::VaultRenamed),
             "vdel" => Some(Self::VaultDeleted),
             "vres" => Some(Self::VaultRestored),
+            "uban" => Some(Self::UserBanned),
+            "uunban" => Some(Self::UserUnbanned),
+            "udel" => Some(Self::UserDeleted),
+            "agrant" => Some(Self::AdminGranted),
+            "arevoke" => Some(Self::AdminRevoked),
             _ => None,
         }
     }
@@ -88,6 +103,11 @@ impl Flash {
             Self::VaultRestored => {
                 "Earlier version restored. The version it replaced was kept in the history."
             }
+            Self::UserBanned => "That account is suspended and has been signed out everywhere.",
+            Self::UserUnbanned => "That account can sign in again.",
+            Self::UserDeleted => "That account and every vault it stored have been deleted.",
+            Self::AdminGranted => "That account is now an administrator.",
+            Self::AdminRevoked => "That account is no longer an administrator.",
         }
     }
 }
@@ -133,6 +153,11 @@ mod tests {
             Flash::VaultRenamed,
             Flash::VaultDeleted,
             Flash::VaultRestored,
+            Flash::UserBanned,
+            Flash::UserUnbanned,
+            Flash::UserDeleted,
+            Flash::AdminGranted,
+            Flash::AdminRevoked,
         ];
         for flash in all {
             assert_eq!(Flash::from_code(flash.code()), Some(flash));

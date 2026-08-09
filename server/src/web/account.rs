@@ -111,7 +111,9 @@ pub async fn page(
     web: WebSession,
     headers: HeaderMap,
 ) -> WebResult<Response> {
-    let (chrome, cookies) = Shell::build(&headers, Some(web.account.email.clone())).into_parts();
+    let (chrome, cookies) = Shell::build(&headers, Some(web.account.email.clone()))
+        .as_admin(web.is_admin)
+        .into_parts();
     let page = build_page(&state, &web, chrome, Sections::default()).await?;
     Ok(with_cookies(Page(page).into_response(), cookies))
 }
@@ -332,7 +334,9 @@ async fn respond_with_section(
     sections: Sections,
     section: Section,
 ) -> WebResult<Response> {
-    let (chrome, cookies) = Shell::build(headers, Some(web.account.email.clone())).into_parts();
+    let (chrome, cookies) = Shell::build(headers, Some(web.account.email.clone()))
+        .as_admin(web.is_admin)
+        .into_parts();
     if !is_htmx(headers) {
         let page = build_page(state, web, chrome, sections).await?;
         return Ok(with_cookies(Page(page).into_response(), cookies));

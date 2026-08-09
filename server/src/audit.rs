@@ -92,6 +92,14 @@ pub const SESSION_REVOKED: &str = "session.revoked";
 pub const SESSIONS_REVOKED_BULK: &str = "session.revoked_bulk";
 pub const ACCOUNT_DELETE_STARTED: &str = "account.delete_started";
 pub const ACCOUNT_DELETED: &str = "account.deleted";
+// Administrative actions (Phase 8). `account` names the account acted *on*;
+// the acting administrator goes in `detail`, so the log answers both halves
+// of "who did this to whom".
+pub const ACCOUNT_BANNED: &str = "account.banned";
+pub const ACCOUNT_UNBANNED: &str = "account.unbanned";
+pub const ACCOUNT_DELETED_BY_ADMIN: &str = "account.deleted_by_admin";
+pub const ROLE_GRANTED: &str = "role.granted";
+pub const ROLE_REVOKED: &str = "role.revoked";
 
 #[cfg(test)]
 mod tests {
@@ -141,6 +149,28 @@ mod tests {
         }
     }
 
+    /// Installs a do-nothing subscriber as the process-wide default.
+    ///
+    /// Without one, `tracing` caches `Interest::never()` for a callsite the
+    /// first time it is reached with no subscriber at all — which other tests
+    /// in this binary do, since they call `emit` freely. A cached "never" is
+    /// not undone by a later *thread-local* subscriber, so the event below
+    /// would be dropped. With a global default in place the callsite resolves
+    /// to "sometimes" instead, and every event consults the dispatcher that
+    /// is actually current on its own thread.
+    ///
+    /// Registry with no layers records nothing, so this changes no other
+    /// test's behaviour; it exists purely to keep the cache honest.
+    fn keep_callsites_live() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            // Another module setting one first is fine — any global default
+            // does the job.
+            let _ = tracing::subscriber::set_global_default(Registry::default());
+        });
+        tracing::callsite::rebuild_interest_cache();
+    }
+
     fn client() -> ClientInfo {
         let request = Request::builder()
             .uri("/")
@@ -153,6 +183,7 @@ mod tests {
 
     #[test]
     fn emitted_events_carry_target_and_fields() {
+        keep_callsites_live();
         let events = Arc::new(Mutex::new(Vec::new()));
         // `with_default` is thread-local, so this stays deterministic even
         // though other tests in the binary run in parallel.
