@@ -183,10 +183,6 @@ pub fn chevron_right(size: u16) -> Text<'static> {
     glyph('\u{F285}', size)
 }
 
-pub fn check_lg(size: u16) -> Text<'static> {
-    glyph('\u{F633}', size)
-}
-
 /// `power` — the Quit row at the bottom of the rail.
 pub fn power(size: u16) -> Text<'static> {
     glyph('\u{F4FF}', size)

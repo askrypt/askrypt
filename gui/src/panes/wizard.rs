@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use askrypt::{RemoteVault, ServerClient, ServerStorage, VaultStorage};
-use iced::widget::{button, column, container, row, rule, scrollable, space, text, text_input};
+use iced::widget::{button, column, container, row, rule, scrollable, text, text_input};
 use iced::{Element, Length, Task, alignment::Vertical};
 use zeroize::Zeroize;
 
@@ -49,13 +49,6 @@ impl Purpose {
         match self {
             Purpose::Open => "Where is the vault?",
             Purpose::SaveAs => "Where should the vault go?",
-        }
-    }
-
-    fn confirm_label(self) -> &'static str {
-        match self {
-            Purpose::Open => "Open",
-            Purpose::SaveAs => "Save",
         }
     }
 
@@ -310,10 +303,26 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                 }
             }
         }
+        // Like a recent file, a server vault is a destination rather than a
+        // setting: clicking one downloads it instead of arming a confirm
+        // button. Only the save direction still has something to confirm, and
+        // it shows a name field rather than this list.
         Msg::ServerVaultPicked(index) => {
-            state.picked_vault = Some(index);
             state.error = None;
-            Action::None
+            let Some(client) = session.server_client.clone() else {
+                state.error = Some("Sign in first.".to_string());
+                return Action::None;
+            };
+            let Some(vault) = state
+                .vaults
+                .as_ref()
+                .and_then(|vaults| vaults.get(index))
+                .cloned()
+            else {
+                return Action::None;
+            };
+            state.picked_vault = Some(index);
+            download(state, session, client, vault)
         }
         Msg::VaultNameChanged(value) => {
             state.vault_name = value;
@@ -344,36 +353,27 @@ fn confirm(state: &mut State, session: &mut Session) -> Action {
         // dialog), and opening acts on the click — a recent row or `Browse…` —
         // so it carries no confirm button.
         Step::PickSource | Step::Cloud | Step::File => Action::None,
+        // Opening acts on the click too: picking a vault row downloads it, so
+        // only the save direction reaches here.
+        Step::Server if !state.purpose.is_save() => Action::None,
         Step::Server => {
             let Some(client) = session.server_client.clone() else {
                 state.error = Some("Sign in first.".to_string());
                 return Action::None;
             };
 
-            if state.purpose.is_save() {
-                let name = state.vault_name.trim();
-                if name.is_empty() {
-                    state.error = Some("Enter a name for the vault.".to_string());
-                    return Action::None;
-                }
-                // Addressed by *name*: saving over an existing one replaces it,
-                // which is what the collision warning below is about.
-                Action::Run(Task::done(Message::SaveTo(VaultLocation::Server {
-                    base_url: client.base_url().to_string(),
-                    email: session.server_email.clone().unwrap_or_default(),
-                    name: name.to_string(),
-                })))
-            } else {
-                let Some(vault) = state
-                    .picked_vault
-                    .and_then(|index| state.vaults.as_ref()?.get(index))
-                    .cloned()
-                else {
-                    state.error = Some("Pick a vault.".to_string());
-                    return Action::None;
-                };
-                download(state, session, client, vault)
+            let name = state.vault_name.trim();
+            if name.is_empty() {
+                state.error = Some("Enter a name for the vault.".to_string());
+                return Action::None;
             }
+            // Addressed by *name*: saving over an existing one replaces it,
+            // which is what the collision warning below is about.
+            Action::Run(Task::done(Message::SaveTo(VaultLocation::Server {
+                base_url: client.base_url().to_string(),
+                email: session.server_email.clone().unwrap_or_default(),
+                name: name.to_string(),
+            })))
         }
     }
 }
@@ -715,11 +715,10 @@ fn file_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message>
         .into()
 }
 
-/// One selectable row — a recent file or a server vault. Reuses the item
-/// list's row styling so a pick reads the same way everywhere. The trailing
-/// `mark` is what tells the two apart: the server list is a selection, so it
-/// ticks the picked row, while a recent vault opens on the click and points
-/// ahead like the source cards do.
+/// One clickable row — a recent file or a server vault. Reuses the item list's
+/// row styling so a pick reads the same way everywhere. Both kinds open on the
+/// click, so both point ahead with a chevron like the source cards do; the
+/// `selected` highlight only marks the row whose open is under way.
 fn picker_row<'a>(
     title: String,
     subtitle: String,
@@ -846,12 +845,6 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
         if index > 0 {
             rows = rows.push(rule::horizontal(1).style(theme::pane_divider));
         }
-        let selected = state.picked_vault == Some(index);
-        let mark: Element<'_, Message> = if selected {
-            icon::check_lg(14).into()
-        } else {
-            space().width(Length::Fixed(14.0)).into()
-        };
         rows = rows.push(picker_row(
             vault.name.clone(),
             format!(
@@ -859,8 +852,8 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
                 human_size(vault.size),
                 data::format_rfc3339_local(&vault.updated_at)
             ),
-            selected,
-            mark,
+            state.picked_vault == Some(index),
+            icon::chevron_right(12).into(),
             Message::Wizard(Msg::ServerVaultPicked(index)),
         ));
     }
@@ -903,11 +896,12 @@ fn footer<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
             .on_press(Message::Wizard(Msg::Cancel)),
     );
 
-    // Only the server step still asks for something to confirm; the file step
-    // acts on the click (a recent vault, or the native dialog).
-    if matches!(state.step, Step::Server) {
+    // Naming a server vault to save to is the only thing left to confirm;
+    // every open acts on the click (a recent vault, a listed vault, or the
+    // native dialog).
+    if state.step == Step::Server && state.purpose.is_save() {
         buttons = buttons.push(
-            button(text(state.purpose.confirm_label()).size(14))
+            button(text("Save").size(14))
                 .padding([8, 16])
                 .on_press(Message::Wizard(Msg::Confirm)),
         );

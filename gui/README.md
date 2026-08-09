@@ -203,11 +203,13 @@ with the vault's name, because that dialog already asks for the folder *and* the
 name. So the file step exists only in the Open direction (the recent list plus
 `Browse…`), and only the server step asks the save direction for a name.
 
-The file step also has no confirm button: a recent vault is a destination, not a
-setting, so clicking a row opens it immediately (which is why its rows end in a
-chevron, while the server list — a real selection, confirmed by `Open` — ticks
-the picked row). `Step::Server` is therefore the only step `footer` gives a
-confirm button to, and the only one `confirm()` acts on.
+**Opening never has a confirm button.** A vault row — a recent file or one of
+the account's server vaults — is a destination, not a setting, so clicking it
+starts the open right there; that is why every such row ends in a chevron and
+why `picked_*` only highlights the row whose open is under way. The one thing
+left to confirm is naming a server vault to *save* to, so `footer` shows its
+`Save` button only for `Step::Server` in the `SaveAs` direction, and that is the
+only case `confirm()` acts on.
 
 ---
 
