@@ -244,7 +244,9 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
             },
             |picked| Message::Wizard(Msg::FilePicked(picked)),
         )),
-        Msg::FilePicked(Some(path)) => open_location(state, session, VaultLocation::LocalFile(path)),
+        Msg::FilePicked(Some(path)) => {
+            open_location(state, session, VaultLocation::LocalFile(path))
+        }
         Msg::FilePicked(None) => Action::None,
         Msg::SaveFilePicked(Some(path)) => {
             // The shell owns the save task, because it also owns what happens
@@ -493,13 +495,9 @@ fn sign_in(state: &mut State, session: &mut Session) -> Action {
     Action::Run(Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                let client = ServerClient::login(
-                    &base_url,
-                    &email,
-                    &password,
-                    Some("Askrypt desktop"),
-                )
-                .map_err(|e| VaultError::log("Failed to sign in", &e))?;
+                let client =
+                    ServerClient::login(&base_url, &email, &password, Some("Askrypt desktop"))
+                        .map_err(|e| VaultError::log("Failed to sign in", &e))?;
                 let client = Arc::new(client);
                 let vaults = client
                     .list()

@@ -38,7 +38,7 @@ use iced::{time, window};
 
 use crate::panes::Action;
 use crate::panes::wizard::Purpose;
-use crate::session::{VaultHandle, Session, SmartLockData, VaultError};
+use crate::session::{Session, SmartLockData, VaultError, VaultHandle};
 use crate::settings::{AppSettings, VaultLocation, WindowState};
 use crate::tray::TrayEvent;
 use crate::vault::Status;
@@ -600,20 +600,18 @@ impl App {
                 None => Action::None,
             },
             Message::DeleteEntry(index) => self.delete_entry(index),
-            Message::UseGeneratedPassword(password) => {
-                match self.editor.as_mut() {
-                    Some(editor) => {
-                        editor.set_secret(password);
-                        self.session.status_message =
-                            Some("Password copied and applied to the item".into());
-                        Action::Pane(Pane::Items)
-                    }
-                    None => {
-                        self.session.status_message = Some("Password copied to clipboard".into());
-                        Action::Pane(self.default_pane())
-                    }
+            Message::UseGeneratedPassword(password) => match self.editor.as_mut() {
+                Some(editor) => {
+                    editor.set_secret(password);
+                    self.session.status_message =
+                        Some("Password copied and applied to the item".into());
+                    Action::Pane(Pane::Items)
                 }
-            }
+                None => {
+                    self.session.status_message = Some("Password copied to clipboard".into());
+                    Action::Pane(self.default_pane())
+                }
+            },
             Message::SaveTo(location) => match self.session.storage_for(&location) {
                 Ok(storage) => self.start_save(location, storage),
                 Err(e) => {
@@ -647,7 +645,9 @@ impl App {
             Message::Questions(msg) => {
                 panes::questions::update(&mut self.questions, &mut self.session, msg)
             }
-            Message::PassGen(msg) => panes::passgen::update(&mut self.passgen, &mut self.session, msg),
+            Message::PassGen(msg) => {
+                panes::passgen::update(&mut self.passgen, &mut self.session, msg)
+            }
             Message::Global(msg) => self.update_global(msg),
         };
 
@@ -758,9 +758,11 @@ impl App {
         self.session.begin_work("Saving…");
         Action::Run(Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || session::write_vault(request, location, storage))
-                    .await
-                    .expect("save task panicked")
+                tokio::task::spawn_blocking(move || {
+                    session::write_vault(request, location, storage)
+                })
+                .await
+                .expect("save task panicked")
             },
             |result| Message::Global(GlobalMsg::Saved(result)),
         ))
@@ -803,7 +805,8 @@ impl App {
                 let label = self.status().lock_label();
                 self.session.lock();
                 self.clear_secret_panes();
-                self.session.status_message = Some(format!("{label}ed — secrets wiped from memory"));
+                self.session.status_message =
+                    Some(format!("{label}ed — secrets wiped from memory"));
                 Action::pane_run(
                     Pane::Unlock,
                     operation::focus(panes::unlock::focus_target()),

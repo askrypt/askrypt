@@ -152,10 +152,7 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                     session.apply_unlock(entries);
                     state.reset_for(session);
                     session.status_message = Some(format!("The vault unlocked in {} ms", millis));
-                    Action::pane_run(
-                        Pane::Items,
-                        iced::widget::operation::focus(SEARCH_INPUT_ID),
-                    )
+                    Action::pane_run(Pane::Items, iced::widget::operation::focus(SEARCH_INPUT_ID))
                 }
                 Err(e) => {
                     eprintln!("ERROR: Failed to decrypt the vault: {}", e);
@@ -171,14 +168,9 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                     let millis = session.elapsed_millis();
                     session.apply_smart_unlock(unlocked);
                     state.reset_for(session);
-                    session.status_message = Some(format!(
-                        "Vault unlocked from Smart Lock in {} ms",
-                        millis
-                    ));
-                    Action::pane_run(
-                        Pane::Items,
-                        iced::widget::operation::focus(SEARCH_INPUT_ID),
-                    )
+                    session.status_message =
+                        Some(format!("Vault unlocked from Smart Lock in {} ms", millis));
+                    Action::pane_run(Pane::Items, iced::widget::operation::focus(SEARCH_INPUT_ID))
                 }
                 Err(e) => {
                     eprintln!("ERROR: Failed to recover the Smart Lock: {}", e);
@@ -237,8 +229,7 @@ fn start_full_unlock(state: &mut State, session: &mut Session) -> Action {
         return Action::None;
     }
 
-    let (Some(file), Some(questions_data)) =
-        (session.file.clone(), session.questions_data.clone())
+    let (Some(file), Some(questions_data)) = (session.file.clone(), session.questions_data.clone())
     else {
         return Action::None;
     };
@@ -249,7 +240,8 @@ fn start_full_unlock(state: &mut State, session: &mut Session) -> Action {
     Action::Run(Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                file.decrypt(&questions_data, rest).map_err(|e| e.to_string())
+                file.decrypt(&questions_data, rest)
+                    .map_err(|e| e.to_string())
             })
             .await
             .expect("decrypt task panicked")
@@ -382,7 +374,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // The write stamp is unencrypted, so it is readable before a single answer
     // is given — it says which machine last saved this vault, and when.
     if let Some(stamp) = session.file.as_ref().and_then(|file| {
-        data::format_stamp(file.params.host.as_deref(), file.params.updated_at.as_deref())
+        data::format_stamp(
+            file.params.host.as_deref(),
+            file.params.updated_at.as_deref(),
+        )
     }) {
         body = body.push(
             text(format!("Last saved: {stamp}"))
@@ -407,7 +402,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // While a derivation runs the controls are replaced by the spinner, so the
     // same answer cannot be submitted twice.
     body = body.push(if session.busy {
-        Element::from(theme::spinner_row(session.spinner_frame, session.spinner_label))
+        Element::from(theme::spinner_row(
+            session.spinner_frame,
+            session.spinner_label,
+        ))
     } else {
         Element::from(
             row![

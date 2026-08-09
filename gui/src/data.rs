@@ -154,6 +154,9 @@ mod tests {
 
     #[test]
     fn an_unparseable_stamp_time_is_shown_verbatim() {
-        assert_eq!(format_stamp(None, Some("whenever")), Some("whenever".into()));
+        assert_eq!(
+            format_stamp(None, Some("whenever")),
+            Some("whenever".into())
+        );
     }
 }

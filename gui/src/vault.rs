@@ -142,7 +142,11 @@ mod tests {
             assert_eq!(status.can_create(), open, "new in {status:?}");
             assert_eq!(status.can_open(), open, "open in {status:?}");
             assert_eq!(status.can_unlock(), unlock, "unlock in {status:?}");
-            assert_eq!(status.can_smart_lock(), smart_lock, "smart lock in {status:?}");
+            assert_eq!(
+                status.can_smart_lock(),
+                smart_lock,
+                "smart lock in {status:?}"
+            );
             assert_eq!(status.can_lock(), lock, "lock in {status:?}");
             assert_eq!(status.can_save(), save, "save in {status:?}");
             assert_eq!(status.can_save_as(), save, "save as in {status:?}");

@@ -149,8 +149,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .align_y(Vertical::Center);
 
     let sets = column![
-        toggle("Uppercase (A-Z)", config.use_uppercase, Msg::ToggleUppercase),
-        toggle("Lowercase (a-z)", config.use_lowercase, Msg::ToggleLowercase),
+        toggle(
+            "Uppercase (A-Z)",
+            config.use_uppercase,
+            Msg::ToggleUppercase
+        ),
+        toggle(
+            "Lowercase (a-z)",
+            config.use_lowercase,
+            Msg::ToggleLowercase
+        ),
         toggle("Numbers (0-9)", config.use_numbers, Msg::ToggleNumbers),
         toggle("Symbols (!@#…)", config.use_symbols, Msg::ToggleSymbols),
     ]
@@ -206,4 +214,3 @@ fn toggle<'a>(label: &'a str, value: bool, to_message: fn(bool) -> Msg) -> Eleme
         .on_toggle(move |v| Message::PassGen(to_message(v)))
         .into()
 }
-

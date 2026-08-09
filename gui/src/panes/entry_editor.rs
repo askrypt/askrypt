@@ -10,7 +10,9 @@
 //! marks the vault dirty, and the vault is written only by an explicit Save.
 
 use askrypt::SecretEntry;
-use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, text, text_input};
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
+};
 use iced::{Element, Length, alignment::Vertical};
 
 use crate::panes::Action;
