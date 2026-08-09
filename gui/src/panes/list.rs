@@ -61,8 +61,15 @@ fn row_widget(index: usize, entry: &SecretEntry, selected: bool) -> Element<'_, 
         .height(Length::Fill)
         .style(move |t: &Theme| theme::accent_bar(t, selected));
 
+    let mut title = row![text(&entry.name).size(14).font(theme::bold())]
+        .spacing(6)
+        .align_y(Vertical::Center);
+    if entry.hidden {
+        title = title.push(text("hidden").size(11).style(text::secondary));
+    }
+
     let labels = column![
-        text(&entry.name).size(14).font(theme::bold()),
+        title,
         text(&entry.user_name).size(12).style(text::secondary),
     ]
     .spacing(1);
