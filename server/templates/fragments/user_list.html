@@ -42,7 +42,8 @@
           <td>{{ user.providers }}</td>
           <td>
 {%- if let Some(banned) = user.banned.as_deref() %}
-            <span class="error">Suspended {{ banned }}</span>
+            <span class="tag danger">Suspended</span>
+            <span class="status-note">since {{ banned }}</span>
 {%- else %}
             Active
 {%- endif %}

@@ -12,6 +12,7 @@
   --card: #ffffff;
   --line: #e0e0e5;
   --danger: #b3261e;
+  --danger-ink: #ffffff;
   --ok: #1c6b3c;
 }
 @media (prefers-color-scheme: dark) {
@@ -23,6 +24,9 @@
     --card: #1b1b1f;
     --line: #2c2c33;
     --danger: #f2b8b5;
+    /* --danger is a light pink here, so anything filled with it needs dark
+       ink rather than the white that works on the light theme's red. */
+    --danger-ink: #1b1b1f;
     --ok: #7fd1a0;
   }
 }
@@ -241,12 +245,28 @@ ul.history li > span { flex: 1 1 12rem; color: var(--muted); }
 ul.history form { display: inline; }
 
 .tag {
+  display: inline-block;
   font-size: 0.75rem;
   padding: 0.05rem 0.4rem;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
   white-space: nowrap;
+}
+.tag.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+
+/* A status cell is a badge plus the moment it happened, never the page-level
+   .error box: that one is a block alert, and inline in a table cell its
+   border redraws on every wrapped line, which reads as a strikethrough. */
+.status-note {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .usage { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; color: var(--muted); font-size: 0.9rem; }
