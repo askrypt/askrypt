@@ -19,6 +19,12 @@
 //! written on a best-effort basis and trimmed after the fact — a save is
 //! never refused, and never fails, because of it.
 //!
+//! Every operation that moves bytes or changes state leaves a structured
+//! log line ([`log_op`] and friends) on this module's own target,
+//! `askrypt_server::vaults`. Those lines carry **ids and byte counts only**:
+//! never the file name, never the bytes, never the ETag or the write stamp —
+//! see [`log_op`] for why each of those is left out.
+//!
 //! As in [`crate::auth`] and [`crate::profile`], the handlers are wrappers
 //! around `pub(crate)` free functions ([`list_for`], [`create`],
 //! [`overwrite`], [`set_name`], [`destroy`], [`read`], [`versions_for`],
@@ -61,6 +67,65 @@ const MAX_NAME_BYTES: usize = 255;
 /// `no-cache` still forces revalidation while letting the `ETag` round-trip
 /// save a re-download. `private` keeps shared caches out of it.
 const CACHE_CONTROL_VAULT: &str = "private, no-cache";
+
+/// Operation names for the vault log. Constants rather than literals at the
+/// call sites, for the same reason [`crate::audit`] keeps its event names in
+/// one place: the vocabulary stays greppable and typo-proof.
+mod op {
+    pub const CREATED: &str = "vault.created";
+    pub const OVERWRITTEN: &str = "vault.overwritten";
+    pub const DOWNLOADED: &str = "vault.downloaded";
+    pub const RENAMED: &str = "vault.renamed";
+    pub const DELETED: &str = "vault.deleted";
+    pub const LISTED: &str = "vault.listed";
+    pub const VERSION_ARCHIVED: &str = "vault.version.archived";
+    pub const VERSION_DOWNLOADED: &str = "vault.version.downloaded";
+    pub const VERSION_RESTORED: &str = "vault.version.restored";
+    pub const VERSIONS_TRIMMED: &str = "vault.versions.trimmed";
+}
+
+/// Records one vault operation: what happened, to which row, for which
+/// account, and how many bytes it involved.
+///
+/// **Identifiers and byte counts, nothing else** — every logging site in this
+/// module goes through here or its two siblings so that rule holds in one
+/// place. What is deliberately absent, and why:
+///
+/// - the **name**, because it is text the account holder typed and often says
+///   what the vault is for ("work-vpn.askrypt"); a uuid names the same row
+///   without describing it;
+/// - the **bytes**, which are the secret this server is built never to read;
+/// - the **ETag**, a content hash: logging it would let anyone holding the log
+///   tell when two files are byte-identical, or when a save put back a
+///   previous state, without ever decrypting anything;
+/// - the **write stamp** (`host`/`saved_at`), which names the user's machine
+///   and is foreign text besides.
+///
+/// The size stays: it comes from the metadata row rather than the plaintext,
+/// it is what explains a quota refusal, and the account already sees it in its
+/// own listing.
+fn log_op(op: &'static str, account_id: AccountId, vault_id: VaultId, bytes: u64) {
+    tracing::info!(op, %account_id, %vault_id, bytes, "vault operation");
+}
+
+/// [`log_op`] for the operations that name an archived generation as well as
+/// its vault. Same rule: ids and sizes only.
+fn log_version_op(
+    op: &'static str,
+    account_id: AccountId,
+    vault_id: VaultId,
+    version_id: VaultVersionId,
+    bytes: u64,
+) {
+    tracing::info!(op, %account_id, %vault_id, %version_id, bytes, "vault operation");
+}
+
+/// Listings are the one read that says nothing about a particular vault, so
+/// they log a count instead of an id — and at `debug`, because a listing is
+/// re-rendered after every change the file manager makes.
+fn log_list(account_id: AccountId, count: usize) {
+    tracing::debug!(op = op::LISTED, %account_id, count, "vault operation");
+}
 
 /// One vault's metadata as answered by the list/upload/rename endpoints.
 #[derive(Serialize)]
@@ -105,6 +170,7 @@ pub async fn list(
 pub(crate) async fn list_for(state: &AppState, account_id: AccountId) -> ApiResult<Vec<VaultMeta>> {
     let mut metas = state.vault_meta.list_for_account(account_id).await?;
     metas.sort_by_key(|meta| meta.name.to_lowercase());
+    log_list(account_id, metas.len());
     Ok(metas)
 }
 
@@ -175,6 +241,7 @@ pub(crate) async fn create(
     // vault with no bytes.
     state.vault_blobs.put(account_id, meta.id, bytes).await?;
     state.vault_meta.upsert(meta.clone()).await?;
+    log_op(op::CREATED, account_id, meta.id, meta.size);
     Ok(meta)
 }
 
@@ -237,9 +304,17 @@ pub(crate) async fn read(
 /// Fetches the bytes behind a metadata row. A missing blob is a server-side
 /// inconsistency, not a 404: the vault is listed, so the user did nothing
 /// wrong.
+///
+/// Both ways of handing a vault out — the API download and the browser's —
+/// end here, which makes it the one place worth logging a read: a line
+/// appears exactly when bytes actually leave the server, and not for the 304
+/// that says none did.
 async fn blob_of(state: &AppState, meta: &VaultMeta) -> ApiResult<Vec<u8>> {
     match state.vault_blobs.get(meta.account_id, meta.id).await? {
-        Some(bytes) => Ok(bytes),
+        Some(bytes) => {
+            log_op(op::DOWNLOADED, meta.account_id, meta.id, bytes.len() as u64);
+            Ok(bytes)
+        }
         None => {
             let (account_id, vault_id) = (meta.account_id, meta.id);
             tracing::error!(%account_id, %vault_id, "vault metadata exists but blob is missing");
@@ -329,6 +404,7 @@ pub(crate) async fn overwrite(
     }
     state.vault_blobs.put(account_id, vault_id, bytes).await?;
     state.vault_meta.upsert(updated.clone()).await?;
+    log_op(op::OVERWRITTEN, account_id, vault_id, updated.size);
     // Trimming happens after the save has landed, so a full history can
     // never be the reason a save fails.
     trim_history(
@@ -383,7 +459,15 @@ async fn archive(state: &AppState, meta: &VaultMeta) -> Result<(), StoreError> {
         .vault_version_blobs
         .put(meta.account_id, version.id, &bytes)
         .await?;
-    state.vault_versions.insert(version).await
+    let (account_id, vault_id, version_id, size) = (
+        version.account_id,
+        version.vault_id,
+        version.id,
+        version.size,
+    );
+    state.vault_versions.insert(version).await?;
+    log_version_op(op::VERSION_ARCHIVED, account_id, vault_id, version_id, size);
+    Ok(())
 }
 
 /// Applies both retention rules and drops whatever they exclude.
@@ -417,9 +501,22 @@ async fn trim(state: &AppState, account_id: AccountId, live_used: u64) -> Result
         *count += 1;
         budget -= version.size;
     }
+    if doomed.is_empty() {
+        return Ok(());
+    }
+    // One line for the sweep rather than one per generation: which ids fell
+    // out of the window is not what an operator reads this for, and each of
+    // them was announced when it was archived.
+    let dropped = doomed.len();
     for version in doomed {
         drop_version(state, &version).await?;
     }
+    tracing::info!(
+        op = op::VERSIONS_TRIMMED,
+        %account_id,
+        dropped,
+        "vault operation"
+    );
     Ok(())
 }
 
@@ -483,6 +580,9 @@ pub(crate) async fn set_name(
         updated.name = name;
         updated.updated_at = Utc::now();
         state.vault_meta.upsert(updated.clone()).await?;
+        // Neither the old name nor the new one: the log says a rename
+        // happened, the account holder's own listing says to what.
+        log_op(op::RENAMED, account_id, vault_id, updated.size);
     }
     Ok(updated)
 }
@@ -503,17 +603,18 @@ pub(crate) async fn destroy(
     account_id: AccountId,
     vault_id: VaultId,
 ) -> ApiResult<()> {
-    if state.vault_meta.get(account_id, vault_id).await?.is_none() {
+    let Some(meta) = state.vault_meta.get(account_id, vault_id).await? else {
         return Err(no_such_vault());
-    }
+    };
     // History goes first and explicitly. SQLite would cascade the index rows
     // off the vault row, but the archived *bytes* are the server's to remove,
     // and deleting a vault has to mean the copies stored here are gone.
-    for version in state
+    let versions = state
         .vault_versions
         .list_for_vault(account_id, vault_id)
-        .await?
-    {
+        .await?;
+    let dropped = versions.len();
+    for version in versions {
         drop_version(state, &version).await?;
     }
     // Bytes first (tolerating already-gone) so a failure part-way is healed
@@ -524,9 +625,20 @@ pub(crate) async fn destroy(
         Err(other) => return Err(other.into()),
     }
     match state.vault_meta.delete(account_id, vault_id).await {
-        Ok(()) | Err(StoreError::NotFound) => Ok(()),
-        Err(other) => Err(other.into()),
+        Ok(()) | Err(StoreError::NotFound) => {}
+        Err(other) => return Err(other.into()),
     }
+    tracing::info!(
+        op = op::DELETED,
+        %account_id,
+        %vault_id,
+        bytes = meta.size,
+        // How much history went with it — the one figure that is gone for
+        // good and cannot be read off anything afterwards.
+        dropped,
+        "vault operation"
+    );
+    Ok(())
 }
 
 /// One archived generation as answered by the version endpoints.
@@ -643,8 +755,28 @@ pub async fn download_version(
         .into_response())
 }
 
-/// An archived generation and its bytes.
+/// An archived generation and its bytes, on their way out to a client.
 pub(crate) async fn read_version(
+    state: &AppState,
+    account_id: AccountId,
+    vault_id: VaultId,
+    version_id: VaultVersionId,
+) -> ApiResult<(VaultVersion, Vec<u8>)> {
+    let (version, bytes) = version_bytes(state, account_id, vault_id, version_id).await?;
+    log_version_op(
+        op::VERSION_DOWNLOADED,
+        account_id,
+        vault_id,
+        version_id,
+        bytes.len() as u64,
+    );
+    Ok((version, bytes))
+}
+
+/// The same fetch without the log line, for [`restore_version`]: those bytes
+/// are being written back, not handed out, and saying "downloaded" for an
+/// internal read would make the log claim a copy left the server.
+async fn version_bytes(
     state: &AppState,
     account_id: AccountId,
     vault_id: VaultId,
@@ -719,8 +851,19 @@ pub(crate) async fn restore_version(
     version_id: VaultVersionId,
     expected: Option<&str>,
 ) -> ApiResult<VaultMeta> {
-    let (_, bytes) = read_version(state, account_id, vault_id, version_id).await?;
-    overwrite(state, account_id, vault_id, expected, &bytes).await
+    let (_, bytes) = version_bytes(state, account_id, vault_id, version_id).await?;
+    let updated = overwrite(state, account_id, vault_id, expected, &bytes).await?;
+    // After the overwrite, so the pair of lines reads in the order the work
+    // happened: the displaced state was archived, the new bytes landed, and
+    // this says which generation they came from.
+    log_version_op(
+        op::VERSION_RESTORED,
+        account_id,
+        vault_id,
+        version_id,
+        updated.size,
+    );
+    Ok(updated)
 }
 
 /// Vault ids are uuids; anything else can't name a stored vault, so it
@@ -1001,6 +1144,63 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// The whole point of the vault log: an operator can follow what happened
+    /// to which file without the log describing any of them.
+    #[tokio::test]
+    async fn the_log_identifies_a_vault_and_describes_nothing_about_it() {
+        let state = AppState::in_memory();
+        let account_id = Uuid::new_v4();
+        let name = "work-vpn.askrypt";
+        let capture = crate::testlog::Capture::start();
+
+        let meta = create(&state, account_id, name, b"PK\x03\x04first")
+            .await
+            .unwrap();
+        overwrite(
+            &state,
+            account_id,
+            meta.id,
+            Some(&meta.etag),
+            b"PK\x03\x04second",
+        )
+        .await
+        .unwrap();
+        set_name(&state, account_id, meta.id, "holiday-photos.askrypt")
+            .await
+            .unwrap();
+        read(&state, account_id, meta.id).await.unwrap();
+        destroy(&state, account_id, meta.id).await.unwrap();
+
+        let events = capture.events();
+        let ops: Vec<&str> = events.iter().map(|event| event.get("op")).collect();
+        assert_eq!(
+            ops,
+            [
+                op::CREATED,
+                op::VERSION_ARCHIVED,
+                op::OVERWRITTEN,
+                op::RENAMED,
+                op::DOWNLOADED,
+                op::DELETED,
+            ]
+        );
+        let vault_id = meta.id.to_string();
+        for event in events.iter() {
+            assert_eq!(event.get("account_id"), account_id.to_string());
+            assert_eq!(event.get("vault_id"), vault_id);
+            // Neither name it was known by, nor the content hashes that would
+            // let a log reader match files up or spot a rollback.
+            for (field, value) in &event.fields {
+                for forbidden in [name, "holiday-photos", &meta.etag] {
+                    assert!(
+                        !value.contains(forbidden),
+                        "{field}={value} leaks {forbidden}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

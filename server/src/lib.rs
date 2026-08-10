@@ -17,6 +17,8 @@ pub mod ratelimit;
 pub mod routes;
 pub mod state;
 pub mod store;
+#[cfg(test)]
+mod testlog;
 pub mod vaultfile;
 pub mod vaults;
 pub mod web;

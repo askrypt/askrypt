@@ -234,6 +234,10 @@ next request.
   account acted *on* and the acting administrator goes in `detail`), plus the
   infallible `ClientInfo` extractor (IP + capped
   user agent). Never logs tokens, passwords, or the email on a *failed* login.
+  Vault *file* operations are not audit events — they log from `vaults.rs` on
+  its own target. `server/src/testlog.rs` (`#[cfg(test)]` only) is the
+  thread-local `Capture` both modules' tests use to assert on what was
+  emitted, and on what was not.
 - **`server/src/auth.rs`** — Phase 2 auth: register (email normalization +
   validation, ≥8-char passwords, argon2 hashing on `spawn_blocking`), login
   (uniform 401 `invalid_credentials`; 256-bit hex bearer tokens, 30-day
@@ -317,6 +321,19 @@ next request.
   `ACCOUNT_QUOTA_BYTES` (100 MiB) and `MAX_VAULTS_PER_ACCOUNT` (100).
   Downloads set `Cache-Control: private, no-cache` so they opt out of the
   blanket `no-store` without losing ETag revalidation.
+  **Every operation logs**, on the module's own `askrypt_server::vaults`
+  target, through the `log_op`/`log_version_op`/`log_list` funnel: create,
+  overwrite, download, rename, delete, archive, trim, version download and
+  restore, each as `op="vault.<verb>"` plus `account_id`, `vault_id`
+  (`version_id` where there is one) and a byte count. **Ids and sizes only**
+  — never the name (user text that says what the vault is for), the bytes,
+  the ETag (a content hash: it would tell a log reader when two files match
+  or when a save rolled one back) or the write stamp. Mutations and byte
+  transfers log at `info`, the listing at `debug` since the file manager
+  re-renders it after every change. A read is logged where the bytes are
+  actually fetched (`blob_of`, so a 304 logs nothing, and `version_bytes` is
+  the unlogged twin `restore_version` uses — those bytes never leave the
+  server).
 - **`server/src/vaultfile.rs`** — The one look the server takes inside a
   vault: `read_stamp` opens the ZIP, reads `askrypt.json`, and lifts the two
   fields the format leaves *unencrypted* — `params.host` and

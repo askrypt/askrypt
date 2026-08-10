@@ -299,6 +299,28 @@ accounts.
 With `ASKRYPT_LOG_FORMAT=json`, each event is one flat JSON object; filter on
 `"target":"askrypt_server::audit"`.
 
+### Vault file operations
+
+Stored files have their own trail, on the `askrypt_server::vaults` target and
+in the same files. Every operation is one line with an `op` field:
+`vault.created`, `vault.overwritten`, `vault.downloaded`, `vault.renamed`,
+`vault.deleted`, `vault.version.archived`, `vault.version.downloaded`,
+`vault.version.restored`, `vault.versions.trimmed` at `info`, and
+`vault.listed` at `debug`. Each carries `account_id`, `vault_id` (plus
+`version_id` where one applies) and a byte count.
+
+**Identifiers only.** The file *name* is never logged — it is text the account
+holder typed, and it usually says what the vault is for. Neither is the ETag,
+which is a hash of the stored bytes: it would let anyone reading the logs tell
+when two files are identical, or when a save put back an earlier state,
+without decrypting anything. The bytes and the file's write stamp
+(machine name, save time) stay out for the same reason. So the log answers
+"what happened to which file, and when", and nothing about what the file is.
+
+`vault.downloaded` appears only when bytes actually leave the server: a
+conditional request answered `304 Not Modified` logs nothing, and restoring an
+old generation reads it internally without counting as a download.
+
 ### Where it lands
 
 Every event goes to the console *and* to a file in `ASKRYPT_LOG_DIR`, named

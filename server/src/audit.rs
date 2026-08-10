@@ -105,71 +105,9 @@ pub const ROLE_REVOKED: &str = "role.revoked";
 mod tests {
     use super::*;
 
-    use std::sync::{Arc, Mutex};
-
     use axum::http::Request;
-    use tracing::field::{Field, Visit};
-    use tracing::subscriber::with_default;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::registry::Registry;
 
-    /// Collects `field=value` pairs plus the target of every event.
-    #[derive(Default)]
-    struct Captured {
-        target: String,
-        fields: Vec<(String, String)>,
-    }
-
-    struct CaptureLayer(Arc<Mutex<Vec<Captured>>>);
-
-    impl Visit for Captured {
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            self.fields
-                .push((field.name().to_string(), format!("{value:?}")));
-        }
-
-        fn record_str(&mut self, field: &Field, value: &str) {
-            self.fields
-                .push((field.name().to_string(), value.to_string()));
-        }
-    }
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            let mut captured = Captured {
-                target: event.metadata().target().to_string(),
-                ..Default::default()
-            };
-            event.record(&mut captured);
-            self.0.lock().unwrap().push(captured);
-        }
-    }
-
-    /// Installs a do-nothing subscriber as the process-wide default.
-    ///
-    /// Without one, `tracing` caches `Interest::never()` for a callsite the
-    /// first time it is reached with no subscriber at all — which other tests
-    /// in this binary do, since they call `emit` freely. A cached "never" is
-    /// not undone by a later *thread-local* subscriber, so the event below
-    /// would be dropped. With a global default in place the callsite resolves
-    /// to "sometimes" instead, and every event consults the dispatcher that
-    /// is actually current on its own thread.
-    ///
-    /// Registry with no layers records nothing, so this changes no other
-    /// test's behaviour; it exists purely to keep the cache honest.
-    fn keep_callsites_live() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            // Another module setting one first is fine — any global default
-            // does the job.
-            let _ = tracing::subscriber::set_global_default(Registry::default());
-        });
-        tracing::callsite::rebuild_interest_cache();
-    }
+    use crate::testlog::Capture;
 
     fn client() -> ClientInfo {
         let request = Request::builder()
@@ -183,35 +121,19 @@ mod tests {
 
     #[test]
     fn emitted_events_carry_target_and_fields() {
-        keep_callsites_live();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        // `with_default` is thread-local, so this stays deterministic even
-        // though other tests in the binary run in parallel.
-        with_default(
-            Registry::default().with(CaptureLayer(Arc::clone(&events))),
-            || {
-                emit(LOGIN_FAILED, &client(), None, "bad_password");
-            },
-        );
+        let capture = Capture::start();
+        emit(LOGIN_FAILED, &client(), None, "bad_password");
 
-        let events = events.lock().unwrap();
+        let events = capture.events();
         let event = events.first().expect("one event recorded");
         assert_eq!(event.target, TARGET);
-        let field = |name: &str| {
-            event
-                .fields
-                .iter()
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| value.clone())
-                .unwrap_or_else(|| panic!("missing field {name}"))
-        };
-        assert_eq!(field("event"), LOGIN_FAILED);
-        assert_eq!(field("detail"), "bad_password");
-        assert_eq!(field("user_agent"), "askrypt-desktop/0.6");
+        assert_eq!(event.get("event"), LOGIN_FAILED);
+        assert_eq!(event.get("detail"), "bad_password");
+        assert_eq!(event.get("user_agent"), "askrypt-desktop/0.6");
         // No resolvable peer in an in-process request.
-        assert_eq!(field("ip"), clientip::UNKNOWN);
+        assert_eq!(event.get("ip"), clientip::UNKNOWN);
         // An account-less event still records the field, empty.
-        assert_eq!(field("account"), "");
+        assert_eq!(event.get("account"), "");
     }
 
     #[test]
