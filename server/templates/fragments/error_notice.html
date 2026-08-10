@@ -1,0 +1,15 @@
+{#-
+  A `WebError` shaped for htmx: the same words as `error.html`, but one
+  element instead of a document, because `web::htmx_error_fragment` swaps it
+  into <main> rather than into the slot the form was aiming at.
+
+  `back` is the page the visitor was on, taken from htmx's own
+  `HX-Current-URL` and reduced to a path before it reaches here. No inline
+  script or style — the CSP forbids both.
+-#}
+<section class="card error-page" id="error-notice">
+  <p class="status">{{ status }}</p>
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  <p class="cta"><a class="button" href="{{ back }}">Reload the page</a></p>
+</section>

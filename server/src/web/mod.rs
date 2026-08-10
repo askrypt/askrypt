@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -43,6 +44,8 @@ use axum::routing::{get, post};
 use crate::hardening;
 use crate::ratelimit::{self, RateLimiter};
 use crate::state::AppState;
+use crate::web::error::ErrorInfo;
+use crate::web::render::is_htmx;
 
 pub use error::{WebError, WebResult};
 pub use pages::not_found;
@@ -52,6 +55,15 @@ pub use session::{AdminSession, MaybeWebSession, WebSession};
 /// envelope: part headers, boundaries and the handful of text fields that
 /// travel with the file.
 const MULTIPART_OVERHEAD_BYTES: usize = 64 * 1024;
+
+/// Overrides the requesting element's `hx-target` for this one response.
+const HX_RETARGET: HeaderName = HeaderName::from_static("hx-retarget");
+
+/// Overrides the requesting element's `hx-swap` for this one response.
+const HX_RESWAP: HeaderName = HeaderName::from_static("hx-reswap");
+
+/// The URL the browser is showing, sent by htmx on every request it makes.
+const HX_CURRENT_URL: HeaderName = HeaderName::from_static("hx-current-url");
 
 /// The HTML routes.
 ///
@@ -129,6 +141,70 @@ pub fn routes(
         // shared cache. `/assets` is mounted outside this router and keeps
         // ordinary caching.
         .layer(middleware::from_fn(hardening::no_store))
+        // Outermost, so it sees every finished error response — including
+        // the ones an extractor rejection produced before a handler ran.
+        .layer(middleware::from_fn(htmx_error_fragment))
+}
+
+/// Makes a [`WebError`] visible when htmx is driving the form.
+///
+/// htmx does not swap a 4xx or 5xx response, so an error page answering an
+/// `hx-post` is received and thrown away: the visitor watches the form do
+/// nothing at all. This re-renders the error as a fragment htmx will show —
+/// retargeted at `<main>`, because an error belongs to the page rather than
+/// to the `#vault-list` slot the form was aiming at — and answers 200,
+/// which is what makes htmx swap it.
+///
+/// Nothing but the htmx path changes. Without `HX-Request` — the no-JS path,
+/// which is the one that has to be correct — the real status and the whole
+/// page go out exactly as before.
+async fn htmx_error_fragment(request: Request, next: Next) -> Response {
+    if !is_htmx(request.headers()) {
+        return next.run(request).await;
+    }
+    let back = current_page(request.headers());
+    let mut response = next.run(request).await;
+    let Some(info) = response.extensions_mut().remove::<ErrorInfo>() else {
+        return response;
+    };
+    let (fragment, body) = info.fragment(back).into_parts();
+    // A fragment that failed to render is `Page`'s own apology, at 500;
+    // leaving the original response alone beats swapping that in.
+    if fragment.status != StatusCode::OK {
+        return response;
+    }
+    let (mut parts, _) = response.into_parts();
+    parts.status = StatusCode::OK;
+    parts
+        .headers
+        .insert(HX_RETARGET, HeaderValue::from_static("main"));
+    parts
+        .headers
+        .insert(HX_RESWAP, HeaderValue::from_static("innerHTML"));
+    // The rest of the headers are kept as they were: the `Set-Cookie`s an
+    // error can still owe (a freshly minted CSRF token) and the cache
+    // directives `no_store` put there both still apply.
+    Response::from_parts(parts, body)
+}
+
+/// The page the visitor is looking at, for the "reload" link on an error
+/// fragment.
+///
+/// htmx sends its own URL on every request, but that header is
+/// client-supplied and this value ends up in an `href`, so only a plain
+/// absolute path is accepted; anything else falls back to the landing page.
+/// `//host` in particular would be read as protocol-relative and leave the
+/// site.
+fn current_page(headers: &HeaderMap) -> String {
+    let path = headers
+        .get(HX_CURRENT_URL)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.parse::<Uri>().ok())
+        .map_or_else(String::new, |uri| uri.path().to_string());
+    if !path.starts_with('/') || path.starts_with("//") {
+        return "/".to_string();
+    }
+    path
 }
 
 /// HTML twin of [`ratelimit::middleware`].

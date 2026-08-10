@@ -201,6 +201,25 @@ fn post_multipart(
         .unwrap()
 }
 
+/// The same upload with the headers htmx adds, i.e. what the page really
+/// sends when JavaScript is on.
+fn post_multipart_htmx(
+    uri: &str,
+    cookies: &str,
+    csrf: &str,
+    fields: &[(&str, &str)],
+    file: Option<(&str, &[u8])>,
+) -> Request<Body> {
+    let mut request = post_multipart(uri, cookies, csrf, fields, file);
+    let headers = request.headers_mut();
+    headers.insert("hx-request", "true".parse().unwrap());
+    headers.insert(
+        "hx-current-url",
+        format!("https://{HOST}/vaults").parse().unwrap(),
+    );
+    request
+}
+
 /// Bytes that pass the ZIP-magic check. The server never looks further in —
 /// a real vault is an encrypted archive it has no key for.
 fn vault_bytes(marker: u8) -> Vec<u8> {
@@ -352,6 +371,103 @@ async fn an_oversized_upload_is_refused_with_a_readable_page() {
     assert!(body.contains("too large"), "{body}");
     // The JSON envelope belongs to /api/v1 and must not surface on a page.
     assert!(!body.contains("\"error\""), "{body}");
+}
+
+/// The same upload over htmx. htmx refuses to swap a 4xx, so the error page
+/// above would be received and discarded — the visitor would watch the form
+/// do nothing. It has to arrive as a fragment, at a status htmx will swap,
+/// pointed at the main region rather than at the form's own `#vault-list`.
+#[tokio::test]
+async fn an_oversized_upload_over_htmx_comes_back_as_a_swappable_fragment() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "toobig-htmx@example.com").await;
+    let mut huge = vault_bytes(1);
+    huge.resize(11 * 1024 * 1024, b'x');
+
+    let (status, headers, body) = send(
+        &app,
+        post_multipart_htmx(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "huge.askrypt")],
+            Some(("huge.askrypt", &huge)),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["hx-retarget"], "main");
+    assert_eq!(headers["hx-reswap"], "innerHTML");
+    assert!(body.contains("too large"), "{body}");
+    // A fragment, not a document: swapping a whole page into <main> would
+    // nest a second <head> in the one already on screen.
+    assert!(!body.contains("<!doctype html>"), "{body}");
+    // The link back points at the page the visitor was on, not at whatever
+    // the client-supplied header said.
+    assert!(body.contains("href=\"/vaults\""), "{body}");
+}
+
+/// The free quota is a tenth of the per-file limit, so "too big" in practice
+/// means over quota, not over `MAX_VAULT_BYTES`. That refusal answers 507,
+/// which is a 5xx and used to be laundered into a "Something went wrong"
+/// page — the one the visitor could not see, because htmx dropped it.
+#[tokio::test]
+async fn an_over_quota_upload_explains_itself_instead_of_failing() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "quota-page@example.com").await;
+    // Comfortably over the 1 MiB free quota and comfortably under the 10 MiB
+    // per-file limit: the whole band this test exists for.
+    let mut big = vault_bytes(1);
+    big.resize(3 * 1024 * 1024, b'x');
+
+    let (status, _, body) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "big.askrypt")],
+            Some(("big.askrypt", &big)),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("of storage"), "{body}");
+    assert!(!body.contains("Something went wrong"), "{body}");
+    // Still the vault page, with the upload form ready for another go.
+    assert!(body.contains("id=\"vault-upload\""), "{body}");
+}
+
+/// The same refusal over htmx: the listing fragment, carrying the notice,
+/// swapped into the slot the form was already aiming at. No retarget here —
+/// this is an answer about the visitor's files, not an error page.
+#[tokio::test]
+async fn an_over_quota_upload_over_htmx_returns_the_listing_with_a_notice() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "quota-htmx@example.com").await;
+    let mut big = vault_bytes(1);
+    big.resize(3 * 1024 * 1024, b'x');
+
+    let (status, headers, body) = send(
+        &app,
+        post_multipart_htmx(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "big.askrypt")],
+            Some(("big.askrypt", &big)),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key("hx-retarget"), "retargeted needlessly");
+    assert!(body.starts_with("<section"), "not a fragment: {body}");
+    assert!(body.contains("id=\"vault-list\""), "{body}");
+    assert!(body.contains("of storage"), "{body}");
+    assert!(!body.contains("Something went wrong"), "{body}");
 }
 
 // ---------------------------------------------------------------- 7.2

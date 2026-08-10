@@ -10,9 +10,6 @@
         enctype="multipart/form-data" hx-post="/vaults"
         hx-encoding="multipart/form-data" hx-target="#vault-list"
         hx-swap="outerHTML">
-{%- if let Some(error) = error.as_deref() %}
-    <p class="error" role="alert">{{ error }}</p>
-{%- endif %}
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="vault-file">Vault file</label>
     <input id="vault-file" name="file" type="file" accept=".askrypt,application/zip" required>

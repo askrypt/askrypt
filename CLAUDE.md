@@ -372,12 +372,26 @@ next request.
   askama templates from `server/templates/`, htmx as a progressive
   enhancement. `mod.rs` builds the HTML router and holds `rate_limit`, an
   HTML-rendering twin of `ratelimit::middleware` sharing the *same*
-  `RateLimiter` instances as `/api/v1/auth` and the `/api/v1/me` mutations;
+  `RateLimiter` instances as `/api/v1/auth` and the `/api/v1/me` mutations,
+  plus `htmx_error_fragment`, the outermost layer: htmx refuses to swap a
+  4xx/5xx, so an error page answering an `hx-post` is received and thrown
+  away and the visitor watches the form do nothing. The layer re-renders any
+  `WebError` (which labels its response with an `ErrorInfo` extension, the
+  only channel — `IntoResponse` cannot see the request) as
+  `fragments/error_notice.html` at **200**, with `HX-Retarget: main` +
+  `HX-Reswap: innerHTML`; the "reload" link comes from htmx's
+  `HX-Current-URL`, reduced to a path since it is client-supplied and lands
+  in an `href`. Requests without `HX-Request` — the no-JS path, the JSON API
+  — pass through with their real status untouched;
   `render.rs` has `Page<T>` (askama 0.16 has no axum integration), `is_htmx`,
   `redirect_either_way` (303, or `HX-Redirect` for htmx), `timestamp`, and
   `Chrome`/`Shell` (the layout's data plus the cookies a response owes);
   `error.rs` `WebError` with `From<ApiError>` — 5xx messages are replaced,
-  never forwarded; `session.rs` the `WebSession`/`MaybeWebSession` cookie
+  never forwarded — gated on `is_backend_failure`, **not**
+  `StatusCode::is_server_error`: 507 is in the 5xx range but says the account
+  is out of room, which is the visitor's to act on, and reading it as a
+  backend failure is what turned an over-quota upload into a 500 page. The
+  same predicate guards `vaults::refused`; `session.rs` the `WebSession`/`MaybeWebSession` cookie
   extractors (7-day sessions labelled `"Web browser"`, rejecting with a 303
   to `/login` or an `HX-Redirect`) plus `AdminSession`, which layers on
   `WebSession` so a signed-*out* visitor still gets the redirect while a
@@ -482,7 +496,7 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 34 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 38 tests:
   template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
@@ -490,7 +504,12 @@ next request.
   incl. self-revocation and the typed-confirmation delete, and the 7.4
   upload → list → byte-identical download → rename → delete with the
   stale-ETag conflict, the oversize 413 page, and the `Saved` column —
-  including that a host name out of a file cannot inject markup) and
+  including that a host name out of a file cannot inject markup. The two
+  refusals a "big file" actually hits get both paths each: over quota (the
+  1–10 MiB band, which the API suite never exercises through `refused`) as
+  the listing plus its notice, and over the body limit as the retargeted
+  error fragment, in each case next to the plain no-JS request that still
+  carries the real status) and
   `admin.rs` (the Phase 8 gate, 11 tests: first-account-is-admin and the nav
   link that follows, 403-vs-redirect for non-admin and signed-out visitors,
   suspend → old session dies *and* a fresh JSON login is refused → lift
@@ -508,7 +527,9 @@ next request.
   `auth_page.html`, `account.html`, `vaults.html`, `admin_users.html`,
   `error.html`, and
   `fragments/` — `auth_form`, `email_form`, `password_form`, `devices`,
-  `delete_account`, `vault_upload`, `vault_list`, `user_list`) compile into
+  `delete_account`, `vault_upload`, `vault_list`, `user_list`,
+  `error_notice` — the htmx twin of `error.html`, one element rather than a
+  document, because it is swapped into `<main>`) compile into
   the binary;
   every page template carries a `chrome: Chrome` field because `layout.html`
   reads it, and each fragment is a self-contained element with an id its

@@ -70,7 +70,6 @@ pub struct Listing {
 pub struct UploadForm {
     csrf: String,
     max_size: String,
-    error: Option<String>,
 }
 
 struct Row {
@@ -169,7 +168,6 @@ pub async fn page(
         upload: UploadForm {
             csrf: chrome.csrf.clone(),
             max_size: human_bytes(MAX_VAULT_BYTES as u64),
-            error: None,
         },
         chrome,
     };
@@ -406,8 +404,11 @@ async fn refused(
     err: ApiError,
 ) -> WebResult<Response> {
     // A backend failure is not a message about the visitor's files; it goes
-    // through `WebError`, which replaces 5xx wording wholesale.
-    if err.status.is_server_error() {
+    // through `WebError`, which replaces 5xx wording wholesale. Note the
+    // test is `is_backend_failure` and not `is_server_error`: the two quota
+    // refusals below answer 507, which is a 5xx and is nonetheless exactly
+    // the kind of thing this function exists to explain.
+    if crate::web::error::is_backend_failure(err.status) {
         return Err(err.into());
     }
     let notice = Notice {
@@ -427,7 +428,6 @@ async fn refused(
         upload: UploadForm {
             csrf: chrome.csrf.clone(),
             max_size: human_bytes(MAX_VAULT_BYTES as u64),
-            error: None,
         },
         listing,
         chrome,
@@ -437,10 +437,10 @@ async fn refused(
 
 /// Turns an [`ApiError`] into something worth reading on a page.
 ///
-/// The API's wording is written for a developer reading JSON; the three
-/// cases a visitor actually hits get a sentence instead. A 5xx never reaches
-/// here — [`crate::web::WebError`] replaces those wholesale — so nothing
-/// internal can leak through this.
+/// The API's wording is written for a developer reading JSON; the cases a
+/// visitor actually hits get a sentence instead. A backend failure never
+/// reaches here — [`crate::web::WebError`] replaces those wholesale — so
+/// nothing internal can leak through this.
 fn explain(err: &ApiError, quota: u64) -> String {
     match err.code {
         "precondition_failed" => "This vault changed on another device since this page was \
