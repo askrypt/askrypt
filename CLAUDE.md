@@ -551,24 +551,38 @@ next request.
   overwrite it.
   **Deployment is `./deploy.sh dev|prod`** → `spot.yml` (a
   [spot](https://github.com/umputun/spot) playbook): build locally, ship the
-  image as a `docker save | gzip` tarball, `docker load`, `docker compose
-  up -d` from `/opt/askrypt`, then wait on the container *and* on `/healthz`
+  image as a `docker save | gzip` tarball, `docker load`, run `run.sh` in
+  `/home/askrypt-server`, then wait on the container *and* on `/healthz`
   answering — probed with `docker exec askrypt-caddy wget`, since the runtime
   image has no HTTP client. The server needs only docker: no source checkout,
   no toolchain, no registry. `docker-compose.yml` (server + Caddy) therefore
   has **no `build:` section** and `pull_policy: never`; its project name is
-  pinned (`name: askrypt`, so volumes are `askrypt_askrypt-data`/`-logs` +
-  Caddy's three wherever the file sits), and host-specific values come from
-  `/opt/askrypt/.env` on the server — required `ASKRYPT_DOMAIN` plus the SMTP
-  secrets, templated by `env.example`, never uploaded, only checked for.
-  Checklist, backup and
-  restore drill in `server/DEPLOY.md`; backups are `askrypt-server backup`
-  (a `VACUUM INTO` snapshot) **before** tarring the blobs — uploads write
-  bytes then metadata, so that order can only orphan a blob — with the server
-  stopped when an exact snapshot matters. The image puts log files in
-  `/var/log/askrypt` via its own `mkdir`/`chown` plus a second `VOLUME`,
-  because `ASKRYPT_LOG_DIR`'s default is relative to a working directory it
-  cannot write; the snapshot does not archive them.
+  pinned (`name: askrypt`, so Caddy's three volumes keep their names wherever
+  the file sits), and host-specific values come from
+  `/home/askrypt-server/.env` on the server — required `ASKRYPT_DOMAIN` plus
+  the SMTP secrets, templated by `env.example`, never uploaded, only checked
+  for.
+  **The whole deployment is one directory, `/home/askrypt-server`**, and the
+  image's paths mirror it: the service user's home is `/home/askrypt-server`
+  (`WORKDIR` too), with `ASKRYPT_DATA_DIR=/home/askrypt-server/data` and
+  `ASKRYPT_LOG_DIR=/home/askrypt-server/logs` created by the Dockerfile's own
+  `mkdir`/`chown` and bind-mounted from the **host** directories of the same
+  name — so a path in a log line is also a path on the server. The compose
+  file writes those two mounts *relatively* (`./data`, `./logs`), which
+  resolve against the compose file's own directory and so keep a local run
+  inside `server/deploy/` (both gitignored). Only Caddy still uses named
+  volumes. **`run.sh` is the compose entry point**, shared by `spot.yml` and
+  by hand: a bind mount keeps the host directory's ownership instead of
+  inheriting the image's, so it creates `data/`/`logs/`, repairs them to uid
+  `10001` mode `0700` when they are wrong (guarded by a `stat`, so the
+  recursive walk skips the `vaults/` tree on an ordinary deploy), then
+  `compose up -d --remove-orphans` and the label-filtered image prune.
+  Checklist, backup, restore drill and the one-off migration off the old
+  `askrypt_askrypt-data` volume are in `server/DEPLOY.md`; backups are
+  `askrypt-server backup` (a `VACUUM INTO` snapshot) **before** tarring the
+  blobs — uploads write bytes then metadata, so that order can only orphan a
+  blob — with the server stopped when an exact snapshot matters. The snapshot
+  does not archive the log files.
 
 ### Key Dependencies
 

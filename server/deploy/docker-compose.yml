@@ -1,23 +1,26 @@
 # Self-hosting stack: askrypt-server behind Caddy for TLS.
 #
 # This file is *deployed*, not built from: `./deploy.sh dev|prod` builds the
-# image locally (docker-build.sh), ships it as a tarball, and runs
-# `docker compose up -d` from /opt/askrypt on the server. There is no `build:`
-# section, so the server needs no source checkout and no rust toolchain.
+# image locally (docker-build.sh), ships it as a tarball, and runs `run.sh`
+# from /home/askrypt-server on the server. There is no `build:` section, so
+# the server needs no source checkout and no rust toolchain.
 #
-# To run the same stack locally instead, build the image first and point
-# ASKRYPT_DOMAIN at localhost:
+# Bring it up with the `run.sh` beside this file rather than `docker compose
+# up` — the server's data and logs are *bind mounts* now, and bind mounts do
+# not inherit the image directory's ownership the way named volumes do. The
+# host directories have to exist and belong to the image's uid 10001 before
+# the container starts, which is what run.sh does.
 #
-#   ./server/deploy/docker-build.sh
-#   docker compose -f server/deploy/docker-compose.yml up -d
+#   ./server/deploy/docker-build.sh     # build the image first
+#   ASKRYPT_DOMAIN=localhost ./server/deploy/run.sh
 #
 # Host-specific values (the domain) and secrets (the SMTP password) come from
 # a `.env` file beside this one, which compose reads by itself and which is
 # never uploaded by the deploy — see env.example.
 
-# Pinned so the volume names are the same wherever the file sits: without it
-# the project name is the directory's, and the state would go missing the day
-# the deploy path changes.
+# Pinned so Caddy's volume names are the same wherever the file sits: without
+# it the project name is the directory's, and the certificates would go
+# missing the day the deploy path changes.
 name: askrypt
 
 services:
@@ -50,10 +53,18 @@ services:
       ASKRYPT_ARGON2_PARALLELISM: "${ASKRYPT_ARGON2_PARALLELISM:-}"
       RUST_LOG: "${RUST_LOG:-askrypt_server=info,info}"
     volumes:
-      - askrypt-data:/var/lib/askrypt
-      # Daily log files (the image sets ASKRYPT_LOG_DIR); without this volume
+      # Bind mounts, not named volumes: the state is meant to be visible on
+      # the host, in the deployment directory. The paths match on both sides,
+      # so `/home/askrypt-server/data/askrypt.db` in a log line is also where
+      # the file is on the server. Relative on purpose — compose resolves
+      # these against this file's own directory, which *is*
+      # /home/askrypt-server there, while a local run stays inside the repo.
+      # Both must be owned by uid 10001 before the container starts; run.sh
+      # does that.
+      - ./data:/home/askrypt-server/data
+      # Daily log files (the image sets ASKRYPT_LOG_DIR); without this mount
       # they would vanish with the container.
-      - askrypt-logs:/var/log/askrypt
+      - ./logs:/home/askrypt-server/logs
     healthcheck:
       # No curl in the runtime image; the server answers /healthz and the
       # deploy probes it from the Caddy container, which has busybox wget.
@@ -84,9 +95,10 @@ services:
     depends_on:
       - askrypt-server
 
+# The server's own state is bind-mounted (see above); what is left is Caddy's,
+# which nobody needs to reach from the host — caddy-data holds the
+# certificates, so it is the one worth knowing about.
 volumes:
-  askrypt-data:
-  askrypt-logs:
   caddy-data:
   caddy-config:
   caddy-logs:

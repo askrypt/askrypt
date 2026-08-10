@@ -7,12 +7,14 @@
 #   - spot installed locally: brew install umputun/apps/spot
 #   - SSH key access to the hosts; the remote user must be in the `docker` group (no sudo used)
 #   - server arch must match the local build arch (PLATFORM=linux/amd64 ./docker-build.sh otherwise)
-#   - /opt/askrypt/.env exists on each server (ASKRYPT_DOMAIN + the SMTP secrets; never uploaded).
-#     See env.example for the keys; docker compose reads that file by itself.
+#   - /home/askrypt-server/.env exists on each server (ASKRYPT_DOMAIN + the SMTP secrets; never
+#     uploaded). See env.example for the keys; docker compose reads that file by itself.
 #
-# Everything else in /opt/askrypt is disposable: the compose file and the
-# Caddyfile are overwritten from git on every deploy, and the state lives in
-# the askrypt_askrypt-data / askrypt_askrypt-logs docker volumes.
+# The state is /home/askrypt-server/data (database + vault blobs) and
+# /home/askrypt-server/logs, bind-mounted into the container at the same
+# paths. Together with the .env they are the only things in that directory
+# worth keeping: the compose file, the Caddyfile and run.sh are overwritten
+# from git on every deploy, and the image tarball is deleted after loading.
 #
 # Fill in the real host/user values below (placeholders ship in git).
 # Copy destinations are sftp paths; absolute paths are used as-is (sftp does not expand ~).
@@ -26,7 +28,7 @@ targets:
       - {host: "arusdev3", user: "root", name: "dev"}
   prod:
     hosts:
-      - {host: "askrypthost", user: "root", name: "prod"}
+      - {host: "bothost", user: "root", name: "prod"}
 
 tasks:
   - name: deploy
@@ -35,17 +37,17 @@ tasks:
       # build followed by a failed compose.
       - name: check env file
         script: |
-          if [ ! -f /opt/askrypt/.env ]; then
-            echo "ERROR: /opt/askrypt/.env is missing on {SPOT_REMOTE_HOST}" >&2
+          if [ ! -f /home/askrypt-server/.env ]; then
+            echo "ERROR: /home/askrypt-server/.env is missing on {SPOT_REMOTE_HOST}" >&2
             echo "Create it from server/deploy/env.example and re-run" >&2
             exit 1
           fi
-          if ! grep -q '^ASKRYPT_DOMAIN=.' /opt/askrypt/.env; then
-            echo "ERROR: ASKRYPT_DOMAIN is not set in /opt/askrypt/.env" >&2
+          if ! grep -q '^ASKRYPT_DOMAIN=.' /home/askrypt-server/.env; then
+            echo "ERROR: ASKRYPT_DOMAIN is not set in /home/askrypt-server/.env" >&2
             echo "Caddy needs it to request a certificate for the right name" >&2
             exit 1
           fi
-          if ! grep -q '^ASKRYPT_SMTP_HOST=.' /opt/askrypt/.env; then
+          if ! grep -q '^ASKRYPT_SMTP_HOST=.' /home/askrypt-server/.env; then
             echo "WARNING: ASKRYPT_SMTP_HOST is unset — outgoing email will be" >&2
             echo "LOGGED IN FULL (tokens included) instead of delivered" >&2
           fi
@@ -58,26 +60,28 @@ tasks:
         on_exit: "rm -f /tmp/askrypt-image.tar.gz"
 
       - name: upload image
-        copy: {src: "/tmp/askrypt-image.tar.gz", dst: "/opt/askrypt/askrypt-image.tar.gz", mkdir: true}
+        copy: {src: "/tmp/askrypt-image.tar.gz", dst: "/home/askrypt-server/askrypt-image.tar.gz", mkdir: true}
 
       - name: upload compose file
-        copy: {src: "docker-compose.yml", dst: "/opt/askrypt/docker-compose.yml"}
+        copy: {src: "docker-compose.yml", dst: "/home/askrypt-server/docker-compose.yml"}
 
       - name: upload caddyfile
-        copy: {src: "Caddyfile", dst: "/opt/askrypt/Caddyfile"}
+        copy: {src: "Caddyfile", dst: "/home/askrypt-server/Caddyfile"}
+
+      - name: upload run script
+        copy: {src: "run.sh", dst: "/home/askrypt-server/run.sh"}
 
       - name: load image
-        script: "gunzip -c /opt/askrypt/askrypt-image.tar.gz | docker load"
-        on_exit: "rm -f /opt/askrypt/askrypt-image.tar.gz"
+        script: "gunzip -c /home/askrypt-server/askrypt-image.tar.gz | docker load"
+        on_exit: "rm -f /home/askrypt-server/askrypt-image.tar.gz"
 
+      # run.sh prepares the bind-mounted data/logs directories and then brings
+      # the stack up; it is the same script one would type on the server. The
+      # chmod is here because the upload above does not carry the mode.
       - name: run
         script: |
-          cd /opt/askrypt
-          docker compose up -d --remove-orphans
-          # Drops the image the previous deploy left untagged. Filtered by
-          # label so this only ever touches our own: an unfiltered prune would
-          # also collect anything else dangling on the host.
-          docker image prune -f --filter label=org.opencontainers.image.title=askrypt-server
+          chmod +x /home/askrypt-server/run.sh
+          /home/askrypt-server/run.sh
 
       - name: verify running
         wait: {cmd: "docker inspect -f '{{.State.Running}}' askrypt-server | grep -q true", timeout: "30s", interval: "2s"}
