@@ -181,6 +181,9 @@ pub enum GlobalMsg {
     CheckTrayEvents,
     TrayOpen,
     TrayQuit,
+    /// The user asked to quit outright (the rail's Quit, the tray's Quit).
+    /// Confirms first, then falls through to [`GlobalMsg::ExitApp`].
+    QuitRequested,
     ExitApp,
     SmartLockCreated(Result<SmartLockData, String>),
     Saved(Result<VaultHandle, VaultError>),
@@ -768,6 +771,20 @@ impl App {
         ))
     }
 
+    /// Ask before quitting outright. Quitting is one click away in the rail and
+    /// in the tray, and it wipes the decrypted vault from memory, so an
+    /// unmodified vault still deserves the question.
+    fn confirm_quit(&self) -> bool {
+        matches!(
+            rfd::MessageDialog::new()
+                .set_title("Quit Askrypt")
+                .set_description("Are you sure you want to quit?")
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show(),
+            rfd::MessageDialogResult::Yes
+        )
+    }
+
     /// Ask about unsaved changes before something that would discard them.
     /// Cancel aborts; Yes saves first and replays the action once the save lands.
     fn guard(&mut self, action: PendingAction) -> Action {
@@ -930,7 +947,16 @@ impl App {
             GlobalMsg::TrayOpen => {
                 Action::Run(window::oldest().and_then(|id| window::minimize(id, false)))
             }
-            GlobalMsg::TrayQuit => self.update_global(GlobalMsg::ExitApp),
+            GlobalMsg::TrayQuit => self.update_global(GlobalMsg::QuitRequested),
+            GlobalMsg::QuitRequested => {
+                // A modified vault gets the unsaved-changes dialog, which is a
+                // confirmation of its own; asking twice would be noise.
+                if self.session.is_modified || self.confirm_quit() {
+                    self.update_global(GlobalMsg::ExitApp)
+                } else {
+                    Action::None
+                }
+            }
             GlobalMsg::ExitApp => self.guard(PendingAction::Exit),
             GlobalMsg::SmartLockCreated(result) => {
                 self.session.finish_work();

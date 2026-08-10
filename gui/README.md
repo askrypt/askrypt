@@ -31,9 +31,9 @@ and which of its invariants a redesign can quietly break. Keep it current.
 │  vault     │                                            │
 │  actions   │                                            │
 │  ───────   │                                            │
-│  Quit      │                                            │
-│  ───────   │                                            │
 │  Settings  │                                            │
+│  ───────   │                                            │
+│  Quit      │                                            │
 ├────────────┴────────────────────────────────────────────┤
 │ status bar + spinner                    (always pinned) │
 └─────────────────────────────────────────────────────────┘
@@ -146,11 +146,14 @@ stamp without touching the disk.
 
 ## 3. The controls
 
-Every vault action lives at the bottom of the nav rail, with **Quit and then
-Settings pinned below them on the very bottom edge** — the two rows that are
+Every vault action lives at the bottom of the nav rail, with **Settings and then
+Quit pinned below them on the very bottom edge** — the two rows that are
 never about the vault in front of you, each in a band of its own. Quit is
-`GlobalMsg::ExitApp`, so it goes through `guard(PendingAction::Exit)` like the
-window close and the tray's Quit do. Each action is **hidden** rather than
+`GlobalMsg::QuitRequested`, which **confirms first** (`App::confirm_quit`, a
+Yes/No dialog) and then goes through `guard(PendingAction::Exit)` like the
+window close does. The tray's Quit takes the same confirmed path; a *modified*
+vault skips the extra question, because the unsaved-changes dialog it gets
+instead is already a confirmation. Each action is **hidden** rather than
 disabled when the state does not allow it. The predicates are on `vault::Status`; `panes/sidebar.rs`
 only asks.
 
@@ -165,7 +168,7 @@ only asks.
 | Save As… | `Unlocked` | `can_save_as()` |
 | Edit Questions | `Unlocked` | `can_edit_questions()` |
 | Password Generator | every state | — (needs no vault) |
-| Quit | every state | — (guarded by the unsaved-changes gate) |
+| Quit | every state | — (confirmed, then guarded by the unsaved-changes gate) |
 
 The item filters (All Items, Hidden, TYPES, TAGS) and the search strip only
 exist while the vault is unlocked. `effective_pane()` additionally refuses to

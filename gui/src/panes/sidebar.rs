@@ -1,5 +1,5 @@
-//! The left navigation rail: item filters on top, the vault actions, then Quit
-//! and Settings pinned at the bottom.
+//! The left navigation rail: item filters on top, the vault actions, then
+//! Settings and Quit pinned at the bottom.
 //!
 //! The item filters exist only while the vault is unlocked — there is nothing
 //! to filter otherwise — and each vault action is *hidden*, not disabled, when
@@ -88,7 +88,7 @@ fn filters(app: &App) -> iced::widget::Column<'_, Message> {
     items
 }
 
-/// The vault actions, then Quit, then Settings. Which actions appear is the
+/// The vault actions, then Settings, then Quit. Which actions appear is the
 /// whole readout of the vault's state.
 fn pinned(app: &App) -> Element<'_, Message> {
     let vault = app.status();
@@ -158,26 +158,26 @@ fn pinned(app: &App) -> Element<'_, Message> {
         Message::Vault(VaultMsg::PassGen),
     ));
 
-    // Settings sits on the very bottom edge, below the vault actions: it is the
-    // one row that is never about the vault in front of you. Quit goes just
-    // above it, in a band of its own — it leaves the app rather than doing
+    // Settings and Quit sit below the vault actions, each in a band of its own:
+    // they are the two rows that are never about the vault in front of you.
+    // Quit is on the very bottom edge — it leaves the app rather than doing
     // anything to the vault, and a stray click on it is expensive.
     column![
         rule::horizontal(1).style(theme::pane_divider),
         container(actions).padding([6, 8]),
-        rule::horizontal(1).style(theme::pane_divider),
-        container(action_row(
-            icon::power(14),
-            "Quit",
-            Message::Global(GlobalMsg::ExitApp),
-        ))
-        .padding([6, 8]),
         rule::horizontal(1).style(theme::pane_divider),
         container(pane_row(
             icon::gear(14),
             "Settings",
             Pane::Settings,
             app.pane == Pane::Settings,
+        ))
+        .padding([6, 8]),
+        rule::horizontal(1).style(theme::pane_divider),
+        container(action_row(
+            icon::power(14),
+            "Quit",
+            Message::Global(GlobalMsg::QuitRequested),
         ))
         .padding([6, 8]),
     ]
