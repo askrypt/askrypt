@@ -15,8 +15,8 @@ An Askrypt file is a JSON with the following fields:
   * `salt` - base64 encoded salt (**salt0**), 16 bytes (string)
   * `translit` - whether to apply Russian/Ukrainian transliteration to answers
     during normalization (boolean, default: `false`; absent in older files)
-  * `host` - name of the host that last wrote the vault (string, optional;
-    omitted when unknown and absent in older files)
+  * `host` - label for the machine that last wrote the vault, `os@host` (string,
+    optional; omitted when unknown and absent in older files)
   * `updated_at` - when the vault was last written, RFC 3339 UTC with second
     precision, e.g. `"2026-08-02T10:15:30Z"` (string, optional; absent in older
     files)
@@ -47,7 +47,7 @@ An Askrypt file is a JSON with the following fields:
       "iterations": 600000,
       "salt": "base64-encoded-salt",
       "translit": false,
-      "host": "my-laptop",
+      "host": "ubuntu@my-laptop",
       "updated_at": "2026-08-02T10:15:30Z"
     },
     "qs": "base64-encoded-encrypted-questions",
@@ -59,6 +59,15 @@ An Askrypt file is a JSON with the following fields:
 they are refreshed on every save and are stored unencrypted, so they are
 readable without any answer. Writers that cannot determine one of them omit the
 field entirely rather than writing a placeholder.
+
+`host` is `<os>@<host name>` — `ubuntu@my-laptop`, `windows@workps`,
+`android@pixel-8`. The OS half is a coarse lowercase name (on Linux, the
+`ID=` value from `/etc/os-release`, e.g. `ubuntu`, so `linux` is only the
+fallback); a writer that knows only one half writes that half alone, never a
+dangling `ubuntu@`. Readers must treat the whole value as **opaque display
+text** — vaults written before this convention carry a bare host name with no
+OS half — and must sanitize it before display, since it is attacker-controlled
+in a file that anyone can craft.
 
 The maximum question length is **500 bytes** (UTF-8). Each question is human-readable text. 
 The answer is a secret known only to the user. Questions can include spaces and special characters.

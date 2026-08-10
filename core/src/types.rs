@@ -36,8 +36,10 @@ pub struct Params {
     /// Whether to apply Russian/Ukrainian transliteration to answers
     #[serde(default)]
     pub translit: bool,
-    /// Name of the host that last wrote the vault (absent in older files or
-    /// when the host name cannot be determined)
+    /// Label for the machine that last wrote the vault, `os@host` (e.g.
+    /// `ubuntu@mypc`) or the OS name alone when the host name is unknown.
+    /// Opaque display text: older files carry a bare host name with no OS
+    /// half, and older files still may omit the field entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     /// When the vault was last written, RFC 3339 UTC with second precision

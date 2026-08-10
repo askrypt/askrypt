@@ -14,21 +14,40 @@ import 'dart:io';
 /// Resolves the current host name, or `null` when it cannot be determined.
 typedef HostNameResolver = String? Function();
 
-/// Platform default: the OS host name, falling back to the platform name when
-/// the host name is missing or a useless placeholder (Android devices commonly
-/// report `localhost`).
+/// Joins the OS name and the host name into the `os@host` stamp the Rust core
+/// writes (`android@pixel-8`), dropping whichever half is unavailable rather
+/// than leaving a dangling separator.
+///
+/// A host name that is missing, blank or the useless `localhost` placeholder
+/// (which Android devices commonly report) counts as unavailable.
+String? formatHostStamp(String? os, String? host) {
+  final osName = os?.trim();
+  final hostName = host?.trim();
+  final hasOs = osName != null && osName.isNotEmpty;
+  final hasHost =
+      hostName != null && hostName.isNotEmpty && hostName != 'localhost';
+  if (hasOs && hasHost) return '$osName@$hostName';
+  if (hasOs) return osName;
+  if (hasHost) return hostName;
+  return null;
+}
+
+/// Platform default: `<operating system>@<host name>`, e.g. `android@pixel-8`,
+/// falling back to whichever half the platform can supply.
 String? platformHostName() {
-  try {
-    final host = Platform.localHostname.trim();
-    if (host.isNotEmpty && host != 'localhost') return host;
-  } catch (_) {
-    // localHostname can throw on restricted platforms; fall through.
+  String? read(String Function() get) {
+    try {
+      return get();
+    } catch (_) {
+      // Either property can throw on restricted platforms.
+      return null;
+    }
   }
-  try {
-    return Platform.operatingSystem;
-  } catch (_) {
-    return null;
-  }
+
+  return formatHostStamp(
+    read(() => Platform.operatingSystem),
+    read(() => Platform.localHostname),
+  );
 }
 
 /// The active resolver; override in tests, restore in `tearDown`.

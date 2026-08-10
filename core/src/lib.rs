@@ -481,19 +481,76 @@ impl AskryptFile {
     }
 }
 
-/// Name of the machine writing the vault, for [`Params::host`].
+/// Label for the machine writing the vault, for [`Params::host`].
 ///
-/// Returns `None` when the host name is unavailable or not valid UTF-8.
+/// The shape is `os@host` (`ubuntu@mypc`, `windows@workps`), falling back to the
+/// OS name alone when the host name is unavailable or not valid UTF-8 — never a
+/// dangling `ubuntu@`. Older vaults carry a bare host name with no OS half, so
+/// readers must treat the value as opaque display text.
 ///
 /// # Example
 ///
 /// ```
-/// let host = askrypt::current_host();
-/// assert!(host.as_deref() != Some(""));
+/// let host = askrypt::current_host().expect("the OS name is always known");
+/// assert!(!host.starts_with('@') && !host.ends_with('@'));
 /// ```
 pub fn current_host() -> Option<String> {
-    let host = gethostname::gethostname().into_string().ok()?;
-    if host.is_empty() { None } else { Some(host) }
+    let os = current_os();
+    match gethostname::gethostname().into_string() {
+        Ok(host) if !host.trim().is_empty() => Some(format!("{os}@{}", host.trim())),
+        _ => Some(os),
+    }
+}
+
+/// Coarse, lowercase OS name used as the `os@host` prefix of [`current_host`].
+///
+/// On Linux this is the distro (`ubuntu`, `fedora`, `arch`) when
+/// `/etc/os-release` names one, since "linux" alone says little about which
+/// machine wrote the file.
+fn current_os() -> String {
+    #[cfg(target_os = "linux")]
+    if let Some(id) = linux_distro_id() {
+        return id;
+    }
+    std::env::consts::OS.to_string()
+}
+
+/// Distro ID from `os-release`, read once per process.
+#[cfg(target_os = "linux")]
+fn linux_distro_id() -> Option<String> {
+    static ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        // `/etc/os-release` is the admin-editable copy and takes precedence;
+        // distros that ship only the vendor file provide the second path.
+        ["/etc/os-release", "/usr/lib/os-release"]
+            .iter()
+            .find_map(|path| std::fs::read_to_string(path).ok())
+            .as_deref()
+            .and_then(parse_os_release_id)
+    })
+    .clone()
+}
+
+/// Pull the `ID=` value out of an `os-release` file.
+///
+/// Returns `None` unless the value looks like the IDs the format specifies —
+/// lowercase alphanumerics plus `.`, `_` and `-` — because this ends up in the
+/// vault's unencrypted stamp and then in a web table cell.
+#[cfg(target_os = "linux")]
+fn parse_os_release_id(contents: &str) -> Option<String> {
+    let raw = contents
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("ID="))?;
+    let id = raw
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_ascii_lowercase();
+    let ok = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    ok.then_some(id)
 }
 
 /// Current UTC time formatted as RFC 3339 with second precision, for
@@ -1106,6 +1163,46 @@ mod tests {
         let out = serde_json::to_string(&file).unwrap();
         assert!(!out.contains("host"), "{out}");
         assert!(!out.contains("updated_at"), "{out}");
+    }
+
+    #[test]
+    fn test_current_host_is_os_at_hostname() {
+        let os = current_os();
+        assert!(!os.is_empty());
+        assert_eq!(os, os.to_ascii_lowercase(), "the OS half is lowercase");
+
+        // The OS name is always known, so there is always a stamp.
+        let host = current_host().unwrap();
+        assert!(host.starts_with(&os), "{host} does not start with {os}");
+        match host.split_once('@') {
+            Some((left, right)) => {
+                assert_eq!(left, os);
+                assert!(!right.is_empty(), "dangling separator: {host}");
+                assert!(!right.contains('@'), "more than one separator: {host}");
+            }
+            // No host name on this machine: the OS name stands alone.
+            None => assert_eq!(host, os),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_parse_os_release_id() {
+        let ubuntu = "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n";
+        assert_eq!(parse_os_release_id(ubuntu).as_deref(), Some("ubuntu"));
+        assert_eq!(
+            parse_os_release_id("ID=\"fedora\"\n").as_deref(),
+            Some("fedora")
+        );
+        assert_eq!(parse_os_release_id("  ID=arch  \n").as_deref(), Some("arch"));
+        // `ID_LIKE=` must not be mistaken for `ID=`.
+        assert_eq!(parse_os_release_id("ID_LIKE=debian\n"), None);
+        assert_eq!(parse_os_release_id("NAME=\"Some OS\"\n"), None);
+        assert_eq!(parse_os_release_id("ID=\n"), None);
+        // Anything that is not a well-formed ID is not put in the stamp.
+        assert_eq!(parse_os_release_id("ID=my distro\n"), None);
+        assert_eq!(parse_os_release_id("ID=<script>alert(1)</script>\n"), None);
+        assert_eq!(parse_os_release_id("ID=who@where\n"), None);
     }
 
     #[test]
