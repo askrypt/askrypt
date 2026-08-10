@@ -352,7 +352,11 @@ pub(crate) async fn delete_account_data(
     }
 }
 
-fn session_id(token: &str) -> String {
+/// The public identity of a session token: a SHA-256 digest, so listing
+/// devices never hands back a usable credential. `pub(crate)` because
+/// [`crate::auth::session_fingerprint`] logs a prefix of the same value —
+/// one digest, so a log line and a device-list row can be matched up.
+pub(crate) fn session_id(token: &str) -> String {
     Sha256::digest(token.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))

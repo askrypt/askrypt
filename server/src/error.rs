@@ -29,11 +29,31 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    /// Every other constructor funnels through here, which makes this the one
+    /// place that can log *all* of them — including the errors that never
+    /// become a response, like the one `web::session::lookup` discards with
+    /// `.ok()?` to redirect instead.
+    ///
+    /// `#[track_caller]` puts the raising site in the log rather than this
+    /// file. Two known blind spots: passing a constructor as a function
+    /// pointer (`ok_or_else(ApiError::unauthorized)`) resolves the location
+    /// through a shim, and the `From` impls below raise from inside this
+    /// module — their own `tracing::error!` lines name the cause instead.
+    #[track_caller]
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        let message = message.into();
+        let caller = std::panic::Location::caller();
+        // Client errors are chatter; server errors are the ones worth seeing
+        // with the crate at its default `info` in production.
+        if status.is_server_error() {
+            tracing::warn!(%status, code, message, %caller, "api error");
+        } else {
+            tracing::debug!(%status, code, message, %caller, "api error");
+        }
         Self {
             status,
             code,
-            message: message.into(),
+            message,
             retry_after: None,
         }
     }
@@ -44,18 +64,22 @@ impl ApiError {
         self
     }
 
+    #[track_caller]
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", message)
     }
 
+    #[track_caller]
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "bad_request", message)
     }
 
+    #[track_caller]
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, "conflict", message)
     }
 
+    #[track_caller]
     pub fn unauthorized() -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
@@ -66,6 +90,7 @@ impl ApiError {
 
     /// Internal errors get logged with detail but answer with a generic
     /// message — backend specifics never leak to clients.
+    #[track_caller]
     pub fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -113,6 +138,7 @@ impl IntoResponse for ApiError {
 }
 
 impl From<StoreError> for ApiError {
+    #[track_caller]
     fn from(err: StoreError) -> Self {
         match err {
             StoreError::NotFound => Self::not_found("resource not found"),
@@ -126,6 +152,7 @@ impl From<StoreError> for ApiError {
 }
 
 impl From<IdTokenError> for ApiError {
+    #[track_caller]
     fn from(err: IdTokenError) -> Self {
         match err {
             IdTokenError::Invalid(msg) => Self::new(

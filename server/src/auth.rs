@@ -418,35 +418,89 @@ impl FromRequestParts<AppState> for AuthSession {
 /// Shared with the cookie-based `WebSession` extractor, which carries the
 /// same token by a different means and needs identical expiry semantics but
 /// a redirect instead of a 401.
+///
+/// All four rejections answer with the *same* opaque 401 — a client must not
+/// learn whether a token is unknown, expired, orphaned or banned. The reason
+/// is written to the log instead, since otherwise nothing anywhere records
+/// which one fired: `web::session::lookup` even discards the error to
+/// redirect, so a browser signed out mid-session leaves no trace at all.
 pub(crate) async fn resolve_session(
     state: &AppState,
     token: &str,
 ) -> ApiResult<(Account, Session)> {
-    let session = state
-        .sessions
-        .get(token)
-        .await?
-        .ok_or_else(ApiError::unauthorized)?;
-    if session.expires_at <= Utc::now() {
+    let Some(session) = state.sessions.get(token).await? else {
+        return Err(reject_session("unknown_token", token, None));
+    };
+    let now = Utc::now();
+    if session.expires_at <= now {
         // Best-effort cleanup; the token is rejected either way.
         let _ = state.sessions.delete(token).await;
-        return Err(ApiError::unauthorized());
+        // With the timestamps: an expiry that arrives early reads as a random
+        // sign-out from the outside, and clock skew is the usual culprit.
+        tracing::debug!(
+            expires_at = %session.expires_at,
+            %now,
+            "session past its expiry",
+        );
+        return Err(reject_session("expired", token, Some(session.account_id)));
     }
-    let account = state
-        .accounts
-        .get(session.account_id)
-        .await?
-        .ok_or_else(ApiError::unauthorized)?;
+    let Some(account) = state.accounts.get(session.account_id).await? else {
+        return Err(reject_session(
+            "account_missing",
+            token,
+            Some(session.account_id),
+        ));
+    };
     // A ban issued mid-session takes effect on the very next request rather
     // than whenever the token happens to expire. This is the choke point for
     // both bearer tokens and browser cookies, so one check covers every
     // authenticated surface.
     if account.is_banned() {
         let _ = state.sessions.delete(token).await;
-        return Err(ApiError::unauthorized());
+        return Err(reject_session("banned", token, Some(account.id)));
     }
+    // Every authenticated request passes here and the crate defaults to
+    // `debug`, so the happy path sits one level further down.
+    tracing::trace!(
+        session = %session_fingerprint(token),
+        account = %account.id,
+        expires_at = %session.expires_at,
+        "session resolved",
+    );
     Ok((account, session))
 }
+
+/// Logs why a session was refused, then returns the uniform 401.
+///
+/// `account` is `None` only when the token resolved to no session at all.
+/// The token itself never reaches the log — see [`session_fingerprint`].
+///
+/// `#[track_caller]` so the `api error` line names the branch above rather
+/// than this helper, which every rejection would otherwise share.
+#[track_caller]
+fn reject_session(reason: &'static str, token: &str, account: Option<AccountId>) -> ApiError {
+    tracing::debug!(
+        reason,
+        session = %session_fingerprint(token),
+        account = account.map(|id| id.to_string()).unwrap_or_default(),
+        "session rejected",
+    );
+    ApiError::unauthorized()
+}
+
+/// A short, stable handle for one session token, safe to log.
+///
+/// The prefix of the very digest `GET /api/v1/me/sessions` publishes as a
+/// session id, so a log line can be matched against the device list — while a
+/// leaked log still yields nothing that authenticates anything.
+pub(crate) fn session_fingerprint(token: &str) -> String {
+    crate::profile::session_id(token)[..FINGERPRINT_LEN].to_string()
+}
+
+/// Hex characters of the digest kept in logs. 48 bits is far more than the
+/// handful of live sessions one account has, and collisions cost nothing but
+/// an ambiguous log line.
+const FINGERPRINT_LEN: usize = 12;
 
 /// Mints and persists a session token.
 ///
@@ -588,6 +642,18 @@ mod tests {
         for bad in ["", "nope", "a@b", "a@b.", "a@.b", "a b@c.com", "a@b@c.com"] {
             assert!(validate_email(bad).is_err(), "{bad:?} should be rejected");
         }
+    }
+
+    #[test]
+    fn fingerprints_are_prefixes_of_the_published_session_id() {
+        let token = "some-bearer-token";
+        let fingerprint = session_fingerprint(token);
+        assert_eq!(fingerprint.len(), FINGERPRINT_LEN);
+        // The whole point: a log line can be matched against the device list.
+        assert!(crate::profile::session_id(token).starts_with(&fingerprint));
+        // And it is not the token, nor derived reversibly from it.
+        assert!(!token.contains(&fingerprint));
+        assert_ne!(fingerprint, session_fingerprint("other-token"));
     }
 
     #[test]

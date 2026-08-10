@@ -179,7 +179,16 @@ next request.
   sent to clients. `ApiJson<T>` and `ApiBytes` are the `Json`/`Bytes`
   extractor variants whose rejections keep the envelope (413s get
   `payload_too_large`). `ApiError::with_retry_after` adds the `Retry-After`
-  header used by the 429/503 responses.
+  header used by the 429/503 responses. **`ApiError::new` is also the single
+  logging funnel** — every other constructor goes through it, so one `api
+  error` event covers all ~40 raising sites, including the errors that never
+  become a response (`web::session::lookup` discards one to redirect).
+  Everything client-facing is `#[track_caller]`, so the event carries
+  `caller=<file>:<line>` of the *raising* site; 5xx logs at `warn`, 4xx at
+  `debug`. Two blind spots by construction: a constructor passed as a function
+  pointer (`ok_or_else(ApiError::unauthorized)`) resolves through a shim, and
+  the `From` impls raise from inside `error.rs` — their own `tracing::error!`
+  lines name the cause there.
 - **`server/src/routes.rs`** — `router(state, &Config)`: `/healthz`; `/api/v1`
   nest (`GET /about`, the `/me` profile tree, the `/vaults` tree, and
   `/auth/{register,login,google,logout}` behind a 20 req/min fixed-window
@@ -247,7 +256,15 @@ next request.
   `admin::bootstrap_first_admin`, and the banned check lives in
   `authenticate` (403 `account_banned`, **after** the argon2 verify — moving
   it earlier would make the endpoint an existence oracle),
-  `upsert_google_account`, and `resolve_session`.
+  `upsert_google_account`, and `resolve_session`. All four of
+  `resolve_session`'s rejections answer with the *same* opaque 401 and are told
+  apart only in the log: `reject_session` names the `reason`
+  (`unknown_token`/`expired`/`account_missing`/`banned`) and identifies the
+  session by `session_fingerprint` — 12 hex chars of `profile::session_id`'s
+  digest (`pub(crate)` for exactly this), so a log line matches a device-list
+  row while **the token itself is never logged**. The happy path logs at
+  `trace`, not `debug`: it fires on every authenticated request and the crate
+  defaults to `debug`.
 - **`server/src/admin.rs`** — Phase 8 administrative rules, the same
   handlers-are-wrappers split as `profile.rs`: `list_users` (two store calls
   and a count, never one per row), `set_banned` (which also drops the target's
