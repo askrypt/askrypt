@@ -186,7 +186,9 @@ next request.
   rate limiter) with a JSON 404 fallback covering everything under `/api`;
   the HTML routes from `web::routes(auth_limiter, profile_limiter)` at the
   root (both limiters shared with their `/api/v1` twins); the configured static dir
-  mounted at `/assets` (`tower-http` `ServeDir`); and an HTML 404 fallback.
+  mounted at `/assets` (`tower-http` `ServeDir`, under `hardening::revalidate`
+  so an edited `style.css` can't linger in a browser cache); and an HTML 404
+  fallback.
   The Phase 1 SPA fallback (`index.html` for every unknown path) is gone. The
   vault routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`, which
   overrides the outer global limit because it is layered *inside* it (the
@@ -202,7 +204,10 @@ next request.
   exported `CSP` const + nosniff/Referrer-Policy/X-Frame-Options/
   Permissions-Policy/COOP/CORP, HSTS when configured), `no_store`
   (`or_insert`, so `vaults::download`'s `private, no-cache` survives for ETag
-  revalidation), `request_timeout` (`tokio::time::timeout` → 504; does not
+  revalidation), `revalidate` (the `/assets` twin: `no-cache`, because
+  `ServeDir` sets no directive at all and the browser's heuristic freshness
+  then serves a stale stylesheet from a URL that never changes),
+  `request_timeout` (`tokio::time::timeout` → 504; does not
   bound streaming response bodies — that's the proxy's job) and
   `concurrency_limit` (`Semaphore::try_acquire_owned` → 503 + `Retry-After`,
   `/healthz` exempt). **The `CSP` is a commitment to Phase 7**: no inline

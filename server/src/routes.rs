@@ -107,8 +107,14 @@ pub fn router(state: AppState, config: &Config) -> Router {
         // Anything else under /api is not a page — keep 404s JSON there too.
         .route("/api/{*rest}", get(api_fallback).fallback(api_fallback))
         // The stylesheet and the vendored htmx, and nothing else: templates
-        // are compiled into the binary.
-        .nest_service("/assets", ServeDir::new(&config.static_dir))
+        // are compiled into the binary. Their URLs never change while the
+        // files do, so they are cacheable but must revalidate.
+        .nest(
+            "/assets",
+            Router::new()
+                .fallback_service(ServeDir::new(&config.static_dir))
+                .layer(middleware::from_fn(hardening::revalidate)),
+        )
         .merge(web::routes(auth_limiter, profile_limiter))
         .fallback(web::not_found)
         // Layers wrap what was declared before them, so the LAST `.layer`

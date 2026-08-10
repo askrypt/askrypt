@@ -295,6 +295,9 @@ async fn the_vendored_assets_are_served_under_assets() {
         let content_type = headers[header::CONTENT_TYPE].to_str().unwrap().to_string();
         assert!(content_type.contains(expected), "{path} got {content_type}");
         assert!(!body.is_empty(), "{path} is empty");
+        // Cacheable, but never reused without asking: the file changes while
+        // its URL does not, and a stale stylesheet is a visible bug.
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache", "{path}");
     }
 }
 

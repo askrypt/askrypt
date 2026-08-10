@@ -129,6 +129,24 @@ pub async fn no_store(request: Request, next: Next) -> Response {
     response
 }
 
+/// Makes the loose files under `/assets` revalidate before they are reused.
+///
+/// `ServeDir` sends no `Cache-Control` at all, which leaves the browser free
+/// to invent one — the heuristic is a fraction of the file's age — so an
+/// edited `style.css` sitting behind an unchanged URL can stay stale for
+/// hours. `no-cache` is not "don't cache": the copy is kept, only every use
+/// has to be revalidated first, and `ServeDir`'s `Last-Modified` answers that
+/// with a bodyless 304. Two small same-origin files make that round trip
+/// cheaper than ever shipping an old stylesheet.
+pub async fn revalidate(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-cache"));
+    response
+}
+
 /// Bounds how long a handler may take to produce a response.
 ///
 /// Covers request-body reading too (extractors run downstream), so it is
