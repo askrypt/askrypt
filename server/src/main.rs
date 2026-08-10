@@ -8,12 +8,15 @@ use askrypt_server::state::AppState;
 use askrypt_server::store::disk::DiskVaultBlobStore;
 use askrypt_server::store::google::{GoogleIdTokenVerifier, NotConfiguredIdTokenVerifier};
 use askrypt_server::store::memory::MemoryMailer;
+use askrypt_server::store::recaptcha::{DisabledCaptchaVerifier, RecaptchaVerifier};
 use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
     self, SqliteAccountStore, SqliteDeviceLinkStore, SqliteRoleStore, SqliteSessionStore,
     SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
-use askrypt_server::store::{ADMIN_ROLE, AccountStore, IdTokenVerifier, Mailer, RoleStore};
+use askrypt_server::store::{
+    ADMIN_ROLE, AccountStore, CaptchaVerifier, IdTokenVerifier, Mailer, RoleStore,
+};
 use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -205,6 +208,27 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(GoogleIdTokenVerifier::new(config.google_client_ids.clone()))
     };
 
+    let captcha: Arc<dyn CaptchaVerifier> = match &config.recaptcha {
+        Some(recaptcha) => {
+            info!(
+                min_score = recaptcha.min_score,
+                "recaptcha enabled on the sign-in and registration forms"
+            );
+            Arc::new(RecaptchaVerifier::new(recaptcha.clone()))
+        }
+        None => {
+            // Info, not a warning: a self-hosted server behind nothing but a
+            // rate limiter is a legitimate setup, and it keeps those two
+            // forms working without JavaScript.
+            info!(
+                "recaptcha disabled ({} not set); the auth forms rely on the \
+                 rate limiter alone",
+                askrypt_server::config::ENV_RECAPTCHA_SITE_KEY
+            );
+            Arc::new(DisabledCaptchaVerifier)
+        }
+    };
+
     // A bad relay or sender address fails here, at startup, rather than on
     // the first email the server tries to send.
     let mailer: Arc<dyn Mailer> = match &config.smtp {
@@ -256,18 +280,26 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 vault_version_blobs: Arc::new(DiskVaultBlobStore::versions(config.vaults_dir())),
                 mailer,
                 id_verifier,
+                captcha,
             }
         }
         Backend::Memory => AppState {
             id_verifier,
             mailer,
+            captcha,
             ..AppState::in_memory()
         },
     };
 
     // The pages themselves are compiled into the binary; only the stylesheet
-    // and the vendored htmx are loose files, served at /assets.
-    for asset in ["style.css", "htmx.min.js"] {
+    // and the vendored htmx are loose files, served at /assets. `captcha.js`
+    // joins them when reCAPTCHA is on — and matters more than the others,
+    // since without it no token is minted and *nobody* can sign in.
+    let mut assets = vec!["style.css", "htmx.min.js"];
+    if config.recaptcha.is_some() {
+        assets.push("captcha.js");
+    }
+    for asset in assets {
         if !config.static_dir.join(asset).is_file() {
             tracing::warn!(
                 static_dir = %config.static_dir.display(),

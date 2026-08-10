@@ -27,6 +27,15 @@
 {%- if let Some(hint) = password_hint %}
   <p class="hint">{{ hint }}</p>
 {%- endif %}
+{%- if let Some(key) = captcha_key.as_deref() %}
+  {#- reCAPTCHA v3: no widget and nothing to click. `/assets/captcha.js`
+      fills this in from the two data attributes and re-mints after every
+      swap, since a v3 token is single-use and expires in two minutes.
+      Empty on arrival — with JavaScript off it stays empty and the submit
+      is refused with a message saying so. -#}
+  <input type="hidden" name="captcha_token"
+         data-captcha-key="{{ key }}" data-captcha-action="{{ captcha_action }}">
+{%- endif %}
   <button class="button" type="submit">{{ submit }}</button>
 {%- if let Some(link) = link.as_deref() %}
   <p class="alt">{{ alt_prompt }} <a href="{{ alt_href }}?link={{ link }}">{{ alt_link }}</a></p>

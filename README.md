@@ -150,6 +150,17 @@ Configuration via environment variables (all optional):
 | `ASKRYPT_SMTP_FROM`  | —                | Sender, e.g. `Askrypt <no-reply@example.com>`. Required with a host |
 | `ASKRYPT_SMTP_USERNAME` / `ASKRYPT_SMTP_PASSWORD` | *(empty)* | Relay login. Set both or neither |
 | `ASKRYPT_SMTP_TIMEOUT_SECS` | `10`      | Per-operation SMTP network timeout       |
+| `ASKRYPT_RECAPTCHA_SITE_KEY` | *(empty)* | Google reCAPTCHA **v3** site key. Empty = no captcha |
+| `ASKRYPT_RECAPTCHA_SECRET` | —          | v3 shared secret. Required once a site key is set |
+| `ASKRYPT_RECAPTCHA_MIN_SCORE` | `0.5`   | Lowest score accepted, `0.0`–`1.0`       |
+
+`ASKRYPT_RECAPTCHA_SITE_KEY` turns on bot protection for the **website's**
+sign-in and registration forms, and nothing else — the JSON API under
+`/api/v1/auth` is never captcha'd, since native clients cannot mint a v3 token.
+Those two pages then need JavaScript (a v3 token can only be minted in the
+page) and send a slightly widened CSP that names Google's two script hosts;
+every other page keeps the strict `'self'`-only policy. Leave the key unset and
+the forms are exactly as they were, JavaScript included.
 
 Without `ASKRYPT_SMTP_HOST` the server keeps the development mailer, which
 writes each message — recipient, subject **and body** — to the log rather than

@@ -53,6 +53,31 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_LOG_MAX_FILES` | `14` | Daily files kept; the oldest are deleted on rollover. `0` keeps every one — then rotate externally or the disk fills |
 | `RUST_LOG` | `askrypt_server=debug,info` | Log filter. **Keep `askrypt_server` at `info` or lower** — the audit log rides that target |
 
+### Bot protection (reCAPTCHA v3)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ASKRYPT_RECAPTCHA_SITE_KEY` | *(empty)* | Public **v3** site key from the [reCAPTCHA admin console](https://www.google.com/recaptcha/admin). Empty = no captcha |
+| `ASKRYPT_RECAPTCHA_SECRET` | — | The matching secret. Required once a site key is set — startup fails without it, rather than serving a captcha that verifies nothing |
+| `ASKRYPT_RECAPTCHA_MIN_SCORE` | `0.5` | Lowest accepted score, `0.0` (bot) to `1.0` (human). Google's own suggested cut is `0.5` |
+
+Register the site as **reCAPTCHA v3** and list your domain; v2 keys will not
+work. Three consequences worth knowing before you turn this on:
+
+- It covers the **website's** `/login` and `/register` only. The JSON API at
+  `/api/v1/auth` is deliberately untouched — the desktop and mobile clients
+  cannot mint a token, and the desktop signs in through the browser anyway.
+- Those two pages then **require JavaScript**. A v3 token is minted in the
+  page; without scripts the form submits an empty one and is refused with a
+  message saying so. The rest of the site still works with scripts off.
+- Those two pages send a **widened Content-Security-Policy** naming
+  `www.google.com` and `www.gstatic.com` (and allowing inline styles, for
+  reCAPTCHA's badge). Every other route keeps the strict policy byte for byte.
+
+If Google is unreachable or the secret is wrong, sign-in **fails closed** —
+nobody gets in, and the log carries `captcha verification unavailable` at
+`error`. Unset the site key to turn the whole thing off again.
+
 ### Email
 
 | Variable | Default | Meaning |
@@ -509,6 +534,11 @@ docker volume rm askrypt_askrypt-data askrypt_askrypt-logs
       `10001`, mode `0700`.
 - [ ] `ASKRYPT_GOOGLE_CLIENT_IDS` set if Google sign-in is wanted; otherwise
       confirm `/api/v1/auth/google` answers 501.
+- [ ] `ASKRYPT_RECAPTCHA_SITE_KEY` + `ASKRYPT_RECAPTCHA_SECRET` set if the
+      auth forms should be captcha'd, the key is a **v3** one registered for
+      this domain, and the startup log says `recaptcha enabled`. Then sign in
+      once from a real browser — a wrong secret fails closed and locks
+      everyone out of the website.
 - [ ] `ASKRYPT_SMTP_HOST` + `ASKRYPT_SMTP_FROM` set, and the startup log says
       `smtp mailer enabled`. Without them the server logs message bodies —
       tokens included — instead of sending them.

@@ -2,6 +2,19 @@
 
 {% block title %}{{ form.heading }} &middot; Askrypt{% endblock %}
 
+{% block head %}
+{#- reCAPTCHA v3, only when a site key is configured. Google's loader plus
+    our own helper, both external files: the CSP on this page names the two
+    Google hosts but still forbids an inline script, so the site key reaches
+    the helper through a `data-` attribute on the hidden field rather than
+    through a `<script>` that sets a variable. `defer` keeps the order —
+    `api.js` first — and runs both after the form exists. -#}
+{%- if let Some(key) = form.captcha_key.as_deref() %}
+<script src="https://www.google.com/recaptcha/api.js?render={{ key }}" defer></script>
+<script src="/assets/captcha.js" defer></script>
+{%- endif %}
+{% endblock %}
+
 {% block content %}
 {#- The fragment renders itself; `safe` because it is already escaped HTML. -#}
 {{ form|safe }}

@@ -15,6 +15,11 @@
 <title>{% block title %}Askrypt{% endblock %}</title>
 <link rel="stylesheet" href="/assets/style.css">
 <script src="/assets/htmx.min.js" defer></script>
+{#- Pages that need more than the site-wide chrome. Only the auth pages use
+    it, for reCAPTCHA, and only then under the widened CSP those pages send
+    (`hardening::CSP_CAPTCHA`) — an external script from a named host, never
+    an inline one. -#}
+{% block head %}{% endblock %}
 </head>
 <body>
 <header class="site">

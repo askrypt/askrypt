@@ -20,6 +20,11 @@
 //! - `style-src 'self'`: no inline `style=` blocks. htmx also injects an
 //!   inline stylesheet for `htmx-indicator` unless the page sets
 //!   `<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>`.
+//!
+//! The one documented exception is [`CSP_CAPTCHA`], sent only by the two auth
+//! pages and only when reCAPTCHA is configured. It is a *second* policy, not
+//! a loosening of the first: every other route, including the rest of the
+//! website, still gets [`CSP`] byte for byte.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,6 +42,37 @@ use crate::error::ApiError;
 pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
 img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; \
 base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/// The policy the sign-in and registration pages send **when reCAPTCHA is
+/// configured**, and nowhere else.
+///
+/// reCAPTCHA cannot run under [`CSP`]: it loads two Google scripts, opens an
+/// iframe, calls home over XHR, and injects a `<style>` element for its badge
+/// — the last of which is why `'unsafe-inline'` appears in `style-src` here
+/// and must never appear in [`CSP`]. Google's alternative is a per-request
+/// nonce propagated from the script tag, which would turn the policy into a
+/// value built per response; scoping the widening to two pages buys the same
+/// containment far more cheaply.
+///
+/// Everything not required by reCAPTCHA stays exactly as strict, `script-src`
+/// included: the two hosts are named, not a wildcard, and `'unsafe-inline'`
+/// and `'unsafe-eval'` are still absent from it. A page opts in by attaching
+/// [`RelaxedCsp`] to its response.
+pub const CSP_CAPTCHA: &str = "default-src 'self'; \
+script-src 'self' https://www.google.com https://www.gstatic.com; \
+style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+connect-src 'self' https://www.google.com; font-src 'self'; object-src 'none'; \
+base-uri 'none'; form-action 'self'; frame-src https://www.google.com; \
+frame-ancestors 'none'";
+
+/// Response marker asking for [`CSP_CAPTCHA`] instead of [`CSP`].
+///
+/// A response extension rather than a path match, so the decision stays with
+/// the handler that knows whether it actually rendered a captcha — and so
+/// this layer, which is the outermost one and therefore the last to touch the
+/// headers, is still the only place a CSP is written.
+#[derive(Debug, Clone, Copy)]
+pub struct RelaxedCsp;
 
 const PERMISSIONS_POLICY: &str = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
 magnetometer=(), microphone=(), payment=(), usb=()";
@@ -80,10 +116,15 @@ pub async fn security_headers(
     next: Next,
 ) -> Response {
     let mut response = next.run(request).await;
+    let csp = if response.extensions().get::<RelaxedCsp>().is_some() {
+        CSP_CAPTCHA
+    } else {
+        CSP
+    };
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(CSP),
+        HeaderValue::from_static(csp),
     );
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,

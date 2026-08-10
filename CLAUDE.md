@@ -105,8 +105,9 @@ in **`server/PLAN.md`**; Phases 0 (scaffolding), 1 (landing page + API
 namespacing), 2 (auth: register, login, Google sign-in), 3 (profile API), 4
 (vault cloud storage), 5 (hardening & deployment), 7 (the website: 7.1
 foundations, 7.2 browser sessions/CSRF, 7.3 profile pages, 7.4 vault file
-manager), 8 (roles + the admin Users page), 9 (the paid storage tier) and 10
-(the browser device link that signs desktop apps in) are done. Still open: Phase 6
+manager), 8 (roles + the admin Users page), 9 (the paid storage tier), 10
+(the browser device link that signs desktop apps in) and 11 (reCAPTCHA v3 on
+the website's auth forms) are done. Still open: Phase 6
 (CI/CD) and browser Google sign-in.
 Self-hosting is documented in **`server/DEPLOY.md`**.
 
@@ -153,7 +154,12 @@ next request.
   `NotConfiguredIdTokenVerifier` (501), and the mailer is a real `SmtpMailer`
   when `ASKRYPT_SMTP_HOST` is set, else `MemoryMailer` behind a `warn!` (built
   once for both backends, before the `AppState` match, so a bad relay or
-  sender address aborts startup rather than the first send). Serves with
+  sender address aborts startup rather than the first send). The captcha is a
+  real `RecaptchaVerifier` when `ASKRYPT_RECAPTCHA_SITE_KEY` is set, else
+  `DisabledCaptchaVerifier` behind an `info!` (not a `warn!` — a self-hosted
+  server behind the rate limiter alone is legitimate, and it keeps the auth
+  forms working without JavaScript); `captcha.js` joins the startup asset
+  check only then, since without it nobody can sign in at all. Serves with
   `ConnectInfo` so rate
   limiting and the audit log can key on peer IPs. `std::env::args()` is parsed
   *first* (so `--help` works whatever the environment says) into `Command`,
@@ -192,6 +198,13 @@ next request.
   must appear together. `smtp_from` takes a variable *lookup* rather than
   reading the process environment, so its cross-field rules are testable
   without racing over global env state.
+  Bot protection is `recaptcha: Option<RecaptchaConfig>`, parsed the same way
+  by `recaptcha_from` out of `ASKRYPT_RECAPTCHA_{SITE_KEY,SECRET,MIN_SCORE}`:
+  the site key is the switch, the secret is then **required** (a key without
+  one would render the field and verify nothing, which is worse than no
+  captcha because it looks protected), and the score is range-checked to
+  `0.0..=1.0`, so `0.5` fat-fingered as `5` fails at startup rather than
+  locking every visitor out.
   The same table lives in `README.md` and `server/DEPLOY.md` — keep all three
   in sync.
 - **`server/src/error.rs`** — Uniform JSON error convention: every API error is
@@ -246,6 +259,15 @@ next request.
   `concurrency_limit` (`Semaphore::try_acquire_owned` → 503 + `Retry-After`,
   `/healthz` exempt). **The `CSP` is a commitment to Phase 7**: no inline
   `<script>`/`<style>`, no `hx-on:`, no `js:`-prefixed htmx attributes.
+  `CSP_CAPTCHA` is the one documented exception — a *second* policy naming
+  `www.google.com`/`www.gstatic.com` and allowing inline **styles** (for
+  reCAPTCHA's injected badge stylesheet; `script-src` stays free of
+  `'unsafe-inline'`), sent only by `/login` and `/register` and only when
+  reCAPTCHA is configured. A page opts in with the `RelaxedCsp` **response
+  extension**, read by `security_headers` — the same trick `web`'s
+  `ErrorInfo` uses, and necessary because this layer is the outermost one and
+  would otherwise overwrite anything an inner layer set. Google's alternative
+  is a per-request nonce, which would make the policy a per-response value.
 - **`server/src/clientip.rs`** — Shared client-address resolution for
   `ratelimit` and `audit`. Proxy headers are trusted only under
   `ASKRYPT_TRUST_PROXY` (installed as a `ClientIpPolicy` request extension),
@@ -253,6 +275,9 @@ next request.
   element — proxies append, so the first element is client-supplied.
 - **`server/src/audit.rs`** — Structured account-security events on the
   `askrypt_server::audit` tracing target (register/login/Google/logout,
+  the captcha refusals ahead of them (`CAPTCHA_FAILED`, naming the form and
+  no account — none has been resolved that early, and the submitted address
+  is exactly what a failed login must not log),
   password set/change + failed re-auth, email change, session revocation,
   account deletion, and the Phase 8 admin actions — ban/unban, role
   grant/revoke, admin-initiated deletion, where the `account` field names the
@@ -451,7 +476,25 @@ next request.
   (hidden field + `AuthForm.link`, and the already-signed-in bounce honours it),
   so a visitor who arrives from a desktop sign-in lands back on it instead of
   on `/account`; a *uuid* rather than a general `next=` precisely so there is
-  no open redirect to get wrong; `devicelink.rs` the `/link/{id}` page, where
+  no open redirect to get wrong; `captcha.rs` the reCAPTCHA v3 gate on those
+  two forms — `LOGIN_ACTION`/`REGISTER_ACTION` (fixed per form, which is what
+  stops one form's token being spent on the other), `check` (called **before**
+  `authenticate`/`register_account`, since keeping a flood of guesses from
+  buying an argon2 hash each is the whole point; one generic sentence to the
+  visitor whatever went wrong, the real reason to the log and to
+  `audit::CAPTCHA_FAILED`; a `CaptchaError::Backend` fails **closed**), and
+  `relax_csp`, which attaches `hardening::RelaxedCsp`. The two exceptions to
+  the website's own rules live here and nowhere else: with a site key
+  configured these forms **need JavaScript** (a v3 token can only be minted in
+  the page) and send `CSP_CAPTCHA`. `AuthForm` carries `captcha_action` +
+  `captcha_key`, the key filled by the chained `with_captcha(&state)` so the
+  action and the key cannot be set out of step; a refused submit re-renders
+  the field **empty**, because a v3 token is single-use and the spent one
+  would only fail again. **`/api/v1/auth/*` is deliberately not captcha'd** —
+  native clients cannot mint a token, and the desktop's browser sign-in
+  already lands on `/login`; the JSON endpoints keep the rate limiter alone,
+  which is a known bypass for anything willing to post JSON;
+  `devicelink.rs` the `/link/{id}` page, where
   **visiting while signed in approves** (no confirm button — the flow is "open
   the page, come back signed in") next to the device label, the code and a
   `POST /link/{id}/deny`. Approving on a GET is safe against link checkers and
@@ -489,19 +532,26 @@ next request.
   seam; handlers can only reach the traits. Two of them are the same trait:
   `vault_blobs` (live files) and `vault_version_blobs` (archived generations,
   keyed by version id, under each account's `versions/` subdirectory).
+  `captcha` is also the single source of truth for *whether* there is a
+  captcha — its `site_key()` is what the templates and the CSP decision both
+  read. `in_memory()` wires `DisabledCaptchaVerifier`, not the fake: a
+  captcha nothing asked for would make every existing sign-in test carry a
+  token, so suites that want one override the seam.
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
   `RoleStore`,
   `SessionStore`, `DeviceLinkStore` (the short-lived browser sign-ins, with
   the atomic `claim` and the `delete_expired` sweep),
   `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
   `Mailer`,
-  `IdTokenVerifier` (+ `StoreError`/`MailerError`/`IdTokenError`, all
+  `IdTokenVerifier`, `CaptchaVerifier` (+ `StoreError`/`MailerError`/
+  `IdTokenError`/`CaptchaError`, all
   `#[non_exhaustive]`, and the `ADMIN_ROLE`/`PAYMENT_USER_ROLE` name
   constants — the stores themselves are name-generic, so a new role needs no
   code in either backend); `memory.rs`
   in-memory fakes for all of them (used by tests
   and the `memory` backend — `MemoryRoleStore::default` seeds both roles with
-  the *same fixed uuids* the migration writes, so the two backends agree);
+  the *same fixed uuids* the migration writes, so the two backends agree;
+  `FakeCaptchaVerifier` is the exception nothing defaults to, see below);
   `sqlite.rs` SQLite pool + embedded migration
   runner over `server/migrations/` plus `SqliteAccountStore`/`SqliteRoleStore`/
   `SqliteSessionStore`/`SqliteDeviceLinkStore`/`SqliteVaultMetaStore`/
@@ -525,7 +575,17 @@ next request.
   live files while everything one account stores stays under one directory,
   so deleting that directory takes the history with it; `google.rs` `GoogleIdTokenVerifier` (RS256 against Google's
   JWKS, cached with a 60 s refetch floor, issuer/audience/expiry checks) and
-  `NotConfiguredIdTokenVerifier`; `smtp.rs` `SmtpMailer` — `lettre` over
+  `NotConfiguredIdTokenVerifier`; `recaptcha.rs` `RecaptchaVerifier` (Google
+  reCAPTCHA **v3** over `siteverify`, plus `RecaptchaConfig`, defined here and
+  merely *parsed* by `config.rs` — its `Debug` is hand-written to redact the
+  secret, since `Config` derives `Debug`) and `DisabledCaptchaVerifier`. Three
+  things are checked and all three matter: `success`, that the **action
+  matches** (a v3 token names the form it was minted for, without which a
+  token from any other page would open `/login`), and that the score clears
+  the floor. `assess` is split out of the request so the rules are unit-tested
+  without a network; it tells `Rejected` (a visitor failed) from `Backend` (a
+  bad secret or an unreachable Google, which refuses *everyone* and should
+  read as an outage). `smtp.rs` `SmtpMailer` — `lettre` over
   rustls (never native-tls: it would drag OpenSSL in, and `ring` must stay
   the only rustls crypto provider or the provider lookup panics at connect
   time), pooled, with `SmtpConfig`/`SmtpCredentials`/`SmtpEncryption`
@@ -582,7 +642,17 @@ next request.
   as a poll token, an unknown poll token indistinguishable from an expired one,
   deny (and its CSRF rejection), cancel removing the link at once, the 24-hour
   sweep taking pending *and* uncollected-approved links, and a banned account
-  unable to claim an approval it made before the ban). Middleware needing a slow
+  unable to claim an approval it made before the ban) and
+  `captcha.rs` (the reCAPTCHA gate, 12 tests, over `FakeCaptchaVerifier`
+  since the real one is a network call whose rules are unit-tested in
+  `store/recaptcha.rs`: the site key and both scripts on the two pages, the
+  CSP widened on exactly those two and only with a captcha configured, a
+  missing token answered with advice about JavaScript rather than a 4xx, a
+  token minted for the other form refused, a low score refused, the spent
+  token *not* echoed back into the re-rendered field, the JSON auth API still
+  working untouched, and — the ordering guarantee — a wrong password *and* a
+  bad token yielding the captcha message, which is how you can tell argon2
+  was never reached). Middleware needing a slow
   or parked handler (timeout, shedding) is unit-tested inside
   `src/hardening.rs` instead. The `last_admin` guard is unreachable through
   the website — only the sole administrator can act on themselves, and the
@@ -598,10 +668,22 @@ next request.
   the binary;
   every page template carries a `chrome: Chrome` field because `layout.html`
   reads it, and each fragment is a self-contained element with an id its
-  forms name as `hx-target`. Confirmation steps are `<details>` disclosures,
+  forms name as `hx-target`. `layout.html`'s `{% block head %}` exists for
+  exactly one caller: `auth_page.html` loading Google's `api.js` plus
+  `/assets/captcha.js` when a site key is configured — both **external**, since
+  even the widened CSP forbids inline script, which is why the site key
+  reaches the helper as a `data-` attribute on the hidden field. Confirmation steps are `<details>` disclosures,
   not scripted dialogs — the CSP forbids the inline handler. `static/` holds
-  just `style.css` and the vendored `htmx.min.js` (2.0.10), served at
+  just `style.css`, the vendored `htmx.min.js` (2.0.10) and `captcha.js`,
+  served at
   `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN.
+  `captcha.js` keeps the hidden field **freshly populated** rather than
+  minting on submit: htmx serializes the form synchronously and
+  `grecaptcha.execute` is a promise, so no hook can await one and still let
+  the request go out. It re-mints on load, on a 90 s timer (tokens last two
+  minutes) and on `htmx:afterSwap` (a refused submit spends its token *and*
+  replaces the whole form) — the listener is on `document` precisely because
+  the form it would otherwise bind to is the element htmx replaces.
 - **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts.
   **Containers are the only supported deployment** — there is no systemd unit
   and no backup wrapper script; `server/DEPLOY.md` drives everything through

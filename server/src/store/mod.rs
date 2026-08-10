@@ -11,6 +11,7 @@
 //! - [`disk`] — local-disk vault blob storage with atomic writes.
 //! - [`google`] — real Google ID-token verification against Google's
 //!   published JWKS.
+//! - [`recaptcha`] — real Google reCAPTCHA v3 verification.
 //! - [`smtp`] — SMTP email delivery via a relay.
 //!
 //! Handlers and middleware must depend only on these traits — no `sqlx`
@@ -19,6 +20,7 @@
 pub mod disk;
 pub mod google;
 pub mod memory;
+pub mod recaptcha;
 pub mod smtp;
 pub mod sqlite;
 
@@ -415,4 +417,47 @@ pub struct VerifiedIdToken {
 #[async_trait]
 pub trait IdTokenVerifier: Send + Sync {
     async fn verify(&self, id_token: &str) -> Result<VerifiedIdToken, IdTokenError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CaptchaError {
+    /// The visitor's token was refused: missing, stale, already spent, minted
+    /// for a different action, or scored below the threshold. The visitor
+    /// sees one generic sentence — the string here is for the log only, and
+    /// must stay free of anything that would tell a bot *why* it failed.
+    #[error("captcha rejected: {0}")]
+    Rejected(String),
+    /// Our own fault: a bad secret, a malformed reply, or Google unreachable.
+    /// Kept apart from [`Self::Rejected`] because it should page an operator
+    /// rather than being read as a bot caught in the act.
+    #[error("captcha verifier error: {0}")]
+    Backend(String),
+}
+
+/// Scores a reCAPTCHA v3 token minted by a form.
+///
+/// The real impl ([`recaptcha::RecaptchaVerifier`]) posts it to Google's
+/// `siteverify` endpoint; [`recaptcha::DisabledCaptchaVerifier`] is wired in
+/// when no site key is configured and passes everything through.
+#[async_trait]
+pub trait CaptchaVerifier: Send + Sync {
+    /// The **public** site key the forms embed, or `None` when no captcha is
+    /// configured — which is also how a template knows not to render one and
+    /// how the auth pages decide whether they need the widened CSP.
+    fn site_key(&self) -> Option<&str>;
+
+    /// Checks one token, bound to the `action` the page minted it for.
+    ///
+    /// `client_ip` is passed to Google as a scoring hint when it is a real
+    /// address; the caller's own placeholder for "unknown" is dropped.
+    ///
+    /// `Ok(None)` means nothing was checked because no captcha is configured;
+    /// `Ok(Some(score))` is the score that passed, for the log.
+    async fn verify(
+        &self,
+        token: &str,
+        action: &str,
+        client_ip: Option<&str>,
+    ) -> Result<Option<f32>, CaptchaError>;
 }

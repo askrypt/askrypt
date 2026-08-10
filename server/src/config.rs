@@ -17,6 +17,19 @@
 //! | `ASKRYPT_LOG_MAX_FILES` | `14`          | Daily files to keep (`0` keeps every one) |
 //! | `ASKRYPT_ARGON2_PARALLELISM` | *(cpus)* | Concurrent argon2 hashes; each costs ~19 MiB. Read in [`crate::auth`] |
 //!
+//! Bot protection on the website's sign-in and registration forms (Google
+//! reCAPTCHA v3). `ASKRYPT_RECAPTCHA_SITE_KEY` is the switch: without it the
+//! forms are exactly what they were and work without JavaScript; with it they
+//! require JavaScript, because a v3 token can only be minted in the page. The
+//! JSON API under `/api/v1/auth` is never captcha'd — native clients cannot
+//! mint a token, and it stays behind the rate limiter.
+//!
+//! | Variable             | Default          | Meaning                          |
+//! |----------------------|------------------|----------------------------------|
+//! | `ASKRYPT_RECAPTCHA_SITE_KEY` | *(empty)* | Public v3 site key. Empty = no captcha |
+//! | `ASKRYPT_RECAPTCHA_SECRET` | —          | v3 shared secret. Required with a site key |
+//! | `ASKRYPT_RECAPTCHA_MIN_SCORE` | `0.5`   | Lowest accepted score, `0.0`–`1.0` |
+//!
 //! Email delivery. `ASKRYPT_SMTP_HOST` is the switch: set it and the server
 //! sends through that relay, leave it unset and outgoing mail is only logged
 //! (see [`crate::store::memory::MemoryMailer`]).
@@ -40,6 +53,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::store::recaptcha::RecaptchaConfig;
 use crate::store::smtp::{SmtpConfig, SmtpCredentials, SmtpEncryption};
 
 pub const ENV_BIND: &str = "ASKRYPT_BIND";
@@ -55,6 +69,9 @@ pub const ENV_MAX_BODY_BYTES: &str = "ASKRYPT_MAX_BODY_BYTES";
 pub const ENV_LOG_FORMAT: &str = "ASKRYPT_LOG_FORMAT";
 pub const ENV_LOG_DIR: &str = "ASKRYPT_LOG_DIR";
 pub const ENV_LOG_MAX_FILES: &str = "ASKRYPT_LOG_MAX_FILES";
+pub const ENV_RECAPTCHA_SITE_KEY: &str = "ASKRYPT_RECAPTCHA_SITE_KEY";
+pub const ENV_RECAPTCHA_SECRET: &str = "ASKRYPT_RECAPTCHA_SECRET";
+pub const ENV_RECAPTCHA_MIN_SCORE: &str = "ASKRYPT_RECAPTCHA_MIN_SCORE";
 pub const ENV_SMTP_HOST: &str = "ASKRYPT_SMTP_HOST";
 pub const ENV_SMTP_PORT: &str = "ASKRYPT_SMTP_PORT";
 pub const ENV_SMTP_ENCRYPTION: &str = "ASKRYPT_SMTP_ENCRYPTION";
@@ -82,6 +99,8 @@ const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
 /// Long enough for a busy relay's greeting, short enough that a dead relay
 /// doesn't hold a handler open to the request timeout.
 const DEFAULT_SMTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Google's own suggested cut between "probably human" and "probably a bot".
+const DEFAULT_RECAPTCHA_MIN_SCORE: f32 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -140,6 +159,9 @@ pub struct Config {
     /// SMTP relay to deliver through. `None` (no `ASKRYPT_SMTP_HOST`) leaves
     /// the log-only mailer in place — mail is captured, never sent.
     pub smtp: Option<SmtpConfig>,
+    /// reCAPTCHA v3 on the website's auth forms. `None` (no
+    /// `ASKRYPT_RECAPTCHA_SITE_KEY`) leaves them exactly as they were.
+    pub recaptcha: Option<RecaptchaConfig>,
 }
 
 impl Default for Config {
@@ -159,6 +181,7 @@ impl Default for Config {
             log_dir: Some(PathBuf::from(DEFAULT_LOG_DIR)),
             log_max_files: DEFAULT_LOG_MAX_FILES,
             smtp: None,
+            recaptcha: None,
         }
     }
 }
@@ -251,6 +274,7 @@ impl Config {
             log_dir,
             log_max_files: parse_num(ENV_LOG_MAX_FILES, defaults.log_max_files)?,
             smtp: smtp_from(&|var| std::env::var(var).ok())?,
+            recaptcha: recaptcha_from(&|var| std::env::var(var).ok())?,
         })
     }
 
@@ -352,6 +376,62 @@ fn smtp_from(
         from,
         credentials,
         timeout,
+    }))
+}
+
+/// Builds the reCAPTCHA settings from a variable lookup.
+///
+/// Takes the lookup for the same reason [`smtp_from`] does: cross-field rules
+/// worth testing without racing over process-global environment state.
+///
+/// `ASKRYPT_RECAPTCHA_SITE_KEY` is the switch. The secret is then required —
+/// a site key alone would render the widget in the page and then accept every
+/// token it minted unchecked, which is worse than no captcha at all because
+/// it *looks* protected.
+fn recaptcha_from(
+    lookup: &dyn Fn(&'static str) -> Option<String>,
+) -> Result<Option<RecaptchaConfig>, ConfigError> {
+    let get = |var| {
+        lookup(var)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+
+    let Some(site_key) = get(ENV_RECAPTCHA_SITE_KEY) else {
+        return Ok(None);
+    };
+
+    let secret = get(ENV_RECAPTCHA_SECRET).ok_or_else(|| ConfigError {
+        var: ENV_RECAPTCHA_SECRET,
+        value: String::new(),
+        reason: format!("required when {ENV_RECAPTCHA_SITE_KEY} is set"),
+    })?;
+
+    let min_score = match get(ENV_RECAPTCHA_MIN_SCORE) {
+        Some(raw) => {
+            let score: f32 = raw.parse().map_err(|_| ConfigError {
+                var: ENV_RECAPTCHA_MIN_SCORE,
+                value: raw.clone(),
+                reason: "expected a number between 0.0 and 1.0".to_string(),
+            })?;
+            // A score outside the range is a typo (0.5 written as 5), and it
+            // would either lock everyone out or wave everyone through.
+            if !(0.0..=1.0).contains(&score) {
+                return Err(ConfigError {
+                    var: ENV_RECAPTCHA_MIN_SCORE,
+                    value: raw,
+                    reason: "must be between 0.0 and 1.0".to_string(),
+                });
+            }
+            score
+        }
+        None => DEFAULT_RECAPTCHA_MIN_SCORE,
+    };
+
+    Ok(Some(RecaptchaConfig {
+        site_key,
+        secret,
+        min_score,
     }))
 }
 
@@ -522,6 +602,53 @@ mod tests {
     fn a_host_without_a_sender_is_rejected() {
         let err = smtp_from(&env(&[(ENV_SMTP_HOST, "smtp.example.com")])).unwrap_err();
         assert_eq!(err.var, ENV_SMTP_FROM);
+    }
+
+    #[test]
+    fn no_site_key_means_no_captcha() {
+        assert!(recaptcha_from(&env(&[])).unwrap().is_none());
+        // A secret alone does not turn it on.
+        assert!(
+            recaptcha_from(&env(&[(ENV_RECAPTCHA_SECRET, "s")]))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A site key without a secret would render the widget and then verify
+    /// nothing — refuse it at startup rather than serve a decorative captcha.
+    #[test]
+    fn a_site_key_without_a_secret_is_rejected() {
+        let err = recaptcha_from(&env(&[(ENV_RECAPTCHA_SITE_KEY, "site")])).unwrap_err();
+        assert_eq!(err.var, ENV_RECAPTCHA_SECRET);
+    }
+
+    #[test]
+    fn captcha_score_defaults_and_is_range_checked() {
+        let base = [
+            (ENV_RECAPTCHA_SITE_KEY, "site"),
+            (ENV_RECAPTCHA_SECRET, "secret"),
+        ];
+        let default = recaptcha_from(&env(&base)).unwrap().unwrap();
+        assert_eq!(default.min_score, DEFAULT_RECAPTCHA_MIN_SCORE);
+
+        let explicit = recaptcha_from(&env(&[
+            base.as_slice(),
+            &[(ENV_RECAPTCHA_MIN_SCORE, "0.7")],
+        ]
+        .concat()))
+        .unwrap()
+        .unwrap();
+        assert_eq!(explicit.min_score, 0.7);
+
+        // 0.5 fat-fingered as 5 would wave every visitor through.
+        for bad in ["5", "-0.1", "half"] {
+            let err = recaptcha_from(&env(
+                &[base.as_slice(), &[(ENV_RECAPTCHA_MIN_SCORE, bad)]].concat()
+            ))
+            .unwrap_err();
+            assert_eq!(err.var, ENV_RECAPTCHA_MIN_SCORE, "accepted {bad:?}");
+        }
     }
 
     #[test]

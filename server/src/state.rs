@@ -9,9 +9,10 @@ use crate::store::memory::{
     FakeIdTokenVerifier, MemoryAccountStore, MemoryDeviceLinkStore, MemoryMailer, MemoryRoleStore,
     MemorySessionStore, MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
 };
+use crate::store::recaptcha::DisabledCaptchaVerifier;
 use crate::store::{
-    AccountStore, DeviceLinkStore, IdTokenVerifier, Mailer, RoleStore, SessionStore,
-    VaultBlobStore, VaultMetaStore, VaultVersionStore,
+    AccountStore, CaptchaVerifier, DeviceLinkStore, IdTokenVerifier, Mailer, RoleStore,
+    SessionStore, VaultBlobStore, VaultMetaStore, VaultVersionStore,
 };
 
 #[derive(Clone)]
@@ -38,6 +39,11 @@ pub struct AppState {
     pub vault_version_blobs: Arc<dyn VaultBlobStore>,
     pub mailer: Arc<dyn Mailer>,
     pub id_verifier: Arc<dyn IdTokenVerifier>,
+    /// Scores the reCAPTCHA tokens the website's sign-in and registration
+    /// forms carry. Also the single source of truth for *whether* there is a
+    /// captcha at all: its `site_key` is what the templates and the CSP
+    /// decision both read.
+    pub captcha: Arc<dyn CaptchaVerifier>,
 }
 
 impl AppState {
@@ -56,6 +62,10 @@ impl AppState {
             vault_version_blobs: Arc::new(MemoryVaultBlobStore::default()),
             mailer: Arc::new(MemoryMailer::default()),
             id_verifier: Arc::new(FakeIdTokenVerifier::default()),
+            // Off, not faked: a captcha nothing asked for would make every
+            // existing sign-in test carry a token. Suites that want one
+            // override this seam with `FakeCaptchaVerifier`.
+            captcha: Arc::new(DisabledCaptchaVerifier),
         }
     }
 }

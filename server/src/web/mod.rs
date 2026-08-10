@@ -15,6 +15,11 @@
 //!   loaded: an `HX-Request` gets a fragment, a plain request gets the whole
 //!   page, and the plain path is the one that has to be correct.
 //!
+//! Both rules have exactly one exception, and it is the same one: with
+//! reCAPTCHA configured, the sign-in and registration pages send
+//! [`crate::hardening::CSP_CAPTCHA`] and need JavaScript to mint a token. See
+//! [`captcha`] — nothing else on the site is allowed to follow that lead.
+//!
 //! Phase 7.2 shipped sign-in, registration and sign-out; 7.3 the profile
 //! pages ([`account`]); 7.4 the vault file manager ([`vaults`]). Browser
 //! Google sign-in is still missing — the JSON API covers it for native
@@ -24,6 +29,7 @@
 pub mod account;
 pub mod admin;
 pub mod auth;
+pub mod captcha;
 pub mod csrf;
 pub mod devicelink;
 pub mod error;

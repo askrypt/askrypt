@@ -40,6 +40,11 @@ services:
       # Set to the OAuth client ids of the web/desktop/mobile apps to enable
       # Google sign-in; leave unset to disable it.
       ASKRYPT_GOOGLE_CLIENT_IDS: "${ASKRYPT_GOOGLE_CLIENT_IDS:-}"
+      # reCAPTCHA v3 on the website's auth forms. With no site key the forms
+      # are unprotected beyond the rate limiter, but also need no JavaScript.
+      ASKRYPT_RECAPTCHA_SITE_KEY: "${ASKRYPT_RECAPTCHA_SITE_KEY:-}"
+      ASKRYPT_RECAPTCHA_SECRET: "${ASKRYPT_RECAPTCHA_SECRET:-}"
+      ASKRYPT_RECAPTCHA_MIN_SCORE: "${ASKRYPT_RECAPTCHA_MIN_SCORE:-}"
       # Email relay. With no host the server logs message bodies (tokens and
       # all) instead of delivering them — set these in the .env.
       ASKRYPT_SMTP_HOST: "${ASKRYPT_SMTP_HOST:-}"

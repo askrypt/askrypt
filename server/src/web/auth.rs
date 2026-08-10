@@ -21,6 +21,7 @@ use crate::devicelink;
 use crate::state::AppState;
 use crate::store::{Account, DeviceLinkId};
 use crate::web::WebError;
+use crate::web::captcha;
 use crate::web::csrf::{self, CsrfForm};
 use crate::web::flash::{self, Flash};
 use crate::web::render::{Chrome, Page, Shell, is_htmx, with_cookies};
@@ -51,6 +52,15 @@ pub struct AuthForm {
     /// it lands in a hidden input and an `href`, and a general `next=` would be
     /// an open redirect waiting to happen.
     link: Option<String>,
+    /// The reCAPTCHA v3 action a token for *this* form must be minted for.
+    /// Fixed per form, and the reason a login token cannot be spent on the
+    /// registration form or the other way round.
+    captcha_action: &'static str,
+    /// The public site key, or `None` when no captcha is configured — which
+    /// is what the template reads to decide whether to render the field at
+    /// all. Filled in by [`AuthForm::with_captcha`], never by the two
+    /// constructors, so the action and the key can't be set out of step.
+    captcha_key: Option<String>,
 }
 
 #[derive(Template)]
@@ -79,6 +89,8 @@ impl AuthForm {
             email,
             error,
             link,
+            captcha_action: captcha::LOGIN_ACTION,
+            captcha_key: None,
         }
     }
 
@@ -99,7 +111,17 @@ impl AuthForm {
             email,
             error,
             link,
+            captcha_action: captcha::REGISTER_ACTION,
+            captcha_key: None,
         }
+    }
+
+    /// Fills in the site key, using the action the form was already built
+    /// for. Chained rather than another constructor argument so a caller
+    /// cannot pair one form's key with the other's action.
+    fn with_captcha(mut self, state: &AppState) -> Self {
+        self.captcha_key = state.captcha.site_key().map(str::to_owned);
+        self
     }
 }
 
@@ -112,6 +134,12 @@ pub struct Credentials {
     /// The device link being signed in for, carried by the hidden field.
     #[serde(default)]
     link: Option<String>,
+    /// The reCAPTCHA v3 token the page minted. Defaulted rather than
+    /// required: a browser with scripts off submits the form with this field
+    /// empty, and that has to reach [`captcha::check`] to be turned into a
+    /// sentence about JavaScript instead of a form-parse rejection.
+    #[serde(default)]
+    captcha_token: String,
 }
 
 /// `?link=<uuid>` on the two auth pages.
@@ -126,24 +154,39 @@ pub struct AuthQuery {
 pub struct TokenOnly {}
 
 pub async fn login_form(
+    State(state): State<AppState>,
     session: MaybeWebSession,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> Response {
-    auth_page(session, &headers, AuthForm::login, query.link.as_deref())
+    auth_page(
+        &state,
+        session,
+        &headers,
+        AuthForm::login,
+        query.link.as_deref(),
+    )
 }
 
 pub async fn register_form(
+    State(state): State<AppState>,
     session: MaybeWebSession,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> Response {
-    auth_page(session, &headers, AuthForm::register, query.link.as_deref())
+    auth_page(
+        &state,
+        session,
+        &headers,
+        AuthForm::register,
+        query.link.as_deref(),
+    )
 }
 
 /// Renders one of the two auth pages, bouncing visitors who are already
 /// signed in — the form would only sign them in as themselves again.
 fn auth_page(
+    state: &AppState,
     session: MaybeWebSession,
     headers: &HeaderMap,
     build: BuildForm,
@@ -173,8 +216,11 @@ fn auth_page(
         String::new(),
         None,
         link.map(|id| id.to_string()),
-    );
-    with_cookies(Page(AuthPage { chrome, form }).into_response(), cookies)
+    )
+    .with_captcha(state);
+    let relaxed = form.captcha_key.is_some();
+    let page = Page(AuthPage { chrome, form }).into_response();
+    with_cookies(captcha::relax_csp(page, relaxed), cookies)
 }
 
 pub async fn login_submit(
@@ -184,10 +230,31 @@ pub async fn login_submit(
     CsrfForm(form): CsrfForm<Credentials>,
 ) -> Response {
     let link = form.link.as_deref().and_then(devicelink::parse_link_id);
+    // Before the credentials, not after: an unverified submit must not be
+    // worth an argon2 hash, which is the expensive half of this handler.
+    if let Err(message) =
+        captcha::check(&state, &client, &form.captcha_token, captcha::LOGIN_ACTION).await
+    {
+        return rejected(
+            &state,
+            &headers,
+            AuthForm::login,
+            form.email,
+            message.to_string(),
+            link,
+        );
+    }
     let account = match auth::authenticate(&state, &client, &form.email, form.password).await {
         Ok(account) => account,
         Err(err) => {
-            return rejected(&headers, AuthForm::login, form.email, err.message, link);
+            return rejected(
+                &state,
+                &headers,
+                AuthForm::login,
+                form.email,
+                err.message,
+                link,
+            );
         }
     };
     match sign_in(&state, &client, &account, "password").await {
@@ -204,10 +271,36 @@ pub async fn register_submit(
 ) -> Response {
     let link = form.link.as_deref().and_then(devicelink::parse_link_id);
     let email = form.email.clone();
+    // Same order as sign-in, for the same reason plus one: registration is
+    // the endpoint that creates rows, so a scripted flood is worth more here.
+    if let Err(message) = captcha::check(
+        &state,
+        &client,
+        &form.captcha_token,
+        captcha::REGISTER_ACTION,
+    )
+    .await
+    {
+        return rejected(
+            &state,
+            &headers,
+            AuthForm::register,
+            email,
+            message.to_string(),
+            link,
+        );
+    }
     let account = match auth::register_account(&state, &client, &form.email, form.password).await {
         Ok(account) => account,
         Err(err) => {
-            return rejected(&headers, AuthForm::register, email, err.message, link);
+            return rejected(
+                &state,
+                &headers,
+                AuthForm::register,
+                email,
+                err.message,
+                link,
+            );
         }
     };
     // Registering signs you straight in: a new account with nothing in it
@@ -282,7 +375,12 @@ async fn sign_in(
 ///
 /// Answers 200 rather than 4xx: htmx only swaps successful responses, and a
 /// refused sign-in is a normal outcome of this page, not a protocol error.
+///
+/// The re-rendered form carries the captcha field again, empty. A v3 token is
+/// single-use, so the one that came with the refused submit is already spent;
+/// `captcha.js` re-mints into the swapped-in field.
 fn rejected(
+    state: &AppState,
     headers: &HeaderMap,
     build: BuildForm,
     email: String,
@@ -297,11 +395,13 @@ fn rejected(
         email,
         Some(message),
         link.map(|id| id.to_string()),
-    );
+    )
+    .with_captcha(state);
+    let relaxed = form.captcha_key.is_some();
     let body = if is_htmx(headers) {
         (StatusCode::OK, Page(form)).into_response()
     } else {
         Page(AuthPage { chrome, form }).into_response()
     };
-    with_cookies(body, cookies)
+    with_cookies(captcha::relax_csp(body, relaxed), cookies)
 }

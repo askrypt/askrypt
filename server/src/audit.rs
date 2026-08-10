@@ -84,6 +84,11 @@ pub const LOGIN_FAILED: &str = "login.failed";
 pub const LOGIN_GOOGLE_OK: &str = "login.google.ok";
 pub const LOGIN_GOOGLE_DENIED: &str = "login.google.denied";
 pub const LOGOUT: &str = "logout";
+/// A website auth form was refused before its credentials were even looked
+/// at, because its captcha token did not hold up. No account is named — at
+/// this point none has been resolved, and the submitted address is exactly
+/// what a failed login must not put in the log.
+pub const CAPTCHA_FAILED: &str = "captcha.failed";
 pub const PASSWORD_CHANGED: &str = "password.changed";
 pub const PASSWORD_SET: &str = "password.set";
 pub const PASSWORD_REAUTH_FAILED: &str = "password.reauth_failed";

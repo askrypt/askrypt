@@ -655,6 +655,48 @@ askrypt/
     `src/devicelink.rs` and `src/store/sqlite.rs`, and the client half in
     `core/src/storage/server.rs` (9 tests over the fake server).
 
+- **Phase 11 — reCAPTCHA on the website's auth forms.** ✅ *(done 2026-08-10)*
+  The rate limiter is a blunt instrument on `/login` and `/register`: it is
+  keyed by address, and a botnet or a NAT'd office defeats or is punished by
+  it in turn. Google reCAPTCHA **v3** now scores every submit on those two
+  forms, behind `ASKRYPT_RECAPTCHA_SITE_KEY` — unset, nothing changes.
+
+  - **v3, not v2.** No checkbox and no challenge: the page mints a scored
+    token and the server decides. The alternative buys a visible widget at the
+    cost of a click on every sign-in.
+  - **Checked before the credentials.** `web::captcha::check` runs ahead of
+    `authenticate`/`register_account`, so a flood of guesses never buys an
+    argon2 hash. That ordering is the security property, and it is what
+    `tests/captcha.rs` pins.
+  - **The action is bound.** A v3 token names the form it was minted for and
+    the verifier insists on a match, so a token from the registration page
+    cannot be spent on the login one — and neither can one minted on some
+    cheap page an attacker copied the site key onto.
+  - **It fails closed.** An unreachable Google or a wrong secret refuses
+    everyone, logged at `error` as an outage rather than as a caught bot. The
+    alternative — waving submits through when the verifier is down — makes
+    the protection removable by whoever is attacking it.
+  - **Two rules of the website bend, here and nowhere else.** These forms need
+    **JavaScript** (a v3 token can only be minted in the page), and they send
+    a widened CSP (`hardening::CSP_CAPTCHA`) naming Google's two script hosts
+    and allowing inline *styles* for reCAPTCHA's badge. `script-src` still
+    carries no `'unsafe-inline'`, and every other route keeps the strict
+    policy byte for byte. Opt-in is the `RelaxedCsp` response extension, so
+    the header is still written in exactly one place.
+  - **The JSON API is deliberately not captcha'd.** Desktop and mobile cannot
+    mint a token, and the desktop's browser sign-in already lands on `/login`.
+    `/api/v1/auth` keeps its 20/min limiter. This is a **known bypass** for
+    anything willing to post JSON — closing it means shipping a token minter
+    to the native clients, which is Phase-scale work of its own.
+  - **Phase gate:** ✅ the site key and both scripts on the two pages; the CSP
+    widened on exactly those two and only with a captcha configured; a missing
+    token refused with advice about JavaScript rather than a 4xx; a token from
+    the other form refused; a low score refused; the spent token not echoed
+    back; the JSON API untouched; and a wrong password with a bad token
+    yielding the captcha message, which is how you can see argon2 was never
+    reached. `server/tests/captcha.rs` (12 tests) plus unit tests in
+    `src/store/recaptcha.rs` and `src/config.rs`.
+
 ## Open decisions (not blocking)
 
 - ~~Client-side sync UX for **desktop**~~ — decided and built: manual

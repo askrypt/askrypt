@@ -11,10 +11,11 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::{
-    ADMIN_ROLE, Account, AccountId, AccountStore, DeviceLink, DeviceLinkId, DeviceLinkStatus,
-    DeviceLinkStore, IdTokenError, IdTokenVerifier, Mailer, MailerError, NewAccount,
-    PAYMENT_USER_ROLE, Role, RoleStore, Session, SessionStore, StoreError, VaultBlobStore, VaultId,
-    VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore, VerifiedIdToken,
+    ADMIN_ROLE, Account, AccountId, AccountStore, CaptchaError, CaptchaVerifier, DeviceLink,
+    DeviceLinkId, DeviceLinkStatus, DeviceLinkStore, IdTokenError, IdTokenVerifier, Mailer,
+    MailerError, NewAccount, PAYMENT_USER_ROLE, Role, RoleStore, Session, SessionStore, StoreError,
+    VaultBlobStore, VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId,
+    VaultVersionStore, VerifiedIdToken,
 };
 
 #[derive(Debug, Default)]
@@ -602,6 +603,79 @@ impl IdTokenVerifier for FakeIdTokenVerifier {
             .get(id_token)
             .cloned()
             .ok_or_else(|| IdTokenError::Invalid("unknown token".into()))
+    }
+}
+
+/// Fake captcha: presents a site key (so the forms render exactly as they do
+/// in production) and accepts only tokens registered via
+/// [`FakeCaptchaVerifier::register`], applying the same action and score
+/// rules the real verifier does.
+///
+/// **Not** what [`crate::state::AppState::in_memory`] wires — that uses
+/// [`super::recaptcha::DisabledCaptchaVerifier`], so a suite that says
+/// nothing about captchas sees none. Tests opt in by overriding the seam.
+#[derive(Debug)]
+pub struct FakeCaptchaVerifier {
+    site_key: String,
+    min_score: f32,
+    /// token → (action it was minted for, score it scored)
+    tokens: Mutex<HashMap<String, (String, f32)>>,
+}
+
+impl FakeCaptchaVerifier {
+    pub fn new(site_key: impl Into<String>, min_score: f32) -> Self {
+        Self {
+            site_key: site_key.into(),
+            min_score,
+            tokens: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn register(&self, token: impl Into<String>, action: impl Into<String>, score: f32) {
+        self.tokens
+            .lock()
+            .unwrap()
+            .insert(token.into(), (action.into(), score));
+    }
+}
+
+impl Default for FakeCaptchaVerifier {
+    fn default() -> Self {
+        Self::new("test-site-key", 0.5)
+    }
+}
+
+#[async_trait]
+impl CaptchaVerifier for FakeCaptchaVerifier {
+    fn site_key(&self) -> Option<&str> {
+        Some(&self.site_key)
+    }
+
+    async fn verify(
+        &self,
+        token: &str,
+        action: &str,
+        _client_ip: Option<&str>,
+    ) -> Result<Option<f32>, CaptchaError> {
+        let (minted_for, score) = self
+            .tokens
+            .lock()
+            .unwrap()
+            .get(token)
+            .cloned()
+            .ok_or_else(|| CaptchaError::Rejected("unknown token".into()))?;
+        if minted_for != action {
+            return Err(CaptchaError::Rejected(format!(
+                "action mismatch: expected {action}, got {minted_for}"
+            )));
+        }
+        if score < self.min_score {
+            return Err(CaptchaError::Rejected(format!(
+                "score {score} below {}",
+                self.min_score
+            )));
+        }
+        Ok(Some(score))
     }
 }
 
