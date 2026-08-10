@@ -122,6 +122,7 @@ same thing, for comparison.
 | create a new vault → `Unlocked`, no location | `close_vault()` → `panes::questions` → `Built` | `welcome.rs:67` → `questions.rs` → Save |
 | open a local file → `Locked` | wizard `Browse…`/recent → `open_location` → `open_vault()` | `welcome.rs:26-54` (blocking dialog) |
 | open from the server → `Locked` | wizard server step → `download` → `open_vault()` | `server.rs`, `Mode::Open` |
+| sign in to a server | `link::Msg::Start` → browser → poll → `session.sign_in` | `server.rs` email + password form |
 | auto-open at startup | `App::boot` (argv, else `settings.last_opened_file`) | `app.rs:30-68` |
 | answer 0 → `PartiallyUnlocked` | `panes::unlock::start_first_answer` | `unlock.rs:69` |
 | all answers → `Unlocked` | `panes::unlock::start_full_unlock` → `apply_unlock()` | `unlock.rs:186` |
@@ -206,6 +207,11 @@ with the vault's name, because that dialog already asks for the folder *and* the
 name. So the file step exists only in the Open direction (the recent list plus
 `Browse…`), and only the server step asks the save direction for a name.
 
+The server step also no longer asks for an address, an email or a password: the
+address is a setting and the sign-in happens in a browser (see invariant 4), so
+that step is either one button, the shared waiting card, or the account's vault
+list.
+
 **Opening never has a confirm button.** A vault row — a recent file or one of
 the account's server vaults — is a destination, not a setting, so clicking it
 starts the open right there; that is why every such row ends in a chevron and
@@ -241,6 +247,17 @@ only case `confirm()` acts on.
    decrypted; only saving asks them to sign in again. → the wizard reads
    `session.is_signed_in()` rather than keeping a flag of its own, so the
    sign-in survives every run of it.
+   **The app never asks for an account password.** Signing in opens the
+   server's own page in a browser and polls for the token (`link.rs`), so
+   registration works from the app too and no credential passes through this
+   process. The server is a *setting* (`settings.server_url`, default
+   `https://askrypt.com`), not a field on a form; the wizard and the Settings
+   pane share one `waiting_card`, and the in-flight link lives on the
+   `Session` because either pane can start it and it outlives both. Leaving
+   those panes cancels the link server-side — closing the pane means the user
+   no longer wants it. The wait must **not** hold `Session::busy`: that hides
+   the Cancel button the user needs, which is why this is the one long-running
+   task in the crate without a spinner.
 5. **Every PBKDF2 path and every vault read or write runs off the main thread**
    — `Task::perform` + `tokio::task::spawn_blocking`, behind
    `theme::spinner_row`, with `Session::busy` guarding re-entry. → the two paths

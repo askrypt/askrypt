@@ -336,6 +336,13 @@ pub struct AppSettings {
     pub show_hidden_by_default: bool,
     #[serde(default = "default_true")]
     pub clear_clipboard: bool,
+    /// The one Askrypt server this app talks to. Sign-in happens in the
+    /// browser, so this is the *only* thing about a server the app asks for.
+    ///
+    /// Free text as the user typed it; read it back through
+    /// [`AppSettings::server_url`], which normalizes it the way `core` does.
+    #[serde(default = "default_server_url")]
+    pub server_url: String,
     /// Where the window was last seen. `None` on a first run and in any
     /// `settings.json` written by the shipping app, which has no window memory.
     #[serde(default)]
@@ -344,6 +351,13 @@ pub struct AppSettings {
 
 fn default_true() -> bool {
     true
+}
+
+/// The hosted Askrypt server. Self-hosters change it in Settings.
+pub const DEFAULT_SERVER_URL: &str = "https://askrypt.com";
+
+fn default_server_url() -> String {
+    DEFAULT_SERVER_URL.to_string()
 }
 
 impl Default for AppSettings {
@@ -356,12 +370,27 @@ impl Default for AppSettings {
             minimize_to_tray: true,
             show_hidden_by_default: false,
             clear_clipboard: true,
+            // The `#[serde(default)]` above only covers *parsing*; a default
+            // built in code needs it spelled out again or the app starts with
+            // no server at all.
+            server_url: default_server_url(),
             window: None,
         }
     }
 }
 
 impl AppSettings {
+    /// The configured server, normalized exactly as `core` normalizes a base
+    /// URL.
+    ///
+    /// Must go through `core`'s own function: a saved
+    /// [`VaultLocation::Server`] is matched to a signed-in client by *exact*
+    /// string, so a second, slightly different normalization here would leave
+    /// vaults unopenable.
+    pub fn server_url(&self) -> String {
+        askrypt::normalize_base_url(&self.server_url)
+    }
+
     /// Load settings from the config file
     pub fn load() -> Self {
         if let Some(config_path) = Self::get_config_path()
@@ -706,5 +735,37 @@ mod tests {
                 MAX_RECENT_VAULTS + 2
             )))
         );
+    }
+
+    #[test]
+    fn a_fresh_install_points_at_the_hosted_server() {
+        // Both paths: the value built in code and the one a `settings.json`
+        // written before this field existed parses to.
+        assert_eq!(AppSettings::default().server_url(), DEFAULT_SERVER_URL);
+
+        let old: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.server_url(), DEFAULT_SERVER_URL);
+    }
+
+    #[test]
+    fn the_server_url_is_normalized_the_way_core_normalizes_it() {
+        // A saved server vault is matched to a signed-in client by exact
+        // string, so a stray slash here would leave it unopenable.
+        let settings = AppSettings {
+            server_url: "  https://askrypt.example.com/  ".to_string(),
+            ..AppSettings::default()
+        };
+        assert_eq!(settings.server_url(), "https://askrypt.example.com");
+    }
+
+    #[test]
+    fn a_configured_server_survives_a_round_trip() {
+        let settings = AppSettings {
+            server_url: "https://vault.example.org".to_string(),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.server_url(), "https://vault.example.org");
     }
 }

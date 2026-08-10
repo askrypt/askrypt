@@ -18,7 +18,6 @@ use std::sync::Arc;
 use askrypt::{RemoteVault, ServerClient, ServerStorage, VaultStorage};
 use iced::widget::{button, column, container, row, rule, scrollable, text, text_input};
 use iced::{Element, Length, Task, alignment::Vertical};
-use zeroize::Zeroize;
 
 use crate::data;
 use crate::panes::Action;
@@ -78,11 +77,9 @@ pub struct State {
     file_name: String,
     picked_recent: Option<usize>,
 
-    // Server step. Whether the user is *signed in* is not kept here — that lives
-    // on the session and deliberately outlives any one run of the wizard.
-    base_url: String,
-    email: String,
-    password: String,
+    // Server step. Neither the sign-in nor the credentials for one live here:
+    // signing in happens in the browser ([`crate::link`]), and the resulting
+    // session lives on the `Session`, outlasting any one run of the wizard.
     vaults: Listing,
     vault_name: String,
     picked_vault: Option<usize>,
@@ -96,20 +93,10 @@ impl Default for State {
             error: None,
             file_name: String::new(),
             picked_recent: None,
-            base_url: "https://".to_string(),
-            email: String::new(),
-            password: String::new(),
             vaults: None,
             vault_name: String::new(),
             picked_vault: None,
         }
-    }
-}
-
-/// The typed password never needs to outlive the sign-in it is for.
-impl Drop for State {
-    fn drop(&mut self) {
-        self.password.zeroize();
     }
 }
 
@@ -132,8 +119,6 @@ impl State {
         self.error = None;
         self.picked_recent = None;
         self.picked_vault = None;
-        self.password.zeroize();
-        self.password.clear();
         self.file_name = if name.ends_with(".askrypt") {
             name.clone()
         } else {
@@ -141,12 +126,6 @@ impl State {
         };
         self.vault_name = name.trim_end_matches(".askrypt").to_string();
 
-        if let Some(email) = &session.server_email {
-            self.email = email.clone();
-        }
-        if let Some(client) = &session.server_client {
-            self.base_url = client.base_url().to_string();
-        }
         // A stale listing from a previous sign-in would be misleading.
         if !session.is_signed_in() {
             self.vaults = None;
@@ -175,11 +154,9 @@ pub enum Msg {
     FilePicked(Option<PathBuf>),
     /// The Save direction's native save dialog closed.
     SaveFilePicked(Option<PathBuf>),
-    BaseUrlChanged(String),
-    EmailChanged(String),
-    PasswordChanged(String),
-    SignIn,
-    SignedIn(Box<Result<SignInResult, VaultError>>),
+    /// A browser sign-in landed and brought the account's vaults with it.
+    /// Sent by [`crate::link`], which may have been driven from another pane.
+    AdoptListing(Vec<RemoteVault>),
     SignOut,
     Refresh,
     Listed(Result<Vec<RemoteVault>, VaultError>),
@@ -200,10 +177,26 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                 return Action::Run(save_dialog(&state.file_name));
             }
             state.step = step;
-            // Entering the server step while already signed in should show the
-            // account's vaults, not an empty list.
-            if step == Step::Server && session.is_signed_in() && state.vaults.is_none() {
-                return list_vaults(state, session);
+            if step == Step::Server {
+                // A sign-in to some *other* server is worse than none: saving
+                // would sync the vault to a server the settings no longer name.
+                // Checked here rather than when the address is edited, because
+                // the settings pane saves on every keystroke and would sign the
+                // user out mid-word.
+                let elsewhere = session
+                    .server_client
+                    .as_ref()
+                    .is_some_and(|client| client.base_url() != session.settings.server_url());
+                if elsewhere {
+                    session.sign_out();
+                    state.vaults = None;
+                    state.picked_vault = None;
+                }
+                // Entering while already signed in should show the account's
+                // vaults, not an empty list.
+                if session.is_signed_in() && state.vaults.is_none() {
+                    return list_vaults(state, session);
+                }
             }
             Action::None
         }
@@ -248,44 +241,15 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
             Action::Run(Task::done(Message::SaveTo(VaultLocation::LocalFile(path))))
         }
         Msg::SaveFilePicked(None) => Action::None,
-        Msg::BaseUrlChanged(value) => {
-            state.base_url = value;
+        Msg::AdoptListing(vaults) => {
+            state.error = None;
+            state.vaults = Some(vaults);
             Action::None
-        }
-        Msg::EmailChanged(value) => {
-            state.email = value;
-            Action::None
-        }
-        Msg::PasswordChanged(value) => {
-            state.password.zeroize();
-            state.password = value;
-            Action::None
-        }
-        Msg::SignIn => sign_in(state, session),
-        Msg::SignedIn(result) => {
-            session.finish_work();
-            match *result {
-                Ok(signed_in) => {
-                    state.password.zeroize();
-                    state.password.clear();
-                    state.vaults = Some(signed_in.vaults);
-                    let email = signed_in.email.clone();
-                    session.sign_in(signed_in.client, &email);
-                    session.status_message = Some(format!("Signed in as {email}"));
-                    Action::None
-                }
-                Err(error) => {
-                    state.error = Some(describe_sign_in_error(&error));
-                    Action::None
-                }
-            }
         }
         Msg::SignOut => {
             session.sign_out();
             state.vaults = None;
             state.picked_vault = None;
-            state.password.zeroize();
-            state.password.clear();
             session.status_message = Some("Signed out".into());
             Action::None
         }
@@ -472,48 +436,6 @@ fn load_task(location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Task<Me
         },
         |result| Message::Wizard(Msg::Opened(Box::new(result))),
     )
-}
-
-/// Sign in and list in one round trip, the way `src/screens/server.rs` does.
-fn sign_in(state: &mut State, session: &mut Session) -> Action {
-    if session.busy {
-        return Action::None;
-    }
-    if state.base_url.trim().is_empty() || state.email.trim().is_empty() {
-        state.error = Some("Enter a server address and an email.".to_string());
-        return Action::None;
-    }
-    if state.password.is_empty() {
-        state.error = Some("Enter your password.".to_string());
-        return Action::None;
-    }
-
-    let base_url = state.base_url.trim().to_string();
-    let email = state.email.trim().to_string();
-    let password = state.password.clone();
-
-    session.begin_work("Signing in…");
-    Action::Run(Task::perform(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                let client =
-                    ServerClient::login(&base_url, &email, &password, Some("Askrypt desktop"))
-                        .map_err(|e| VaultError::log("Failed to sign in", &e))?;
-                let client = Arc::new(client);
-                let vaults = client
-                    .list()
-                    .map_err(|e| VaultError::log("Failed to list vaults", &e))?;
-                Ok::<_, VaultError>(SignInResult {
-                    client,
-                    email,
-                    vaults,
-                })
-            })
-            .await
-            .expect("sign in task panicked")
-        },
-        |result| Message::Wizard(Msg::SignedIn(Box::new(result))),
-    ))
 }
 
 fn list_vaults(state: &mut State, session: &mut Session) -> Action {
@@ -748,29 +670,35 @@ fn picker_row<'a>(
 
 fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
     if !session.is_signed_in() {
+        // Waiting on the browser: one card, shared with the Settings pane.
+        if let Some(link) = &session.link {
+            return crate::link::waiting_card(link);
+        }
+
+        let server = session.settings.server_url();
+        let server = if server.is_empty() {
+            "no server set".to_string()
+        } else {
+            server
+        };
+
         return theme::card(
             container(
                 column![
-                    text("Server address").size(13),
-                    text_input("https://askrypt.example.com", &state.base_url)
-                        .on_input(|value| Message::Wizard(Msg::BaseUrlChanged(value)))
-                        .padding(8)
-                        .size(14),
-                    text("Email").size(13),
-                    text_input("me@example.com", &state.email)
-                        .on_input(|value| Message::Wizard(Msg::EmailChanged(value)))
-                        .padding(8)
-                        .size(14),
-                    text("Password").size(13),
-                    text_input("", &state.password)
-                        .on_input(|value| Message::Wizard(Msg::PasswordChanged(value)))
-                        .on_submit(Message::Wizard(Msg::SignIn))
-                        .secure(true)
-                        .padding(8)
-                        .size(14),
-                    button(text("Sign in").size(14))
-                        .padding([8, 16])
-                        .on_press(Message::Wizard(Msg::SignIn)),
+                    text("Sign in to save and open vaults on your account.").size(14),
+                    // No password field, on purpose: signing in — and signing
+                    // *up* — happens on the server's own pages, so this app
+                    // never handles an account password.
+                    text(format!(
+                        "Your browser opens {server}, where you can sign in or \
+                         create an account."
+                    ))
+                    .size(12)
+                    .style(text::secondary),
+                    crate::link::sign_in_button("Sign in with your browser"),
+                    text("Change the server in Settings.")
+                        .size(11)
+                        .style(text::secondary),
                 ]
                 .spacing(8),
             )

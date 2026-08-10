@@ -7,14 +7,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::{
-    ADMIN_ROLE, Account, AccountId, AccountStore, IdTokenError, IdTokenVerifier, Mailer,
-    MailerError, NewAccount, PAYMENT_USER_ROLE, Role, RoleStore, Session, SessionStore, StoreError,
-    VaultBlobStore, VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId,
-    VaultVersionStore, VerifiedIdToken,
+    ADMIN_ROLE, Account, AccountId, AccountStore, DeviceLink, DeviceLinkId, DeviceLinkStatus,
+    DeviceLinkStore, IdTokenError, IdTokenVerifier, Mailer, MailerError, NewAccount,
+    PAYMENT_USER_ROLE, Role, RoleStore, Session, SessionStore, StoreError, VaultBlobStore, VaultId,
+    VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore, VerifiedIdToken,
 };
 
 #[derive(Debug, Default)]
@@ -248,6 +248,84 @@ impl SessionStore for MemorySessionStore {
             .unwrap()
             .retain(|_, s| s.account_id != account_id);
         Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct MemoryDeviceLinkStore {
+    links: Mutex<HashMap<DeviceLinkId, DeviceLink>>,
+}
+
+#[async_trait]
+impl DeviceLinkStore for MemoryDeviceLinkStore {
+    async fn insert(&self, link: DeviceLink) -> Result<(), StoreError> {
+        let mut links = self.links.lock().unwrap();
+        if links.values().any(|l| l.poll_token == link.poll_token) {
+            // Mirrors the SQLite UNIQUE index. Unreachable in practice — the
+            // token is 256 bits from the OS RNG.
+            return Err(StoreError::Conflict("poll token already used".into()));
+        }
+        links.insert(link.id, link);
+        Ok(())
+    }
+
+    async fn get(&self, id: DeviceLinkId) -> Result<Option<DeviceLink>, StoreError> {
+        Ok(self.links.lock().unwrap().get(&id).cloned())
+    }
+
+    async fn get_by_poll_token(&self, poll_token: &str) -> Result<Option<DeviceLink>, StoreError> {
+        Ok(self
+            .links
+            .lock()
+            .unwrap()
+            .values()
+            .find(|l| l.poll_token == poll_token)
+            .cloned())
+    }
+
+    async fn update(&self, link: &DeviceLink) -> Result<(), StoreError> {
+        let mut links = self.links.lock().unwrap();
+        match links.get_mut(&link.id) {
+            Some(slot) => {
+                *slot = link.clone();
+                Ok(())
+            }
+            None => Err(StoreError::NotFound),
+        }
+    }
+
+    async fn delete(&self, id: DeviceLinkId) -> Result<(), StoreError> {
+        match self.links.lock().unwrap().remove(&id) {
+            Some(_) => Ok(()),
+            None => Err(StoreError::NotFound),
+        }
+    }
+
+    async fn claim(
+        &self,
+        poll_token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DeviceLink>, StoreError> {
+        // The lock is held across the find and the remove: that is the whole
+        // point of `claim`, so two polls cannot both take the same link.
+        let mut links = self.links.lock().unwrap();
+        let found = links
+            .values()
+            .find(|l| {
+                l.poll_token == poll_token
+                    && l.status == DeviceLinkStatus::Approved
+                    && !l.is_expired(now)
+            })
+            .map(|l| l.id);
+
+        Ok(found.and_then(|id| links.remove(&id)))
+    }
+
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
+        let mut links = self.links.lock().unwrap();
+        let before = links.len();
+        links.retain(|_, l| !l.is_expired(now));
+        Ok((before - links.len()) as u64)
     }
 }
 

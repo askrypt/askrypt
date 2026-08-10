@@ -114,7 +114,9 @@ impl VaultError {
 /// a 404 while saving means something else entirely.
 pub fn describe_sign_in_error(error: &VaultError) -> String {
     match error {
-        VaultError::Auth => "Incorrect email or password".to_string(),
+        // No password is ever typed here — signing in happens in the browser —
+        // so an `Auth` failure means the token was refused, not mistyped.
+        VaultError::Auth => "The server refused this sign-in. Try again.".to_string(),
         VaultError::Network => "Could not reach the server".to_string(),
         VaultError::Format => "The server returned something unexpected".to_string(),
         VaultError::Io => "No such vault on the server".to_string(),
@@ -238,6 +240,14 @@ pub struct Session {
     /// The account the current sign-in belongs to, recorded alongside a server
     /// vault's location so `settings.json` says whose vault it is.
     pub server_email: Option<String>,
+    /// A browser sign-in in flight. Lives on the session rather than in a pane
+    /// because two panes — the wizard's server step and Settings — can both
+    /// start one and must both show the same waiting card.
+    pub link: Option<crate::link::LinkState>,
+    /// Counter identifying the current sign-in attempt. A reply carrying an
+    /// older value belongs to a sign-in that was cancelled or restarted, and is
+    /// dropped rather than acted on.
+    pub link_generation: u64,
     /// Smart Lock state - stores encrypted answers in RAM
     pub smart_lock_data: Option<SmartLockData>,
     /// Last user activity timestamp for auto Smart Lock
@@ -289,6 +299,8 @@ impl Session {
             settings,
             server_client,
             server_email,
+            link: None,
+            link_generation: 0,
             smart_lock_data: None,
             last_user_activity: None,
             tray,

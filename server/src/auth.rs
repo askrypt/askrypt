@@ -38,7 +38,7 @@ use crate::store::{Account, AccountId, NewAccount, Session, StoreError, Verified
 /// How long an API login session stays valid. Long-lived per-device sessions
 /// per the plan's client-access rule; clients re-login after expiry. Browser
 /// sessions are shorter — see [`crate::web::session::WEB_SESSION_TTL_DAYS`].
-const SESSION_TTL_DAYS: i64 = 30;
+pub(crate) const SESSION_TTL_DAYS: i64 = 30;
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 512;
 const MAX_EMAIL_LEN: usize = 254;
@@ -113,7 +113,7 @@ pub struct SessionResponse {
 }
 
 impl SessionResponse {
-    fn new(session: Session, account: &Account) -> Self {
+    pub(crate) fn new(session: Session, account: &Account) -> Self {
         Self {
             token: session.token,
             expires_at: session.expires_at,
@@ -277,7 +277,7 @@ pub(crate) async fn authenticate(
 
 /// The one refusal a banned user sees. Distinct from `invalid_credentials`:
 /// by the time it is reached the credentials were correct.
-fn account_banned() -> ApiError {
+pub(crate) fn account_banned() -> ApiError {
     ApiError::new(
         StatusCode::FORBIDDEN,
         "account_banned",
@@ -524,8 +524,10 @@ pub(crate) async fn issue_session(
     Ok(session)
 }
 
-/// 256 bits from the OS RNG, hex-encoded.
-fn new_session_token() -> String {
+/// 256 bits from the OS RNG, hex-encoded. Also mints the device-link poll
+/// token, which is bearer-equivalent for the session it will claim and so
+/// deserves exactly the same strength.
+pub(crate) fn new_session_token() -> String {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).expect("OS RNG unavailable");
     bytes.iter().map(|b| format!("{b:02x}")).collect()

@@ -463,7 +463,10 @@ async fn an_over_quota_upload_over_htmx_returns_the_listing_with_a_notice() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(!headers.contains_key("hx-retarget"), "retargeted needlessly");
+    assert!(
+        !headers.contains_key("hx-retarget"),
+        "retargeted needlessly"
+    );
     assert!(body.starts_with("<section"), "not a fragment: {body}");
     assert!(body.contains("id=\"vault-list\""), "{body}");
     assert!(body.contains("of storage"), "{body}");

@@ -29,7 +29,8 @@ The dependency arrows only ever point one way: `askrypt` (desktop) and `askrypt-
 - **`core/src/types.rs`** — Core data types: `SecretEntry`, `Params`, `QuestionsData`, `MasterData`, `AskryptFile`. Re-exported from `lib.rs`. `Params` also carries the optional, **unencrypted** write stamp `host` (`os@host`, e.g. `ubuntu@mypc`) + `updated_at` (RFC 3339 UTC, second precision), omitted from JSON when absent so pre-stamp vaults round-trip unchanged. `host` is opaque display text, never parsed: older vaults hold a bare host name with no OS half.
 - **`core/src/lib.rs`** — Crypto core: encryption (AES-256-CBC), key derivation (PBKDF2/SHA-256), ZIP archive handling, serialization, and `to_bytes`/`from_bytes` (in-memory ZIP). `save_to_file`/`load_from_file` are thin conveniences over `LocalFileStorage`. `AskryptFile::touch` (called at the end of `create`, i.e. on every save, since saves rebuild the file) stamps `params.host`/`params.updated_at` via the `current_host`/`now_utc_rfc3339` helpers (`gethostname` + `chrono`). `current_host` writes `<os>@<host name>` — the OS half comes from `current_os`, which on Linux prefers the `ID=` value out of `/etc/os-release` (`parse_os_release_id`, cached in a `OnceLock`, rejecting anything that is not `[a-z0-9._-]` since this lands unencrypted and then in a web table cell) and otherwise `std::env::consts::OS`; a missing host name yields the OS name alone, never a dangling `ubuntu@`. Contains 25+ unit tests. This is the heart of the security model.
 - **`core/src/storage/`** — `VaultStorage` trait (`mod.rs`): the backend-agnostic persistence seam over opaque vault bytes (`read`/`write`/`exists`/`location` plus `load_vault`/`save_vault` default methods built on `to_bytes`/`from_bytes`). Sync, object-safe, `Send + Sync`; errors are the dedicated `StorageError` (`#[non_exhaustive]`): `Io`/`Format` plus the network variants `Network`/`Auth`/`Conflict`/`Remote { status, code, message }`, all defined **unconditionally** so the error type does not change shape with the feature flags. `mod.rs` also holds `MemoryStorage` (tests/fakes); each backend gets its own file — `local_file.rs` (`LocalFileStorage`) and `server.rs` (`ServerClient` + `ServerStorage`, behind the default-off `server-storage` feature so a plain `cargo build -p askrypt-core` stays free of HTTP/TLS; the desktop crate enables it).
-  - `server.rs` is the **client half of the cloud story**: `ServerClient` is one authenticated handle to a server's `/api/v1` (`login`/`with_token`/`logout` + `list`/`create`/`download`/`overwrite`/`rename`/`delete`), and `ServerStorage` is one vault on it, addressed by *name*. Over `ureq` 3 (blocking, rustls/ring), **not** `reqwest::blocking` — the trait is sync and `reqwest::blocking` panics when built inside an async context, which is exactly where the desktop calls it from. The agent sets `http_status_as_error(false)` because the server's `{"error":{"code","message"}}` envelope lives in the body of a 4xx/5xx. ETags are stored unquoted and sent quoted; `read` records the ETag it saw and `write` sends it as `If-Match`, so **a `ServerStorage` instance must live as long as the open vault** — a fresh one would re-resolve the *current* ETag and clobber another device's edit. That invariant is what `Session.storage` exists to hold. `core/examples/server_roundtrip.rs` is the manual end-to-end gate against a running `askrypt-server` (an example, not a test, so no crate ever links both `askrypt-core` and `askrypt-server`).
+  - `server.rs` is the **client half of the cloud story**: `ServerClient` is one authenticated handle to a server's `/api/v1` (`begin_browser_login`/`login`/`with_token`/`logout` + `list`/`create`/`download`/`overwrite`/`rename`/`delete`), and `ServerStorage` is one vault on it, addressed by *name*.
+    `begin_browser_login` is how the desktop signs in now: it opens a device link and returns a `BrowserLogin` carrying the URL to open, the code to display, and `poll`/`cancel` (`BrowserLoginStatus` = `Pending`/`Approved { client, email }`/`Denied`/`Expired`). Three details are load-bearing: its `Debug` **redacts the poll token**, which is bearer-equivalent for the session it will claim and rides inside UI message enums; the server's `verification_path` is **validated as a plain path** before a URL is built from it, because handing it to `open::that` makes a hostile server a redirect primitive; and the poll response is deserialized **flat**, so a status this build has never heard of degrades to "keep waiting" rather than a parse error. `login` stays for `src/`, which is unchanged. `normalize_base_url` is public for callers that must compare server URLs exactly (see `VaultLocation::Server`). Over `ureq` 3 (blocking, rustls/ring), **not** `reqwest::blocking` — the trait is sync and `reqwest::blocking` panics when built inside an async context, which is exactly where the desktop calls it from. The agent sets `http_status_as_error(false)` because the server's `{"error":{"code","message"}}` envelope lives in the body of a 4xx/5xx. ETags are stored unquoted and sent quoted; `read` records the ETag it saw and `write` sends it as `If-Match`, so **a `ServerStorage` instance must live as long as the open vault** — a fresh one would re-resolve the *current* ETag and clobber another device's edit. That invariant is what `Session.storage` exists to hold. `core/examples/server_roundtrip.rs` is the manual end-to-end gate against a running `askrypt-server` (an example, not a test, so no crate ever links both `askrypt-core` and `askrypt-server`).
 - **`core/src/passgen.rs`** — Password generator with configurable character sets and length.
 - **`core/src/translit.rs`** — Russian/Ukrainian-to-English transliteration using BGN/PCGN romanization, QWERTY-only output. ё→yo, е→e, ъ/ь dropped, тс and ц both→ts. Ukrainian: ґ→g, є→ye, і→i, ї→yi.
 - **`core/examples/gen_vectors.rs`** — Emits golden test vectors to `app/test/fixtures/vectors.json` for the Dart parity tests. Regenerate whenever the format or normalization changes.
@@ -57,14 +58,15 @@ The Iced GUI follows an Elm-like architecture, split into a small app shell plus
 
 The **business logic was copied, not shared**: `gui/src/{session,settings,tray}.rs` are ports of `src/{session,settings,tray}.rs`, and `theme.rs`/`icon.rs` copy the helpers from `src/ui.rs`/`src/icon.rs`. `src/` is destined for deletion, so a shared crate would be scaffolding for dead code; the two diverge on purpose. `gui/Cargo.toml` pins the *same* iced feature set as the root package (`image`, `fira-sans`, `tokio`) purely so both builds share one compiled `iced` — cargo unifies features across the packages selected for a build, so a different list means a full iced recompile every time you alternate between the two commands. `include_bytes!` paths are `"../../static/…"` from `gui/src/`.
 
-Files: `main.rs` (`App`/`Section`/`Pane`/`Message`/`VaultMsg`/`GlobalMsg`/`PendingAction`, the `visible()`/`reconcile_selection()` filter pair, `default_pane()`/`effective_pane()`, the subscription, the tray/keyboard handling, and the outer `column![search, row![panes].height(Fill), status_bar]` that keeps the status bar on the bottom edge), `session.rs`, `settings.rs`, `tray.rs`, `vault.rs`, `theme.rs`, `icon.rs` (glyph codepoints read out of the repo's own `bootstrap-icons.ttf` — note the font has no bare `plus`, only `plus-lg`), `data.rs` (pure item helpers over `SecretEntry`: the filter, hash-tags, the unencrypted write stamp, and `DATETIME_FORMAT` — the single local-time rendering, `%b %-d, %Y %H:%M`, that `format_timestamp_local` (Unix seconds) and `format_rfc3339_local` (RFC 3339 text, verbatim when unparseable) both apply, so entry stamps, the write stamp and the server vault listing read alike), and `panes/{mod,sidebar,list,detail,entry_editor,questions,passgen,settings,unlock,wizard,statusbar}.rs`. Selection is an index into `session.entries`, never into the filtered view, so filtering can't invalidate it. Each list row draws `icon::placeholder(&entry.name, ..)` — a stand-in for the favicon or issuer logo a real item would carry, picked from a 16-glyph pool by hashing the name rather than actually randomized, because `view` runs every frame and a random pick would flicker. Unlike `src/app.rs::view`, this crate does **not** wrap its root in a centering container — the panes are full-bleed.
+Files: `main.rs` (`App`/`Section`/`Pane`/`Message`/`VaultMsg`/`GlobalMsg`/`PendingAction`, the `visible()`/`reconcile_selection()` filter pair, `default_pane()`/`effective_pane()`, the subscription, the tray/keyboard handling, and the outer `column![search, row![panes].height(Fill), status_bar]` that keeps the status bar on the bottom edge; `set_pane` returns a `Task` because leaving the Wizard or Settings **abandons a browser sign-in in flight** — closing the pane says the user no longer wants it), `session.rs`, `settings.rs`, `tray.rs`, `vault.rs`, `theme.rs`,
+`link.rs` (browser sign-in: `LinkState`/`LinkPoll`/`Msg`, `update`, `abandon`, and the `waiting_card`/`sign_in_button` both the wizard and Settings render. Not a pane, because two panes start one and it outlives either; the in-flight link lives on the `Session`. Every reply is **generation-tagged** — cancelling cannot abort a request already in flight, so a late reply from a cancelled sign-in must be dropped rather than installed. The wait deliberately does **not** hold `session.busy`: that hides the very controls, Cancel among them, the user needs while waiting, and the spinner only animates while busy — so the waiting card is static. Polling uses the server's own `interval`, treats a 429 as retryable rather than terminal, and stops after 15 minutes with "open the page again" (the link itself stays valid on the server for 24 hours, so Reopen resumes the same one). The device label is `askrypt::current_host()` — the same `os@host` string the vault write stamp uses), `icon.rs` (glyph codepoints read out of the repo's own `bootstrap-icons.ttf` — note the font has no bare `plus`, only `plus-lg`), `data.rs` (pure item helpers over `SecretEntry`: the filter, hash-tags, the unencrypted write stamp, and `DATETIME_FORMAT` — the single local-time rendering, `%b %-d, %Y %H:%M`, that `format_timestamp_local` (Unix seconds) and `format_rfc3339_local` (RFC 3339 text, verbatim when unparseable) both apply, so entry stamps, the write stamp and the server vault listing read alike), and `panes/{mod,sidebar,list,detail,entry_editor,questions,passgen,settings,unlock,wizard,statusbar}.rs`. Selection is an index into `session.entries`, never into the filtered view, so filtering can't invalidate it. Each list row draws `icon::placeholder(&entry.name, ..)` — a stand-in for the favicon or issuer logo a real item would carry, picked from a 16-glyph pool by hashing the name rather than actually randomized, because `view` runs every frame and a random pick would flicker. Unlike `src/app.rs::view`, this crate does **not** wrap its root in a centering container — the panes are full-bleed.
 
 `panes/mod.rs` defines **`Action`** (`None`/`Run`/`Pane`/`PaneRun`) — the same navigation-as-data contract as `src/screens/mod.rs::Action`. A pane's `update(state, &mut Session, msg) -> Action` mutates shared state and *says* where to go; `App::apply` does the switching. The working area right of the rail is **not always two panes**: `view` branches on `Pane`, so `Items` splits it into list + detail (or list + entry editor, when a draft is open) while `Settings`, `Unlock`, `Wizard`, `Questions` and `PassGen` each fill it alone.
 
 `gui/src/session.rs` is the port of `src/session.rs` with one structural change: **saving is asynchronous**. `AskryptFile::create` runs two 600k-iteration derivations, so `Session::save_request()` collects the inputs on the main thread, the free fn `write_vault` re-encrypts and writes on a worker, and `Session::apply_saved()` performs the mutation from the completion message — closing the two paths (`save_vault_as`, `save_vault_to_server`) that still block the UI in `src/`. Failures travel as **`VaultError`**, a `Clone + Debug` classification of `StorageError` (which is neither), logged in full on the worker; `Session::report_vault_error` words it for a save, `describe_sign_in_error`/`describe_open_error` for the server and open paths. `App::guard(PendingAction)` is the unsaved-changes gate: "Yes" starts an async save and replays the queued action from `App.after_save` once it lands, so Lock/Smart Lock/New/Open/Exit all wait for it. Unlike `src/`, **Smart Lock is gated too** — it zeroizes the entries, so an ungated one silently loses unsaved edits — and `App::auto_smart_lock` (the idle timeout, which nobody is present to answer) saves first when the vault has a home and declines to lock when it does not.
 
 `gui/src/vault.rs` holds **`Status::of(&Session)`**, deriving the five vault states (`NoVault`, `Locked`, `PartiallyUnlocked`, `Unlocked`, `SmartLocked`) from `file`/`questions_data`/`unlocked`/`smart_lock_data` rather than storing them, plus the visibility predicates for the rail's vault buttons (New Vault / Open Vault / Unlock / Smart Lock / Lock-Full Lock / Save / Save As / Edit Questions, pinned at the rail's bottom with the password generator, then Quit and Settings
-in bands of their own below them) — the sidebar only asks, never matches on the status itself. Buttons are *hidden*, not disabled, when a state disallows them, and the item filters plus the search strip exist only while unlocked (`effective_pane()` also refuses to render the item list over a locked vault; every lock path calls `App::clear_secret_panes`). New Vault is the one action that lands *unlocked* — the questions editor runs and leaves `location: None`, the combination that makes a first Save become a Save As. Open and Save As route through the single `panes::wizard` source picker (Local file via `rfd::AsyncFileDialog`, Askrypt Server via `ServerClient`, and a disabled Cloud-folder placeholder); a plain **Save never reaches the wizard**, because it must write through the backend the vault was opened with (the ETag invariant). Choosing Local file while *saving* opens the native save dialog immediately (`wizard::save_dialog`, prefilled with the vault's name) instead of asking for a file name first — the dialog covers folder and name — so the wizard's file step is Open-only. `gui/src/settings.rs` extends `AppSettings` with `recent_vaults` (a real MRU, feeding the wizard's recent list) plus `theme`/`lock_timeout`/`minimize_to_tray`/`show_hidden_by_default`/`clear_clipboard`/`window`, every one `#[serde(default)]` so a `settings.json` written by `src/` still parses. `window` is a `WindowState` (`size`, optional `position`, `maximized`) restoring the window where the user left it: `main()` reads it *before* building the window, since `boot` runs after. It always stores the geometry the window **unmaximizes** back to — iced has no maximized event, so `App::record_geometry` parks what a move or resize reported and one `window::is_maximized` round trip decides whether `commit_geometry` keeps it, which also debounces a drag to one probe per 250 ms. Values that are nonsense (`WindowState::sane_size`/`sane_position`) are dropped rather than remembered, because Windows reports a minimized window at `-32000, -32000` sized `0 x 0` and this app minimizes to the tray; a stale geometry that fails `is_usable` falls back to the default centered window. The `maximized` flag is re-asserted on `window::Event::Opened`, as some window managers drop `window::Settings::maximized` when a position is given alongside it.
+in bands of their own below them) — the sidebar only asks, never matches on the status itself. Buttons are *hidden*, not disabled, when a state disallows them, and the item filters plus the search strip exist only while unlocked (`effective_pane()` also refuses to render the item list over a locked vault; every lock path calls `App::clear_secret_panes`). New Vault is the one action that lands *unlocked* — the questions editor runs and leaves `location: None`, the combination that makes a first Save become a Save As. Open and Save As route through the single `panes::wizard` source picker (Local file via `rfd::AsyncFileDialog`, Askrypt Server via `ServerClient`, and a disabled Cloud-folder placeholder); a plain **Save never reaches the wizard**, because it must write through the backend the vault was opened with (the ETag invariant). Choosing Local file while *saving* opens the native save dialog immediately (`wizard::save_dialog`, prefilled with the vault's name) instead of asking for a file name first — the dialog covers folder and name — so the wizard's file step is Open-only. The wizard's server step holds **no credentials at all** — it offers "Sign in with your browser" (or the waiting card), and the Settings pane's Account group carries the same button beside the one server field. Entering the server step while signed in to a *different* server than the configured one signs out first; that check lives there rather than in the settings handler because that pane saves on every keystroke and would otherwise sign the user out mid-word. `gui/src/settings.rs` extends `AppSettings` with `recent_vaults` (a real MRU, feeding the wizard's recent list) plus `theme`/`lock_timeout`/`minimize_to_tray`/`show_hidden_by_default`/`clear_clipboard`/`server_url`/`window`, every one `#[serde(default)]` so a `settings.json` written by `src/` still parses. `server_url` is the one server the app talks to (default `https://askrypt.com`, `DEFAULT_SERVER_URL`); read it through `AppSettings::server_url()`, which normalizes via **core's own** `normalize_base_url` — a saved `VaultLocation::Server` is matched to a signed-in client by exact string, so a second normalization here would leave vaults unopenable. The manual `Default` impl must set it too; `#[serde(default = …)]` only covers parsing. `window` is a `WindowState` (`size`, optional `position`, `maximized`) restoring the window where the user left it: `main()` reads it *before* building the window, since `boot` runs after. It always stores the geometry the window **unmaximizes** back to — iced has no maximized event, so `App::record_geometry` parks what a move or resize reported and one `window::is_maximized` round trip decides whether `commit_geometry` keeps it, which also debounces a drag to one probe per 250 ms. Values that are nonsense (`WindowState::sane_size`/`sane_position`) are dropped rather than remembered, because Windows reports a minimized window at `-32000, -32000` sized `0 x 0` and this app minimizes to the tray; a stale geometry that fails `is_usable` falls back to the default centered window. The `maximized` flag is re-asserted on `window::Event::Opened`, as some window managers drop `window::Settings::maximized` when a position is given alongside it.
 
 ### Security / Encryption Model
 
@@ -103,9 +105,21 @@ in **`server/PLAN.md`**; Phases 0 (scaffolding), 1 (landing page + API
 namespacing), 2 (auth: register, login, Google sign-in), 3 (profile API), 4
 (vault cloud storage), 5 (hardening & deployment), 7 (the website: 7.1
 foundations, 7.2 browser sessions/CSRF, 7.3 profile pages, 7.4 vault file
-manager) and 8 (roles + the admin Users page) are done. Still open: Phase 6
+manager), 8 (roles + the admin Users page), 9 (the paid storage tier) and 10
+(the browser device link that signs desktop apps in) are done. Still open: Phase 6
 (CI/CD) and browser Google sign-in.
 Self-hosting is documented in **`server/DEPLOY.md`**.
+
+**Desktop sign-in is browser-driven** (`server/src/devicelink.rs` +
+`server/src/web/devicelink.rs`, `BrowserLogin` in `core`, `gui/src/link.rs`).
+The app never asks for an account password: it opens a *device link*, launches
+`/link/{id}` in the browser, and polls until the server hands it a bearer
+token. Registration therefore works from the app too, which no password prompt
+could offer. Two invariants hold the design together: **no session token is
+stored on the link row** — the bearer is minted when the app *claims* the link,
+so an approval nobody collects leaves no live session — and **the claim is one
+atomic store call**, so two polls racing cannot both mint one. `src/` keeps the
+old `ServerClient::login` form and is unaffected.
 
 **Roles and the first account.** The `roles` table is seeded by the migration
 with two roles at fixed uuids, so both backends name the same rows: `ADMIN`
@@ -199,9 +213,13 @@ next request.
 - **`server/src/routes.rs`** — `router(state, &Config)`: `/healthz`; `/api/v1`
   nest (`GET /about`, the `/me` profile tree, the `/vaults` tree, and
   `/auth/{register,login,google,logout}` behind a 20 req/min fixed-window
-  rate limiter) with a JSON 404 fallback covering everything under `/api`;
-  the HTML routes from `web::routes(auth_limiter, profile_limiter)` at the
-  root (both limiters shared with their `/api/v1` twins); the configured static dir
+  rate limiter, plus `/auth/device{,/poll,/cancel}` on a **separate** 120/min
+  limiter — a desktop app polls every few seconds and would eat the login
+  budget in half a minute, and several devices can share one NAT address)
+  with a JSON 404 fallback covering everything under `/api`;
+  the HTML routes from `web::routes(auth_limiter, profile_limiter,
+  device_limiter)` at the
+  root (all three limiters shared with their `/api/v1` twins); the configured static dir
   mounted at `/assets` (`tower-http` `ServeDir`, under `hardening::revalidate`
   so an edited `style.css` can't linger in a browser cache); and an HTML 404
   fallback.
@@ -276,6 +294,30 @@ next request.
   row while **the token itself is never logged**. The happy path logs at
   `trace`, not `debug`: it fires on every authenticated request and the crate
   defaults to `debug`.
+- **`server/src/devicelink.rs`** — Phase 10: the desktop sign-in a browser
+  completes. `POST /api/v1/auth/device` opens a link (public `link_id` for the
+  URL, secret `poll_token` for the app, a display-only `user_code`, a
+  **24-hour** TTL, and the `interval` the client must poll at, handed over so
+  the cadence and the rate limit cannot drift apart);
+  `POST /auth/device/poll` claims it; `POST /auth/device/cancel` drops it when
+  the app closes its sign-in pane, so an abandoned link stops being approvable
+  at once rather than at the end of its day. `approve`/`deny` are the
+  `pub(crate)` functions the website drives.
+  Four rules carry the security of the flow: **the bearer is minted on claim,
+  never stored on the row** (an approval nobody collects leaves no live
+  session, and this table holds no second credential); **`claim` is one atomic
+  store call** (`DELETE … RETURNING`), since `get` + check + `delete` would let
+  two polls mint two sessions; the poll **re-checks the ban**, because
+  `issue_session` does not and a ban can land between approving and claiming —
+  without it this would be the one path a banned account still gets a token;
+  and unknown, expired and already-claimed links all answer the *same*
+  `expired`, so a poll token is never confirmed to have existed. Expiry is
+  swept lazily from the create path (`delete_expired`) — this server has no GC
+  task and should not grow one. The `user_code` is a **comparison aid only**:
+  `start` needs no authentication, so anyone can open a link and try to talk a
+  signed-in user into approving it, and the code is what defeats that. Never
+  add a form that accepts one — that would turn it into a second short
+  credential.
 - **`server/src/admin.rs`** — Phase 8 administrative rules, the same
   handlers-are-wrappers split as `profile.rs`: `list_users` (a fixed number of
   store calls — one `accounts_with` per role, folded into a lookup, never one
@@ -404,7 +446,16 @@ next request.
   `CsrfMultipart` (which verifies the token *before* buffering the file, so
   the hidden input must come first in every multipart form); these two are
   the only ways to read a form body; `flash.rs` one-shot messages stored as
-  *codes*, never text; `auth.rs` the login/register/logout forms;
+  *codes*, never text; `auth.rs` the login/register/logout forms — which also
+  carry an optional **`?link=<uuid>`** through sign-in and registration
+  (hidden field + `AuthForm.link`, and the already-signed-in bounce honours it),
+  so a visitor who arrives from a desktop sign-in lands back on it instead of
+  on `/account`; a *uuid* rather than a general `next=` precisely so there is
+  no open redirect to get wrong; `devicelink.rs` the `/link/{id}` page, where
+  **visiting while signed in approves** (no confirm button — the flow is "open
+  the page, come back signed in") next to the device label, the code and a
+  `POST /link/{id}/deny`. Approving on a GET is safe against link checkers and
+  prefetchers because it needs the session cookie, which they do not carry;
   `account.rs` the 7.3 profile pages (email, password, device list with
   per-row revoke, typed-confirmation delete); `vaults.rs` the 7.4 file
   manager (multipart upload, cookie-authed download route, inline rename,
@@ -440,7 +491,9 @@ next request.
   keyed by version id, under each account's `versions/` subdirectory).
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
   `RoleStore`,
-  `SessionStore`, `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
+  `SessionStore`, `DeviceLinkStore` (the short-lived browser sign-ins, with
+  the atomic `claim` and the `delete_expired` sweep),
+  `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
   `Mailer`,
   `IdTokenVerifier` (+ `StoreError`/`MailerError`/`IdTokenError`, all
   `#[non_exhaustive]`, and the `ADMIN_ROLE`/`PAYMENT_USER_ROLE` name
@@ -451,8 +504,10 @@ next request.
   the *same fixed uuids* the migration writes, so the two backends agree);
   `sqlite.rs` SQLite pool + embedded migration
   runner over `server/migrations/` plus `SqliteAccountStore`/`SqliteRoleStore`/
-  `SqliteSessionStore`/`SqliteVaultMetaStore`/`SqliteVaultVersionStore`
-  (uuids as TEXT, timestamps via sqlx-chrono, sessions, vault and
+  `SqliteSessionStore`/`SqliteDeviceLinkStore`/`SqliteVaultMetaStore`/
+  `SqliteVaultVersionStore`
+  (uuids as TEXT, timestamps via sqlx-chrono, sessions, vault, `device_links`
+  and
   `account_roles` rows cascade
   on account delete, version rows cascade on *both* vault and account delete,
   vault names unique per account, the nullable `host`/`saved_at` stamp
@@ -517,7 +572,17 @@ next request.
   paid tier and its badge, an unknown role name refused rather than granted,
   the typed-confirmation
   delete taking the target's vaults with it, CSRF rejection, and the htmx
-  fragment swap). Middleware needing a slow
+  fragment swap) and
+  `device_link.rs` (the Phase 10 gate, 15 tests, both halves at once because the
+  point of the feature is where they meet: start → pending → register carrying
+  `?link=` → the page approves → the app's poll returns a token that
+  authenticates `GET /api/v1/me` and shows up in the device list under the
+  `os@host` label the app sent; then the properties that make it safe — a link
+  collected only once, a reload minting no second session, the link id useless
+  as a poll token, an unknown poll token indistinguishable from an expired one,
+  deny (and its CSRF rejection), cancel removing the link at once, the 24-hour
+  sweep taking pending *and* uncollected-approved links, and a banned account
+  unable to claim an approval it made before the ban). Middleware needing a slow
   or parked handler (timeout, shedding) is unit-tested inside
   `src/hardening.rs` instead. The `last_admin` guard is unreachable through
   the website — only the sole administrator can act on themselves, and the
@@ -525,7 +590,7 @@ next request.
 - **`server/templates/` + `server/static/`** — The website's markup and its
   only loose files. Templates (`layout.html`, `landing.html`,
   `auth_page.html`, `account.html`, `vaults.html`, `admin_users.html`,
-  `error.html`, and
+  `link.html` (the device-link page, in its four states), `error.html`, and
   `fragments/` — `auth_form`, `email_form`, `password_form`, `devices`,
   `delete_account`, `vault_upload`, `vault_list`, `user_list`,
   `error_notice` — the htmx twin of `error.html`, one element rather than a

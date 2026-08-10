@@ -5,7 +5,9 @@
 //! `session.settings`, which is persisted to `settings.json` on each change so a
 //! crash cannot lose a preference the user just set.
 
-use iced::widget::{checkbox, column, container, pick_list, row, rule, scrollable, text};
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, rule, scrollable, text, text_input,
+};
 use iced::{Element, Length, alignment::Vertical};
 
 use crate::panes::Action;
@@ -20,6 +22,8 @@ pub enum Msg {
     MinimizeToTrayToggled(bool),
     ShowHiddenToggled(bool),
     ClearClipboardToggled(bool),
+    ServerUrlChanged(String),
+    SignOut,
 }
 
 pub fn update(session: &mut Session, message: Msg) -> Action {
@@ -29,6 +33,15 @@ pub fn update(session: &mut Session, message: Msg) -> Action {
         Msg::MinimizeToTrayToggled(value) => session.settings.minimize_to_tray = value,
         Msg::ShowHiddenToggled(value) => session.settings.show_hidden_by_default = value,
         Msg::ClearClipboardToggled(value) => session.settings.clear_clipboard = value,
+        // Stored as typed. Signing out when the address changes would fire on
+        // the first keystroke of an edit; the wizard reconciles a sign-in that
+        // no longer matches when the server step is opened.
+        Msg::ServerUrlChanged(value) => session.settings.server_url = value,
+        Msg::SignOut => {
+            session.sign_out();
+            session.status_message = Some("Signed out".into());
+            return Action::None;
+        }
     }
 
     if let Err(e) = session.settings.save() {
@@ -92,6 +105,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body = scrollable(
         column![
             text("SETTINGS").size(11).style(text::secondary),
+            group("Account"),
+            account(app),
             group("Appearance"),
             appearance,
             group("Security"),
@@ -116,6 +131,49 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fill)
         .style(theme::detail_background)
         .into()
+}
+
+/// The server this app syncs with, and who it is signed in as.
+///
+/// The address is the *only* server field there is: signing in happens in the
+/// browser, so there is nothing else to ask for here.
+fn account(app: &App) -> Element<'_, Message> {
+    let session = &app.session;
+
+    let address = setting_row(
+        "Askrypt server",
+        "Where your vaults sync. Change it only if you run your own.",
+        text_input(
+            crate::settings::DEFAULT_SERVER_URL,
+            &session.settings.server_url,
+        )
+        .on_input(|value| Message::Settings(Msg::ServerUrlChanged(value)))
+        .padding(6)
+        .size(13)
+        .width(Length::Fixed(260.0))
+        .into(),
+    );
+
+    // While the browser has the sign-in, this pane shows the same waiting card
+    // as the wizard — either one can have started it.
+    let sign_in: Element<Message> = match (&session.link, session.server_email.as_deref()) {
+        (Some(link), _) => crate::link::waiting_card(link),
+        (None, Some(email)) => setting_row(
+            "Signed in",
+            email,
+            button(text("Sign out").size(13))
+                .padding([6, 12])
+                .on_press(Message::Settings(Msg::SignOut))
+                .into(),
+        ),
+        (None, None) => setting_row(
+            "Not signed in",
+            "Sign in on the server's own pages; this app never sees your password.",
+            crate::link::sign_in_button("Sign in"),
+        ),
+    };
+
+    theme::card(column![address, hairline(), sign_in]).into()
 }
 
 fn group<'a>(label: &'a str) -> Element<'a, Message> {

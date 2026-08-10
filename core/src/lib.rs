@@ -71,9 +71,11 @@ pub mod storage;
 pub mod translit;
 pub mod types;
 
-pub use storage::{LocalFileStorage, MemoryStorage, StorageError, VaultStorage};
 #[cfg(feature = "server-storage")]
-pub use storage::{RemoteVault, ServerClient, ServerStorage};
+pub use storage::{
+    BrowserLogin, BrowserLoginStatus, RemoteVault, ServerClient, ServerStorage, normalize_base_url,
+};
+pub use storage::{LocalFileStorage, MemoryStorage, StorageError, VaultStorage};
 pub use types::*;
 
 use aes::Aes256;
@@ -1194,7 +1196,10 @@ mod tests {
             parse_os_release_id("ID=\"fedora\"\n").as_deref(),
             Some("fedora")
         );
-        assert_eq!(parse_os_release_id("  ID=arch  \n").as_deref(), Some("arch"));
+        assert_eq!(
+            parse_os_release_id("  ID=arch  \n").as_deref(),
+            Some("arch")
+        );
         // `ID_LIKE=` must not be mistaken for `ID=`.
         assert_eq!(parse_os_release_id("ID_LIKE=debian\n"), None);
         assert_eq!(parse_os_release_id("NAME=\"Some OS\"\n"), None);

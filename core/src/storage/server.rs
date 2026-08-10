@@ -127,6 +127,39 @@ impl ServerClient {
         })
     }
 
+    /// Start a sign-in that happens in the user's browser.
+    ///
+    /// Preferred over [`login`](Self::login): the app never handles the account
+    /// password, and the user can *register* as part of the same flow, which no
+    /// password prompt can offer. The returned [`BrowserLogin`] carries the URL
+    /// to open and the code to display.
+    ///
+    /// `device_label` names this machine in the account's device list —
+    /// [`crate::current_host`] (`os@host`) is what the desktop app passes.
+    pub fn begin_browser_login(
+        base_url: &str,
+        device_label: Option<&str>,
+    ) -> Result<BrowserLogin, StorageError> {
+        let base_url = normalize_base_url(base_url);
+        let agent = build_link_agent();
+
+        let response = agent
+            .post(format!("{base_url}/api/v1/auth/device"))
+            .send_json(serde_json::json!({ "device_label": device_label }))
+            .map_err(transport_error)?;
+        let started: StartLinkResponse = read_json(check_status(response)?)?;
+
+        Ok(BrowserLogin {
+            verification_url: verification_url(&base_url, &started.verification_path)?,
+            base_url,
+            poll_token: started.poll_token,
+            user_code: started.user_code,
+            interval: Duration::from_secs(started.interval.clamp(1, 60)),
+            expires_in: started.expires_in,
+            agent,
+        })
+    }
+
     /// Reuse a token issued by an earlier [`ServerClient::login`].
     ///
     /// Does not contact the server; an expired or revoked token surfaces as
@@ -280,6 +313,180 @@ impl ServerClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Browser sign-in
+// ---------------------------------------------------------------------------
+
+/// Ceiling on a device-link request. Far shorter than [`REQUEST_TIMEOUT`],
+/// which is sized for a 10 MiB upload: these are two tiny JSON round trips, one
+/// of them repeated on a timer, and a wedged server must not pile up threads.
+const LINK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// What the server answers when a device link is opened.
+#[derive(Deserialize)]
+struct StartLinkResponse {
+    poll_token: String,
+    user_code: String,
+    verification_path: String,
+    expires_in: i64,
+    interval: u64,
+}
+
+/// A poll answer, read flat rather than as a tagged enum so that a status this
+/// build has never heard of degrades to "keep waiting" instead of a hard parse
+/// error.
+#[derive(Deserialize)]
+struct PollLinkResponse {
+    status: String,
+    token: Option<String>,
+    account: Option<PollAccount>,
+}
+
+#[derive(Deserialize)]
+struct PollAccount {
+    email: String,
+}
+
+/// A sign-in that is happening in the user's browser.
+///
+/// Created by [`ServerClient::begin_browser_login`]. Open
+/// [`verification_url`](Self::verification_url) in a browser, show
+/// [`user_code`](Self::user_code) so the user can check the page is about
+/// *this* app, and call [`poll`](Self::poll) every
+/// [`poll_interval`](Self::poll_interval) until it stops answering
+/// [`BrowserLoginStatus::Pending`].
+///
+/// The app never sees the account password: the browser does the signing in,
+/// and this hands back the same session token `login` would have produced.
+pub struct BrowserLogin {
+    base_url: String,
+    /// Secret: whoever holds this collects the session the browser authorized.
+    poll_token: String,
+    verification_url: String,
+    user_code: String,
+    interval: Duration,
+    expires_in: i64,
+    agent: Agent,
+}
+
+impl std::fmt::Debug for BrowserLogin {
+    /// Redacts the poll token. It is bearer-equivalent for the session it will
+    /// claim, and this type travels inside UI message enums that derive
+    /// `Debug`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserLogin")
+            .field("base_url", &self.base_url)
+            .field("verification_url", &self.verification_url)
+            .field("user_code", &self.user_code)
+            .field("poll_token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Where a browser sign-in stands.
+#[derive(Debug)]
+pub enum BrowserLoginStatus {
+    /// Nobody has approved it yet. Keep polling.
+    Pending,
+    /// Signed in — the client holds the issued token.
+    Approved { client: ServerClient, email: String },
+    /// The user said this was not their app.
+    Denied,
+    /// Too old, already used, or never existed. Terminal: start a new one.
+    Expired,
+}
+
+impl BrowserLogin {
+    /// The page to open in the user's browser.
+    pub fn verification_url(&self) -> &str {
+        &self.verification_url
+    }
+
+    /// The code to show in the app, for the user to compare with the page.
+    pub fn user_code(&self) -> &str {
+        &self.user_code
+    }
+
+    /// How long to wait between [`poll`](Self::poll) calls. The server's own
+    /// figure, so the cadence cannot outrun its rate limit.
+    pub fn poll_interval(&self) -> Duration {
+        self.interval
+    }
+
+    /// Seconds this link stays usable, as the server reported them when it was
+    /// created.
+    pub fn expires_in(&self) -> i64 {
+        self.expires_in
+    }
+
+    /// Tell the server this sign-in is not wanted after all.
+    ///
+    /// A user who closes the sign-in pane is done with the link, so it should
+    /// stop being approvable now rather than at the end of its 24 hours. Best
+    /// effort by nature — the app may be closing — so callers can ignore the
+    /// result; the link expires on its own regardless.
+    pub fn cancel(&self) -> Result<(), StorageError> {
+        let response = self
+            .agent
+            .post(format!("{}/api/v1/auth/device/cancel", self.base_url))
+            .send_json(serde_json::json!({ "poll_token": self.poll_token }))
+            .map_err(transport_error)?;
+        check_status(response)?;
+        Ok(())
+    }
+
+    /// One round trip. The caller owns the waiting, so a UI can cancel between
+    /// polls without a half-finished request to abandon.
+    pub fn poll(&self) -> Result<BrowserLoginStatus, StorageError> {
+        let response = self
+            .agent
+            .post(format!("{}/api/v1/auth/device/poll", self.base_url))
+            .send_json(serde_json::json!({ "poll_token": self.poll_token }))
+            .map_err(transport_error)?;
+        let answer: PollLinkResponse = read_json(check_status(response)?)?;
+
+        Ok(match answer.status.as_str() {
+            "approved" => {
+                let (Some(token), Some(account)) = (answer.token, answer.account) else {
+                    return Err(StorageError::Format(
+                        "server approved the sign-in without returning a session".to_string(),
+                    ));
+                };
+                BrowserLoginStatus::Approved {
+                    client: ServerClient {
+                        base_url: self.base_url.clone(),
+                        token,
+                        agent: build_agent(),
+                    },
+                    email: account.email,
+                }
+            }
+            "denied" => BrowserLoginStatus::Denied,
+            "expired" => BrowserLoginStatus::Expired,
+            // "pending", and anything a newer server might add: waiting is the
+            // answer that cannot be wrong.
+            _ => BrowserLoginStatus::Pending,
+        })
+    }
+}
+
+/// Build the browser URL from the server's answer, refusing anything that is
+/// not a plain path on the server we asked.
+///
+/// The result is handed to the OS to open, so it is a redirect primitive: a
+/// hostile or compromised server answering `//evil.example/x` would otherwise
+/// launch the user's browser at somebody else's site. The rule mirrors the one
+/// the server applies to client-supplied URLs.
+fn verification_url(base_url: &str, path: &str) -> Result<String, StorageError> {
+    let looks_like_a_path = path.starts_with('/') && !path.starts_with("//") && !path.contains(':');
+    if !looks_like_a_path {
+        return Err(StorageError::Format(format!(
+            "server asked us to open {path:?}, which is not a path on it"
+        )));
+    }
+    Ok(format!("{base_url}{path}"))
+}
+
 /// What we know about the remote side of a [`ServerStorage`]: which vault it
 /// is, and the ETag of the bytes we last saw. The two are learned together, so
 /// an id without an ETag is unrepresentable and every overwrite can be
@@ -431,8 +638,22 @@ fn build_agent() -> Agent {
         .into()
 }
 
+/// The same agent, timed out for the short JSON round trips of a browser
+/// sign-in rather than for a vault upload.
+fn build_link_agent() -> Agent {
+    Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(LINK_TIMEOUT))
+        .build()
+        .into()
+}
+
 /// Strip a trailing slash so `{base}/api/v1/...` never doubles up.
-fn normalize_base_url(base_url: &str) -> String {
+///
+/// Public because callers store server URLs alongside vault locations and
+/// compare them by string: a second, slightly different normalization on the
+/// caller's side is a mismatch waiting to happen.
+pub fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
@@ -1168,5 +1389,201 @@ mod tests {
             "token leaked: {debug}"
         );
         assert!(debug.contains("example.com"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Browser sign-in
+    // -----------------------------------------------------------------------
+
+    const LINK_ID: &str = "9f8e7d6c-5b4a-4938-8271-605f4e3d2c1b";
+
+    fn start_link_json() -> String {
+        format!(
+            r#"{{"link_id":"{LINK_ID}","poll_token":"poll-secret","user_code":"K4PZ-9QT2",
+                "verification_path":"/link/{LINK_ID}","expires_in":86400,"interval":3}}"#
+        )
+    }
+
+    #[test]
+    fn beginning_a_browser_login_asks_for_a_link_and_builds_the_url() {
+        let server = FakeServer::new(|_| Reply::json(201, &start_link_json()));
+
+        let login = ServerClient::begin_browser_login(&server.url(), Some("ubuntu@mypc"))
+            .expect("begin failed");
+
+        assert_eq!(login.user_code(), "K4PZ-9QT2");
+        assert_eq!(
+            login.verification_url(),
+            format!("{}/link/{LINK_ID}", server.url())
+        );
+        assert_eq!(login.poll_interval(), Duration::from_secs(3));
+        assert_eq!(login.expires_in(), 86400);
+
+        let request = &server.requests()[0];
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.target, "/api/v1/auth/device");
+        // The device label is how the account's device list names this machine.
+        let sent: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(sent["device_label"], "ubuntu@mypc");
+    }
+
+    #[test]
+    fn a_verification_path_that_is_not_a_path_is_refused() {
+        // A hostile server would otherwise get the client to open the user's
+        // browser at somebody else's site.
+        for hostile in [
+            "//evil.example/x",
+            "https://evil.example/x",
+            "javascript:alert(1)",
+        ] {
+            assert!(
+                verification_url("https://askrypt.example.com", hostile).is_err(),
+                "{hostile} should have been refused",
+            );
+        }
+        assert_eq!(
+            verification_url("https://askrypt.example.com", "/link/abc").unwrap(),
+            "https://askrypt.example.com/link/abc"
+        );
+    }
+
+    #[test]
+    fn polling_reports_pending_then_hands_over_the_session() {
+        let approved = Arc::new(AtomicBool::new(false));
+        let server_flag = Arc::clone(&approved);
+        let server = FakeServer::new(move |request| {
+            if request.target == "/api/v1/auth/device" {
+                return Reply::json(201, &start_link_json());
+            }
+            if server_flag.load(Ordering::SeqCst) {
+                Reply::json(
+                    200,
+                    r#"{"status":"approved","token":"tok-xyz",
+                        "expires_at":"2026-09-06T10:00:00Z",
+                        "account":{"id":"a","email":"me@example.com"}}"#,
+                )
+            } else {
+                Reply::json(200, r#"{"status":"pending"}"#)
+            }
+        });
+
+        let login = ServerClient::begin_browser_login(&server.url(), None).expect("begin failed");
+
+        assert!(matches!(
+            login.poll().expect("poll failed"),
+            BrowserLoginStatus::Pending
+        ));
+
+        approved.store(true, Ordering::SeqCst);
+        match login.poll().expect("poll failed") {
+            BrowserLoginStatus::Approved { client, email } => {
+                assert_eq!(client.token(), "tok-xyz");
+                assert_eq!(client.base_url(), server.url());
+                assert_eq!(email, "me@example.com");
+            }
+            other => panic!("expected Approved, got {other:?}"),
+        }
+
+        // The poll is authenticated by the poll token alone — no bearer header
+        // exists yet to carry.
+        let poll = &server.requests()[1];
+        assert_eq!(poll.target, "/api/v1/auth/device/poll");
+        assert!(poll.header("Authorization").is_none());
+        let sent: serde_json::Value = serde_json::from_slice(&poll.body).unwrap();
+        assert_eq!(sent["poll_token"], "poll-secret");
+    }
+
+    #[test]
+    fn denied_and_expired_are_outcomes_rather_than_errors() {
+        for (status, expected) in [("denied", "Denied"), ("expired", "Expired")] {
+            let body = format!(r#"{{"status":"{status}"}}"#);
+            let server = FakeServer::new(move |request| {
+                if request.target == "/api/v1/auth/device" {
+                    Reply::json(201, &start_link_json())
+                } else {
+                    Reply::json(200, &body)
+                }
+            });
+
+            let login =
+                ServerClient::begin_browser_login(&server.url(), None).expect("begin failed");
+            let outcome = login.poll().expect("poll must not fail");
+            assert!(
+                format!("{outcome:?}").starts_with(expected),
+                "expected {expected}, got {outcome:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_status_keeps_the_client_waiting() {
+        // A newer server growing a status this build has never heard of must
+        // not turn into a parse error mid-sign-in.
+        let server = FakeServer::new(|request| {
+            if request.target == "/api/v1/auth/device" {
+                Reply::json(201, &start_link_json())
+            } else {
+                Reply::json(200, r#"{"status":"something_new"}"#)
+            }
+        });
+
+        let login = ServerClient::begin_browser_login(&server.url(), None).expect("begin failed");
+        assert!(matches!(
+            login.poll().expect("poll failed"),
+            BrowserLoginStatus::Pending
+        ));
+    }
+
+    #[test]
+    fn rate_limiting_a_poll_is_reported_as_a_remote_error_not_an_auth_failure() {
+        // The caller has to keep polling through a 429; treating it as a
+        // terminal failure would abandon a sign-in the user is completing.
+        let server = FakeServer::new(|request| {
+            if request.target == "/api/v1/auth/device" {
+                Reply::json(201, &start_link_json())
+            } else {
+                Reply::json(429, &error_json("rate_limited", "too many requests"))
+            }
+        });
+
+        let login = ServerClient::begin_browser_login(&server.url(), None).expect("begin failed");
+        match login.poll() {
+            Err(StorageError::Remote { status, code, .. }) => {
+                assert_eq!(status, 429);
+                assert_eq!(code, "rate_limited");
+            }
+            other => panic!("expected Remote 429, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn an_approval_without_a_session_is_a_format_error() {
+        let server = FakeServer::new(|request| {
+            if request.target == "/api/v1/auth/device" {
+                Reply::json(201, &start_link_json())
+            } else {
+                Reply::json(200, r#"{"status":"approved"}"#)
+            }
+        });
+
+        let login = ServerClient::begin_browser_login(&server.url(), None).expect("begin failed");
+        assert!(matches!(login.poll(), Err(StorageError::Format(_))));
+    }
+
+    #[test]
+    fn browser_login_debug_never_leaks_the_poll_token() {
+        let server = FakeServer::new(|_| Reply::json(201, &start_link_json()));
+        let login = ServerClient::begin_browser_login(&server.url(), None).expect("begin failed");
+
+        let debug = format!("{login:?}");
+        assert!(!debug.contains("poll-secret"), "poll token leaked: {debug}");
+        assert!(debug.contains("K4PZ-9QT2"));
+    }
+
+    #[test]
+    fn browser_login_can_be_polled_from_another_thread() {
+        // The desktop UI parks one behind an `Arc` and polls it on a worker.
+        fn assert_shared<T: Send + Sync + 'static>() {}
+        assert_shared::<BrowserLogin>();
     }
 }

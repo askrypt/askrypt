@@ -43,6 +43,7 @@ use tower_http::services::ServeDir;
 use crate::auth;
 use crate::clientip::ClientIpPolicy;
 use crate::config::Config;
+use crate::devicelink;
 use crate::error::ApiError;
 use crate::hardening::{self, SecurityHeaders};
 use crate::profile;
@@ -54,8 +55,24 @@ use crate::web;
 const AUTH_RATE_LIMIT: u32 = 20;
 const AUTH_RATE_WINDOW: Duration = Duration::from_secs(60);
 
+/// Device-link requests allowed per window. Deliberately its own budget: a
+/// desktop app waiting for a browser sign-in polls every
+/// [`crate::devicelink::POLL_INTERVAL_SECS`] seconds, which would eat the
+/// 20/min login bucket in half a minute — and a NAT can put several devices
+/// behind one address.
+const DEVICE_RATE_LIMIT: u32 = 120;
+
 pub fn router(state: AppState, config: &Config) -> Router {
     let auth_limiter = Arc::new(RateLimiter::new(AUTH_RATE_LIMIT, AUTH_RATE_WINDOW));
+    let device_limiter = Arc::new(RateLimiter::new(DEVICE_RATE_LIMIT, AUTH_RATE_WINDOW));
+    let device_api = Router::new()
+        .route("/device", post(devicelink::start))
+        .route("/device/poll", post(devicelink::poll))
+        .route("/device/cancel", post(devicelink::cancel))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&device_limiter),
+            ratelimit::middleware,
+        ));
     let auth_api = Router::new()
         .route("/register", post(auth::register))
         .route("/login", post(auth::login))
@@ -64,7 +81,10 @@ pub fn router(state: AppState, config: &Config) -> Router {
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&auth_limiter),
             ratelimit::middleware,
-        ));
+        ))
+        // Merged after the layer above, so the device routes carry their own
+        // limiter and not the login one.
+        .merge(device_api);
 
     let profile_limiter = Arc::new(RateLimiter::new(AUTH_RATE_LIMIT, AUTH_RATE_WINDOW));
     let profile_sensitive = Router::new()
@@ -115,7 +135,7 @@ pub fn router(state: AppState, config: &Config) -> Router {
                 .fallback_service(ServeDir::new(&config.static_dir))
                 .layer(middleware::from_fn(hardening::revalidate)),
         )
-        .merge(web::routes(auth_limiter, profile_limiter))
+        .merge(web::routes(auth_limiter, profile_limiter, device_limiter))
         .fallback(web::not_found)
         // Layers wrap what was declared before them, so the LAST `.layer`
         // call is the FIRST middleware a request meets. Listed innermost

@@ -156,16 +156,18 @@ impl Shell {
 /// instead: a 303 would be followed by `fetch` and the whole page swapped
 /// into whatever slot the fragment was headed for. Used after any change the
 /// surrounding chrome depends on.
-pub fn redirect_either_way(
-    headers: &HeaderMap,
-    location: &'static str,
-    cookies: Vec<String>,
-) -> Response {
+/// `location` is `&str` rather than `&'static str` because a device-link
+/// sign-in redirects to a path carrying the link's id. Every other caller
+/// passes a literal and coerces. A location that cannot be a header value at
+/// all falls back to `/` — the only way to get one is a bug here, and sending
+/// the visitor home beats a 500.
+pub fn redirect_either_way(headers: &HeaderMap, location: &str, cookies: Vec<String>) -> Response {
     let response = if is_htmx(headers) {
         let mut response = StatusCode::OK.into_response();
-        response
-            .headers_mut()
-            .insert(HX_REDIRECT, HeaderValue::from_static(location));
+        response.headers_mut().insert(
+            HX_REDIRECT,
+            HeaderValue::from_str(location).unwrap_or(HeaderValue::from_static("/")),
+        );
         response
     } else {
         Redirect::to(location).into_response()

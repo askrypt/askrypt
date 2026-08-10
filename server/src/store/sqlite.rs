@@ -17,9 +17,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::{
-    Account, AccountId, AccountStore, NewAccount, Role, RoleStore, Session, SessionStore,
-    StoreError, VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId,
-    VaultVersionStore,
+    Account, AccountId, AccountStore, DeviceLink, DeviceLinkId, DeviceLinkStatus, DeviceLinkStore,
+    NewAccount, Role, RoleStore, Session, SessionStore, StoreError, VaultId, VaultMeta,
+    VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
 };
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -409,6 +409,155 @@ impl SessionStore for SqliteSessionStore {
             .await
             .map_err(backend_err)?;
         Ok(())
+    }
+}
+
+/// Every column of `device_links`, in the order the queries below select them.
+const DEVICE_LINK_COLUMNS: &str =
+    "id, poll_token, user_code, device_label, status, account_id, created_at, expires_at";
+
+#[derive(sqlx::FromRow)]
+struct DeviceLinkRow {
+    id: String,
+    poll_token: String,
+    user_code: String,
+    device_label: Option<String>,
+    status: String,
+    account_id: Option<String>,
+    created_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+}
+
+impl DeviceLinkRow {
+    fn into_link(self) -> Result<DeviceLink, StoreError> {
+        let status = DeviceLinkStatus::from_stored(&self.status)
+            .ok_or_else(|| StoreError::Backend(format!("unknown link status {:?}", self.status)))?;
+        let account_id = self.account_id.as_deref().map(parse_uuid).transpose()?;
+
+        Ok(DeviceLink {
+            id: parse_uuid(&self.id)?,
+            poll_token: self.poll_token,
+            user_code: self.user_code,
+            device_label: self.device_label,
+            status,
+            account_id,
+            created_at: self.created_at,
+            expires_at: self.expires_at,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteDeviceLinkStore {
+    pool: SqlitePool,
+}
+
+impl SqliteDeviceLinkStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl DeviceLinkStore for SqliteDeviceLinkStore {
+    async fn insert(&self, link: DeviceLink) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO device_links \
+             (id, poll_token, user_code, device_label, status, account_id, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(link.id.to_string())
+        .bind(&link.poll_token)
+        .bind(&link.user_code)
+        .bind(&link.device_label)
+        .bind(link.status.as_str())
+        .bind(link.account_id.map(|id| id.to_string()))
+        .bind(link.created_at)
+        .bind(link.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        Ok(())
+    }
+
+    async fn get(&self, id: DeviceLinkId) -> Result<Option<DeviceLink>, StoreError> {
+        let row: Option<DeviceLinkRow> = sqlx::query_as(&format!(
+            "SELECT {DEVICE_LINK_COLUMNS} FROM device_links WHERE id = ?1"
+        ))
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(DeviceLinkRow::into_link).transpose()
+    }
+
+    async fn get_by_poll_token(&self, poll_token: &str) -> Result<Option<DeviceLink>, StoreError> {
+        let row: Option<DeviceLinkRow> = sqlx::query_as(&format!(
+            "SELECT {DEVICE_LINK_COLUMNS} FROM device_links WHERE poll_token = ?1"
+        ))
+        .bind(poll_token)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(DeviceLinkRow::into_link).transpose()
+    }
+
+    async fn update(&self, link: &DeviceLink) -> Result<(), StoreError> {
+        let result = sqlx::query(
+            "UPDATE device_links SET status = ?2, account_id = ?3, expires_at = ?4 WHERE id = ?1",
+        )
+        .bind(link.id.to_string())
+        .bind(link.status.as_str())
+        .bind(link.account_id.map(|id| id.to_string()))
+        .bind(link.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, id: DeviceLinkId) -> Result<(), StoreError> {
+        let result = sqlx::query("DELETE FROM device_links WHERE id = ?1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn claim(
+        &self,
+        poll_token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DeviceLink>, StoreError> {
+        // One statement, so two concurrent polls cannot both take the link:
+        // whichever DELETE lands first is the only one with a row to return.
+        let row: Option<DeviceLinkRow> = sqlx::query_as(&format!(
+            "DELETE FROM device_links \
+             WHERE poll_token = ?1 AND status = 'approved' AND expires_at > ?2 \
+             RETURNING {DEVICE_LINK_COLUMNS}"
+        ))
+        .bind(poll_token)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(DeviceLinkRow::into_link).transpose()
+    }
+
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
+        let result = sqlx::query("DELETE FROM device_links WHERE expires_at <= ?1")
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -1087,5 +1236,125 @@ mod tests {
         let reloaded = store.get(first.id).await.unwrap().unwrap();
         assert!(reloaded.is_banned());
         assert_eq!(reloaded.banned_at, first.banned_at);
+    }
+
+    fn new_link(poll_token: &str, status: DeviceLinkStatus, ttl: Duration) -> DeviceLink {
+        let now = Utc::now();
+        DeviceLink {
+            id: Uuid::new_v4(),
+            poll_token: poll_token.to_string(),
+            user_code: "K4PZ-9QT2".to_string(),
+            device_label: Some("ubuntu@mypc".to_string()),
+            status,
+            account_id: None,
+            created_at: now,
+            expires_at: now + ttl,
+        }
+    }
+
+    #[tokio::test]
+    async fn device_links_round_trip_and_cascade_with_the_account() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let store = SqliteDeviceLinkStore::new(pool);
+        let account = accounts.create(new_account("a@example.com")).await.unwrap();
+
+        let link = new_link("tok-1", DeviceLinkStatus::Pending, Duration::hours(24));
+        store.insert(link.clone()).await.unwrap();
+
+        let loaded = store.get(link.id).await.unwrap().unwrap();
+        assert_eq!(loaded, link);
+        assert_eq!(
+            store.get_by_poll_token("tok-1").await.unwrap().unwrap().id,
+            link.id
+        );
+
+        let approved = DeviceLink {
+            status: DeviceLinkStatus::Approved,
+            account_id: Some(account.id),
+            ..link.clone()
+        };
+        store.update(&approved).await.unwrap();
+        assert_eq!(store.get(link.id).await.unwrap().unwrap(), approved);
+
+        // Deleting the account takes the link with it, like every other row
+        // that references one.
+        accounts.delete(account.id).await.unwrap();
+        assert!(store.get(link.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn claiming_a_link_takes_it_exactly_once() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let store = SqliteDeviceLinkStore::new(pool);
+        let account = accounts.create(new_account("a@example.com")).await.unwrap();
+
+        let pending = new_link("tok-pending", DeviceLinkStatus::Pending, Duration::hours(1));
+        store.insert(pending.clone()).await.unwrap();
+        // A link nobody approved is not claimable, however valid it is.
+        assert!(
+            store
+                .claim("tok-pending", Utc::now())
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let approved = DeviceLink {
+            status: DeviceLinkStatus::Approved,
+            account_id: Some(account.id),
+            ..new_link("tok-ok", DeviceLinkStatus::Approved, Duration::hours(1))
+        };
+        store.insert(approved.clone()).await.unwrap();
+
+        let claimed = store.claim("tok-ok", Utc::now()).await.unwrap().unwrap();
+        assert_eq!(claimed.id, approved.id);
+        assert_eq!(claimed.account_id, Some(account.id));
+        // The row is gone with the claim, so a second poll gets nothing —
+        // this is what stops two polls minting two sessions.
+        assert!(store.claim("tok-ok", Utc::now()).await.unwrap().is_none());
+        assert!(store.get(approved.id).await.unwrap().is_none());
+
+        // An expired approval is not claimable either.
+        let stale = DeviceLink {
+            status: DeviceLinkStatus::Approved,
+            account_id: Some(account.id),
+            ..new_link(
+                "tok-stale",
+                DeviceLinkStatus::Approved,
+                -Duration::minutes(1),
+            )
+        };
+        store.insert(stale.clone()).await.unwrap();
+        assert!(
+            store
+                .claim("tok-stale", Utc::now())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_links_are_swept_whatever_their_status() {
+        let (_dir, pool) = setup().await;
+        let store = SqliteDeviceLinkStore::new(pool);
+
+        let fresh = new_link("fresh", DeviceLinkStatus::Pending, Duration::hours(1));
+        let stale = new_link("stale", DeviceLinkStatus::Pending, -Duration::hours(1));
+        let stale_approved = new_link(
+            "stale-approved",
+            DeviceLinkStatus::Approved,
+            -Duration::hours(1),
+        );
+        for link in [&fresh, &stale, &stale_approved] {
+            store.insert(link.clone()).await.unwrap();
+        }
+
+        assert_eq!(store.delete_expired(Utc::now()).await.unwrap(), 2);
+        assert!(store.get(fresh.id).await.unwrap().is_some());
+        assert!(store.get(stale.id).await.unwrap().is_none());
+        assert!(store.get(stale_approved.id).await.unwrap().is_none());
     }
 }

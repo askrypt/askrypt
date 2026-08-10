@@ -6,12 +6,12 @@
 use std::sync::Arc;
 
 use crate::store::memory::{
-    FakeIdTokenVerifier, MemoryAccountStore, MemoryMailer, MemoryRoleStore, MemorySessionStore,
-    MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
+    FakeIdTokenVerifier, MemoryAccountStore, MemoryDeviceLinkStore, MemoryMailer, MemoryRoleStore,
+    MemorySessionStore, MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
 };
 use crate::store::{
-    AccountStore, IdTokenVerifier, Mailer, RoleStore, SessionStore, VaultBlobStore, VaultMetaStore,
-    VaultVersionStore,
+    AccountStore, DeviceLinkStore, IdTokenVerifier, Mailer, RoleStore, SessionStore,
+    VaultBlobStore, VaultMetaStore, VaultVersionStore,
 };
 
 #[derive(Clone)]
@@ -21,6 +21,10 @@ pub struct AppState {
     /// the migration, so this seam only ever reads it and writes grants.
     pub roles: Arc<dyn RoleStore>,
     pub sessions: Arc<dyn SessionStore>,
+    /// Desktop sign-ins in flight: the app creates one, the browser approves
+    /// it, the app claims the session it authorizes. Short-lived by
+    /// construction — every record is deleted on claim or swept at expiry.
+    pub device_links: Arc<dyn DeviceLinkStore>,
     pub vault_meta: Arc<dyn VaultMetaStore>,
     pub vault_blobs: Arc<dyn VaultBlobStore>,
     /// Index over the archived generations of each vault.
@@ -45,6 +49,7 @@ impl AppState {
             accounts: Arc::new(MemoryAccountStore::default()),
             roles: Arc::new(MemoryRoleStore::default()),
             sessions: Arc::new(MemorySessionStore::default()),
+            device_links: Arc::new(MemoryDeviceLinkStore::default()),
             vault_meta: Arc::new(MemoryVaultMetaStore::default()),
             vault_blobs: Arc::new(MemoryVaultBlobStore::default()),
             vault_versions: Arc::new(MemoryVaultVersionStore::default()),

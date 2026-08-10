@@ -601,6 +601,60 @@ askrypt/
     granted. `server/tests/vaults.rs`, `server/tests/admin.rs` and unit tests
     in `src/admin.rs`, `src/vaults.rs` and `src/web/vaults.rs`.
 
+- **Phase 10 — Browser sign-in for desktop apps.** ✅ *(done 2026-08-10)*
+  The desktop app asked for an account email and password in its own window.
+  That put credentials in a client that has no business holding them, and it
+  could not offer registration at all — a new user had to find the website
+  first. Now the app opens a *device link* and the browser does the signing in.
+
+  - **The shape.** `POST /api/v1/auth/device` opens a link, returning a public
+    `link_id` (for the URL), a secret `poll_token` (for the app alone), a
+    display-only `user_code`, a 24-hour expiry and the `interval` to poll at.
+    The app opens `/link/{link_id}`; the browser signs in and **visiting the
+    page approves it** — no confirm button, because the flow the user is
+    already in is "open the page, come back signed in".
+    `POST /auth/device/poll` then hands over an ordinary 30-day session.
+  - **The token is minted on claim, never stored on the link.** Issuing it at
+    approval would leave a live credential behind every time somebody approved
+    and closed the browser before the app collected it, and would put a second
+    bearer token at rest in a second table.
+  - **`claim` is one atomic store call** (`DELETE … WHERE status='approved' …
+    RETURNING`). `get` + check + `delete` would let two concurrent polls both
+    mint a session from one approval.
+  - **The poll re-checks the ban.** `issue_session` does not — only
+    `authenticate` and `resolve_session` do — and a ban can land between
+    approving and claiming, which would otherwise make this the one path a
+    banned account still gets a fresh token.
+  - **One answer for every dead end.** Unknown, expired and already-claimed
+    poll tokens all get `expired`, so the endpoint never confirms that a
+    guessed token once existed. The same reasoning as `reject_session`.
+  - **The user code is a comparison aid, not a credential.** `start` needs no
+    authentication — it cannot, since the point is to obtain some — so anyone
+    can open a link and try to talk a signed-in user into visiting it. The app
+    and the page show the same code and the page says to compare them. There
+    is deliberately **no form that accepts a code**: that would turn it into a
+    second, short, guessable secret.
+  - **Links do not accumulate.** Cancelling (the app closing its sign-in pane)
+    deletes the link at once via `POST /auth/device/cancel`; anything else is
+    swept at 24 hours by `delete_expired`, called from the create path. No
+    background job — this server has none and should not grow one.
+  - **`?link=<uuid>` survives login and registration**, as a uuid rather than a
+    general `next=`, so there is no open redirect to get wrong. The
+    already-signed-in bounce honours it too, or "Sign in" from the link page
+    would dead-end anyone who still had a cookie.
+  - **Its own rate limiter** (120/min against auth's 20): a client polling
+    every few seconds would otherwise exhaust the login budget in half a
+    minute, and several devices can share one NAT address.
+  - **Phase gate:** ✅ start → pending → register carrying the link → the page
+    approves → the app's poll returns a token that authenticates
+    `GET /api/v1/me` and appears in the device list under the `os@host` label
+    the app sent; a link collects once; a reload mints no second session; the
+    link id is useless as a poll token; deny, CSRF rejection, cancel, the
+    24-hour sweep and the banned-account refusal all hold.
+    `server/tests/device_link.rs` (15 tests) plus unit tests in
+    `src/devicelink.rs` and `src/store/sqlite.rs`, and the client half in
+    `core/src/storage/server.rs` (9 tests over the fake server).
+
 ## Open decisions (not blocking)
 
 - ~~Client-side sync UX for **desktop**~~ — decided and built: manual

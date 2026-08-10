@@ -15,6 +15,7 @@
 
 mod data;
 mod icon;
+mod link;
 mod panes;
 mod session;
 mod settings;
@@ -164,6 +165,9 @@ pub enum Message {
     Vault(VaultMsg),
     Unlock(panes::unlock::Msg),
     Wizard(panes::wizard::Msg),
+    /// Signing in to a server through the browser. Not a pane message: the
+    /// wizard and Settings both start one, and it outlives either.
+    Link(link::Msg),
     Settings(panes::settings::Msg),
     Editor(panes::entry_editor::Msg),
     Questions(panes::questions::Msg),
@@ -455,12 +459,27 @@ impl App {
         }
     }
 
-    fn set_pane(&mut self, pane: Pane) {
+    /// Switch the working area, giving up anything the old pane was waiting on.
+    ///
+    /// Returns a task because leaving the sign-in panes cancels a browser
+    /// sign-in still in flight: closing the pane says the user does not want it,
+    /// and a link left approvable is one somebody could still be talked into
+    /// approving.
+    fn set_pane(&mut self, pane: Pane) -> Task<Message> {
+        let leaving_sign_in =
+            matches!(self.pane, Pane::Wizard | Pane::Settings) && pane != self.pane;
+        let abandoned = if leaving_sign_in {
+            link::abandon(&mut self.session)
+        } else {
+            Task::none()
+        };
+
         self.pane = pane;
         self.pending_delete = None;
         if pane == Pane::Items {
             self.reconcile_selection();
         }
+        abandoned
     }
 
     /// Leave whatever pane is open and go back to the state's natural one.
@@ -533,8 +552,9 @@ impl App {
             }
             Message::SectionSelected(section) => {
                 self.section = section;
-                self.set_pane(Pane::Items);
-                Action::None
+                // Picking a section leaves whatever pane was open, so this may
+                // also be the moment a browser sign-in is abandoned.
+                Action::Run(self.set_pane(Pane::Items))
             }
             Message::PaneSelected(pane) => {
                 if pane == Pane::Wizard {
@@ -628,6 +648,7 @@ impl App {
             Message::Vault(msg) => self.update_vault(msg),
             Message::Unlock(msg) => panes::unlock::update(&mut self.unlock, &mut self.session, msg),
             Message::Wizard(msg) => panes::wizard::update(&mut self.wizard, &mut self.session, msg),
+            Message::Link(msg) => link::update(&mut self.session, msg),
             Message::Settings(msg) => panes::settings::update(&mut self.session, msg),
             Message::Editor(msg) => match self.editor.as_mut() {
                 Some(editor) => {
@@ -663,14 +684,8 @@ impl App {
         match action {
             Action::None => Task::none(),
             Action::Run(task) => task,
-            Action::Pane(pane) => {
-                self.set_pane(pane);
-                Task::none()
-            }
-            Action::PaneRun(pane, task) => {
-                self.set_pane(pane);
-                task
-            }
+            Action::Pane(pane) => self.set_pane(pane),
+            Action::PaneRun(pane, task) => Task::batch([self.set_pane(pane), task]),
         }
     }
 

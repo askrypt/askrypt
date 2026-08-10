@@ -1,0 +1,53 @@
+{% extends "layout.html" %}
+
+{% block title %}Sign in a device &middot; Askrypt{% endblock %}
+
+{% block content %}
+{#-
+  The page a desktop app opens in the browser. Visiting it while signed in
+  approves the sign-in; there is no confirm button, by design. The code below
+  is what makes that safe to do in one step, so it is never decoration: anyone
+  can start a link, and only the code says whether this one is yours.
+-#}
+<section class="card form">
+{%- if outcome == Outcome::SignInNeeded %}
+  <h1>Sign in to link your app</h1>
+  <p>Your Askrypt app{% if let Some(label) = device_label.as_deref() %} (<strong>{{ label }}</strong>){% endif %}
+  is waiting to sign in. Sign in here and it will pick it up automatically.</p>
+  <p class="code">{{ user_code }}</p>
+  <p class="hint">Your app is showing this code. If it is showing a different
+  one, close this page &mdash; the request did not come from your app.</p>
+  <p class="cta">
+    <a class="button" href="{{ login_href }}">Sign in</a>
+    <a href="{{ register_href }}">or create an account</a>
+  </p>
+
+{%- else if outcome == Outcome::Approved || outcome == Outcome::AlreadyApproved %}
+  {%- if outcome == Outcome::Approved %}
+  <h1>Your app is signed in</h1>
+  {%- else %}
+  <h1>Already signed in</h1>
+  {%- endif %}
+  <p>You can close this tab and go back to your Askrypt app{% if let Some(label) = device_label.as_deref() %}
+  (<strong>{{ label }}</strong>){% endif %}. It signs itself in within a few seconds.</p>
+  <p class="code">{{ user_code }}</p>
+  <p class="hint">This is the code your app should be showing. If it is not,
+  the request came from somewhere else &mdash; deny it below.</p>
+  {#- A plain form: the CSP forbids the inline handler a scripted dialog wants. -#}
+  <form class="inline-form" method="post" action="{{ deny_path }}">
+    <input type="hidden" name="csrf" value="{{ chrome.csrf }}">
+    <button class="button danger" type="submit">That wasn't me &mdash; deny it</button>
+  </form>
+
+{%- else if outcome == Outcome::Denied %}
+  <h1>Sign-in denied</h1>
+  <p>This request was denied, and no device was signed in. If it was your own
+  app, start the sign-in again from the app.</p>
+
+{%- else %}
+  <h1>This sign-in request has expired</h1>
+  <p>Sign-in requests are good for 24 hours, and each one can be used once.
+  Start a new one from your Askrypt app.</p>
+{%- endif %}
+</section>
+{% endblock %}

@@ -50,3 +50,25 @@ CREATE TABLE sessions (
 );
 
 CREATE INDEX sessions_account_id ON sessions(account_id);
+
+-- Desktop sign-in handed to the browser: the app creates a link, opens
+-- /link/<id>, and polls with `poll_token` until the website has approved it.
+-- No session token is stored here — the bearer is minted when the app claims
+-- the link, so an approval nobody collects leaves no live session behind.
+CREATE TABLE device_links (
+    id           TEXT PRIMARY KEY,
+    poll_token   TEXT NOT NULL,
+    -- Shown in the app and on the page so the user can compare the two.
+    -- Display-only, so deliberately not unique.
+    user_code    TEXT NOT NULL,
+    device_label TEXT,
+    status       TEXT NOT NULL,   -- 'pending' | 'approved' | 'denied'
+    -- Who approved it; NULL while pending.
+    account_id   TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX device_links_poll_token ON device_links(poll_token);
+-- The expiry sweep runs on every link creation, so it must not be a table scan.
+CREATE INDEX device_links_expires_at ON device_links(expires_at);

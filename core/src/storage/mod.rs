@@ -12,7 +12,9 @@ mod server;
 
 pub use local_file::LocalFileStorage;
 #[cfg(feature = "server-storage")]
-pub use server::{RemoteVault, ServerClient, ServerStorage};
+pub use server::{
+    BrowserLogin, BrowserLoginStatus, RemoteVault, ServerClient, ServerStorage, normalize_base_url,
+};
 
 use crate::AskryptFile;
 use std::sync::Mutex;

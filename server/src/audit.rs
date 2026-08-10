@@ -100,6 +100,16 @@ pub const ACCOUNT_UNBANNED: &str = "account.unbanned";
 pub const ACCOUNT_DELETED_BY_ADMIN: &str = "account.deleted_by_admin";
 pub const ROLE_GRANTED: &str = "role.granted";
 pub const ROLE_REVOKED: &str = "role.revoked";
+// Desktop sign-in handed to the browser. `account` is empty on `started`,
+// which needs no authentication and so belongs to nobody yet; `detail` carries
+// the device label the app asked for. The poll token and the issued session
+// token are never logged.
+pub const DEVICE_LINK_STARTED: &str = "device_link.started";
+pub const DEVICE_LINK_APPROVED: &str = "device_link.approved";
+pub const DEVICE_LINK_DENIED: &str = "device_link.denied";
+pub const DEVICE_LINK_CLAIMED: &str = "device_link.claimed";
+pub const DEVICE_LINK_CANCELLED: &str = "device_link.cancelled";
+pub const DEVICE_LINK_REFUSED: &str = "device_link.refused";
 
 #[cfg(test)]
 mod tests {

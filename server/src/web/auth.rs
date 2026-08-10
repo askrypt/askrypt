@@ -10,15 +10,16 @@
 //! whole page otherwise, so the flow works with JavaScript disabled.
 
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 
 use crate::audit::{self, ClientInfo};
 use crate::auth;
+use crate::devicelink;
 use crate::state::AppState;
-use crate::store::Account;
+use crate::store::{Account, DeviceLinkId};
 use crate::web::WebError;
 use crate::web::csrf::{self, CsrfForm};
 use crate::web::flash::{self, Flash};
@@ -43,6 +44,13 @@ pub struct AuthForm {
     csrf: String,
     email: String,
     error: Option<String>,
+    /// The desktop sign-in that sent the visitor here, if one did. Carried
+    /// through the form so approving it survives login or registration.
+    ///
+    /// A uuid re-rendered from the *parsed* value, never the raw query string:
+    /// it lands in a hidden input and an `href`, and a general `next=` would be
+    /// an open redirect waiting to happen.
+    link: Option<String>,
 }
 
 #[derive(Template)]
@@ -52,8 +60,12 @@ struct AuthPage {
     form: AuthForm,
 }
 
+/// How a form is rebuilt after a rejection, or built fresh: csrf, email, error,
+/// device link.
+type BuildForm = fn(String, String, Option<String>, Option<String>) -> AuthForm;
+
 impl AuthForm {
-    fn login(csrf: String, email: String, error: Option<String>) -> Self {
+    fn login(csrf: String, email: String, error: Option<String>, link: Option<String>) -> Self {
         Self {
             action: LOGIN_PATH,
             heading: "Sign in",
@@ -66,10 +78,11 @@ impl AuthForm {
             csrf,
             email,
             error,
+            link,
         }
     }
 
-    fn register(csrf: String, email: String, error: Option<String>) -> Self {
+    fn register(csrf: String, email: String, error: Option<String>, link: Option<String>) -> Self {
         Self {
             action: "/register",
             heading: "Create account",
@@ -85,6 +98,7 @@ impl AuthForm {
             csrf,
             email,
             error,
+            link,
         }
     }
 }
@@ -95,18 +109,36 @@ pub struct Credentials {
     email: String,
     #[serde(default)]
     password: String,
+    /// The device link being signed in for, carried by the hidden field.
+    #[serde(default)]
+    link: Option<String>,
+}
+
+/// `?link=<uuid>` on the two auth pages.
+#[derive(Deserialize)]
+pub struct AuthQuery {
+    #[serde(default)]
+    link: Option<String>,
 }
 
 /// A form with nothing in it but its CSRF token.
 #[derive(Deserialize)]
 pub struct TokenOnly {}
 
-pub async fn login_form(session: MaybeWebSession, headers: HeaderMap) -> Response {
-    auth_page(session, &headers, AuthForm::login)
+pub async fn login_form(
+    session: MaybeWebSession,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    auth_page(session, &headers, AuthForm::login, query.link.as_deref())
 }
 
-pub async fn register_form(session: MaybeWebSession, headers: HeaderMap) -> Response {
-    auth_page(session, &headers, AuthForm::register)
+pub async fn register_form(
+    session: MaybeWebSession,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    auth_page(session, &headers, AuthForm::register, query.link.as_deref())
 }
 
 /// Renders one of the two auth pages, bouncing visitors who are already
@@ -114,18 +146,34 @@ pub async fn register_form(session: MaybeWebSession, headers: HeaderMap) -> Resp
 fn auth_page(
     session: MaybeWebSession,
     headers: &HeaderMap,
-    build: fn(String, String, Option<String>) -> AuthForm,
+    build: BuildForm,
+    link: Option<&str>,
 ) -> Response {
+    let link = link.and_then(devicelink::parse_link_id);
     if session.0.is_some() {
+        // Someone already signed in who followed a device link wants to
+        // approve it, not to be told they are signed in.
+        let (target, flash) = match link {
+            Some(id) => (devicelink::verification_path(id), None),
+            None => (
+                ACCOUNT_PATH.to_string(),
+                Some(flash::set(Flash::AlreadySignedIn)),
+            ),
+        };
         return with_cookies(
-            Redirect::to(ACCOUNT_PATH).into_response(),
-            vec![flash::set(Flash::AlreadySignedIn)],
+            Redirect::to(&target).into_response(),
+            flash.into_iter().collect(),
         );
     }
     let (chrome, cookies) = Shell::build(headers, None)
         .without_auth_links()
         .into_parts();
-    let form = build(chrome.csrf.clone(), String::new(), None);
+    let form = build(
+        chrome.csrf.clone(),
+        String::new(),
+        None,
+        link.map(|id| id.to_string()),
+    );
     with_cookies(Page(AuthPage { chrome, form }).into_response(), cookies)
 }
 
@@ -135,14 +183,15 @@ pub async fn login_submit(
     headers: HeaderMap,
     CsrfForm(form): CsrfForm<Credentials>,
 ) -> Response {
+    let link = form.link.as_deref().and_then(devicelink::parse_link_id);
     let account = match auth::authenticate(&state, &client, &form.email, form.password).await {
         Ok(account) => account,
         Err(err) => {
-            return rejected(&headers, AuthForm::login, form.email, err.message);
+            return rejected(&headers, AuthForm::login, form.email, err.message, link);
         }
     };
     match sign_in(&state, &client, &account, "password").await {
-        Ok(cookies) => with_cookies(Redirect::to(ACCOUNT_PATH).into_response(), cookies),
+        Ok(cookies) => with_cookies(Redirect::to(&after_auth(link)).into_response(), cookies),
         Err(err) => err.into_response(),
     }
 }
@@ -153,11 +202,12 @@ pub async fn register_submit(
     headers: HeaderMap,
     CsrfForm(form): CsrfForm<Credentials>,
 ) -> Response {
+    let link = form.link.as_deref().and_then(devicelink::parse_link_id);
     let email = form.email.clone();
     let account = match auth::register_account(&state, &client, &form.email, form.password).await {
         Ok(account) => account,
         Err(err) => {
-            return rejected(&headers, AuthForm::register, email, err.message);
+            return rejected(&headers, AuthForm::register, email, err.message, link);
         }
     };
     // Registering signs you straight in: a new account with nothing in it
@@ -165,9 +215,18 @@ pub async fn register_submit(
     match sign_in(&state, &client, &account, "password").await {
         Ok(mut cookies) => {
             cookies.push(flash::set(Flash::AccountCreated));
-            with_cookies(Redirect::to(ACCOUNT_PATH).into_response(), cookies)
+            with_cookies(Redirect::to(&after_auth(link)).into_response(), cookies)
         }
         Err(err) => err.into_response(),
+    }
+}
+
+/// Where a successful sign-in lands: back at the device link when one sent the
+/// visitor here, and the account page otherwise.
+fn after_auth(link: Option<DeviceLinkId>) -> String {
+    match link {
+        Some(id) => devicelink::verification_path(id),
+        None => ACCOUNT_PATH.to_string(),
     }
 }
 
@@ -225,14 +284,20 @@ async fn sign_in(
 /// refused sign-in is a normal outcome of this page, not a protocol error.
 fn rejected(
     headers: &HeaderMap,
-    build: fn(String, String, Option<String>) -> AuthForm,
+    build: BuildForm,
     email: String,
     message: String,
+    link: Option<DeviceLinkId>,
 ) -> Response {
     let (chrome, cookies) = Shell::build(headers, None)
         .without_auth_links()
         .into_parts();
-    let form = build(chrome.csrf.clone(), email, Some(message));
+    let form = build(
+        chrome.csrf.clone(),
+        email,
+        Some(message),
+        link.map(|id| id.to_string()),
+    );
     let body = if is_htmx(headers) {
         (StatusCode::OK, Page(form)).into_response()
     } else {

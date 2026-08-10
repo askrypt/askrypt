@@ -10,8 +10,8 @@ use askrypt_server::store::google::{GoogleIdTokenVerifier, NotConfiguredIdTokenV
 use askrypt_server::store::memory::MemoryMailer;
 use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
-    self, SqliteAccountStore, SqliteRoleStore, SqliteSessionStore, SqliteVaultMetaStore,
-    SqliteVaultVersionStore,
+    self, SqliteAccountStore, SqliteDeviceLinkStore, SqliteRoleStore, SqliteSessionStore,
+    SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 use askrypt_server::store::{ADMIN_ROLE, AccountStore, IdTokenVerifier, Mailer, RoleStore};
 use tracing::info;
@@ -247,6 +247,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 accounts: Arc::new(SqliteAccountStore::new(pool.clone())),
                 roles: Arc::new(SqliteRoleStore::new(pool.clone())),
                 sessions: Arc::new(SqliteSessionStore::new(pool.clone())),
+                device_links: Arc::new(SqliteDeviceLinkStore::new(pool.clone())),
                 vault_meta: Arc::new(SqliteVaultMetaStore::new(pool.clone())),
                 vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),
                 vault_versions: Arc::new(SqliteVaultVersionStore::new(pool)),

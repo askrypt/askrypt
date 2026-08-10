@@ -25,6 +25,7 @@ pub mod account;
 pub mod admin;
 pub mod auth;
 pub mod csrf;
+pub mod devicelink;
 pub mod error;
 pub mod flash;
 pub mod pages;
@@ -74,6 +75,7 @@ const HX_CURRENT_URL: HeaderName = HeaderName::from_static("hx-current-url");
 pub fn routes(
     auth_limiter: Arc<RateLimiter>,
     profile_limiter: Arc<RateLimiter>,
+    device_limiter: Arc<RateLimiter>,
 ) -> Router<AppState> {
     let auth_routes = Router::new()
         .route("/login", get(auth::login_form).post(auth::login_submit))
@@ -82,6 +84,14 @@ pub fn routes(
             get(auth::register_form).post(auth::register_submit),
         )
         .route_layer(middleware::from_fn_with_state(auth_limiter, rate_limit));
+
+    // The browser half of the desktop sign-in, on the same budget as the API
+    // half rather than the login one: a visitor arriving here has not typed a
+    // password and is not guessing at one.
+    let link_routes = Router::new()
+        .route("/link/{id}", get(devicelink::page))
+        .route("/link/{id}/deny", post(devicelink::deny))
+        .route_layer(middleware::from_fn_with_state(device_limiter, rate_limit));
 
     // Email and password changes are the two forms worth guessing at, so
     // they sit behind the same bucket as their JSON twins.
@@ -134,6 +144,7 @@ pub fn routes(
         .route("/", get(pages::landing))
         .route("/logout", post(auth::logout))
         .merge(auth_routes)
+        .merge(link_routes)
         .merge(account_routes)
         .merge(admin_routes)
         .merge(vault_routes)

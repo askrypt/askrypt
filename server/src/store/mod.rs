@@ -155,6 +155,97 @@ pub trait SessionStore: Send + Sync {
     async fn delete_for_account(&self, account_id: AccountId) -> Result<(), StoreError>;
 }
 
+pub type DeviceLinkId = Uuid;
+
+/// Where a device link stands. A link is created `Pending`, and the website
+/// moves it to exactly one of the other two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceLinkStatus {
+    Pending,
+    Approved,
+    Denied,
+}
+
+impl DeviceLinkStatus {
+    /// The stored spelling. Both backends persist this string, so it is part of
+    /// the on-disk format.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeviceLinkStatus::Pending => "pending",
+            DeviceLinkStatus::Approved => "approved",
+            DeviceLinkStatus::Denied => "denied",
+        }
+    }
+
+    pub fn from_stored(raw: &str) -> Option<Self> {
+        match raw {
+            "pending" => Some(DeviceLinkStatus::Pending),
+            "approved" => Some(DeviceLinkStatus::Approved),
+            "denied" => Some(DeviceLinkStatus::Denied),
+            _ => None,
+        }
+    }
+}
+
+/// One desktop sign-in in progress.
+///
+/// The app creates it, opens `/link/{id}` in a browser, and polls with
+/// `poll_token` until the user has signed in and the link is `Approved`.
+///
+/// **No session token is stored here.** The bearer is minted when the app
+/// claims the link, so a user who approves and then closes the browser leaves
+/// no live session behind, and this table never holds a second credential. The
+/// only secret on the record is `poll_token`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceLink {
+    /// Public identifier — this is the one that travels in the browser URL.
+    pub id: DeviceLinkId,
+    /// Secret held only by the app that started the link; the poll is
+    /// authenticated by it alone.
+    pub poll_token: String,
+    /// Short code shown in both the app and the browser, so the user can see
+    /// that the page is about *their* sign-in. Display-only: nothing is ever
+    /// looked up by it, and it is deliberately not unique.
+    pub user_code: String,
+    /// What the app calls itself, for the account's device list.
+    pub device_label: Option<String>,
+    pub status: DeviceLinkStatus,
+    /// Who approved it; `None` while pending.
+    pub account_id: Option<AccountId>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl DeviceLink {
+    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at <= now
+    }
+}
+
+#[async_trait]
+pub trait DeviceLinkStore: Send + Sync {
+    async fn insert(&self, link: DeviceLink) -> Result<(), StoreError>;
+    async fn get(&self, id: DeviceLinkId) -> Result<Option<DeviceLink>, StoreError>;
+    async fn get_by_poll_token(&self, poll_token: &str) -> Result<Option<DeviceLink>, StoreError>;
+    /// Replaces the stored record with the same id.
+    async fn update(&self, link: &DeviceLink) -> Result<(), StoreError>;
+    async fn delete(&self, id: DeviceLinkId) -> Result<(), StoreError>;
+    /// Atomically removes and returns an *approved*, unexpired link.
+    ///
+    /// One call, not `get` + check + `delete`: two polls racing on the same
+    /// link would both read `Approved` and both mint a session. `None` means
+    /// the link does not exist, is not approved, has expired, or another poll
+    /// already claimed it — the caller must not tell those apart.
+    async fn claim(
+        &self,
+        poll_token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DeviceLink>, StoreError>;
+    /// Drops every link past its `expires_at`, whatever its status. There is no
+    /// GC task in this server, so this is called from the create path.
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
+}
+
 /// Metadata for one stored vault file; the bytes live in a [`VaultBlobStore`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaultMeta {

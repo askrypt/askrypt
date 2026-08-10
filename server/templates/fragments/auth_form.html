@@ -12,6 +12,12 @@
   <p class="error" role="alert">{{ error }}</p>
 {%- endif %}
   <input type="hidden" name="csrf" value="{{ csrf }}">
+{%- if let Some(link) = link.as_deref() %}
+  {#- The desktop sign-in this form is part of, so approving it survives the
+      round trip through login or registration. A uuid, re-rendered from the
+      parsed value rather than echoed from the query string. -#}
+  <input type="hidden" name="link" value="{{ link }}">
+{%- endif %}
   <label for="email">Email</label>
   <input id="email" name="email" type="email" value="{{ email }}"
          autocomplete="username" required autofocus>
@@ -22,5 +28,9 @@
   <p class="hint">{{ hint }}</p>
 {%- endif %}
   <button class="button" type="submit">{{ submit }}</button>
+{%- if let Some(link) = link.as_deref() %}
+  <p class="alt">{{ alt_prompt }} <a href="{{ alt_href }}?link={{ link }}">{{ alt_link }}</a></p>
+{%- else %}
   <p class="alt">{{ alt_prompt }} <a href="{{ alt_href }}">{{ alt_link }}</a></p>
+{%- endif %}
 </form>
