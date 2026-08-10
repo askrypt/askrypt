@@ -10,7 +10,9 @@
 //! Every destructive action goes through one of the guarded functions below,
 //! so the three safety rules — no acting on yourself, never removing the last
 //! administrator, and typing the address to delete — hold for the htmx path
-//! and the plain-form path alike.
+//! and the plain-form path alike. Those rules protect *administrative* access
+//! specifically: [`set_role`] applies them only to [`ADMIN_ROLE`], because
+//! nothing about [`PAYMENT_USER_ROLE`] can lock anyone out.
 
 use axum::http::StatusCode;
 use chrono::Utc;
@@ -19,7 +21,7 @@ use crate::audit::{self, ClientInfo};
 use crate::error::{ApiError, ApiResult};
 use crate::profile;
 use crate::state::AppState;
-use crate::store::{ADMIN_ROLE, Account, AccountId};
+use crate::store::{ADMIN_ROLE, Account, AccountId, PAYMENT_USER_ROLE};
 
 /// How many accounts one page of the user list shows.
 pub(crate) const USERS_PER_PAGE: u32 = 50;
@@ -29,22 +31,47 @@ pub(crate) const USERS_PER_PAGE: u32 = 50;
 pub(crate) struct AdminUser {
     pub account: Account,
     pub is_admin: bool,
+    /// Whether the account is on the paid storage tier.
+    pub is_payment_user: bool,
     /// True for the administrator doing the looking, whose row offers no
     /// destructive actions.
     pub is_self: bool,
 }
 
+/// Does this account hold `role`?
+pub(crate) async fn has_role(state: &AppState, account: AccountId, role: &str) -> ApiResult<bool> {
+    let roles = state.roles.roles_for(account).await?;
+    Ok(roles.iter().any(|held| held == role))
+}
+
 /// Does this account hold [`ADMIN_ROLE`]?
 pub(crate) async fn is_admin(state: &AppState, account: AccountId) -> ApiResult<bool> {
-    let roles = state.roles.roles_for(account).await?;
-    Ok(roles.iter().any(|role| role == ADMIN_ROLE))
+    has_role(state, account, ADMIN_ROLE).await
+}
+
+/// Resolves a role name a form supplied to one this page actually offers.
+///
+/// The alternative is to let it reach [`crate::store::RoleStore::grant`],
+/// which answers an unknown name with `StoreError::NotFound` and so a
+/// misleading 404. An empty value means [`ADMIN_ROLE`]: the promote/demote
+/// form predates this parameter.
+pub(crate) fn known_role(name: &str) -> ApiResult<&'static str> {
+    match name {
+        "" | ADMIN_ROLE => Ok(ADMIN_ROLE),
+        PAYMENT_USER_ROLE => Ok(PAYMENT_USER_ROLE),
+        _ => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unknown_role",
+            "no such role",
+        )),
+    }
 }
 
 /// One page of the user list, newest page first, plus the total account
 /// count for the pager.
 ///
-/// Two queries and a count regardless of page size: the admin set is fetched
-/// once and folded into a lookup, never once per row.
+/// A fixed number of queries regardless of page size: each role's membership
+/// is fetched once and folded into a lookup, never once per row.
 pub(crate) async fn list_users(
     state: &AppState,
     caller: AccountId,
@@ -53,11 +80,13 @@ pub(crate) async fn list_users(
     let offset = page.saturating_mul(USERS_PER_PAGE);
     let accounts = state.accounts.list(USERS_PER_PAGE, offset).await?;
     let total = state.accounts.count().await?;
-    let admins = admin_ids(state).await?;
+    let admins = ids_with(state, ADMIN_ROLE).await?;
+    let payers = ids_with(state, PAYMENT_USER_ROLE).await?;
     let users = accounts
         .into_iter()
         .map(|account| AdminUser {
             is_admin: admins.contains(&account.id),
+            is_payment_user: payers.contains(&account.id),
             is_self: account.id == caller,
             account,
         })
@@ -106,32 +135,40 @@ pub(crate) async fn set_banned(
     Ok(account)
 }
 
-/// Grants or revokes [`ADMIN_ROLE`].
-pub(crate) async fn set_admin(
+/// Grants or revokes one role, which must have come through [`known_role`].
+///
+/// Only [`ADMIN_ROLE`] is guarded: taking it away is what could leave the
+/// system unadministered, whereas taking [`PAYMENT_USER_ROLE`] away merely
+/// puts the account back on the standard storage quota. So an administrator
+/// may move their own account on and off the paid tier.
+pub(crate) async fn set_role(
     state: &AppState,
     client: &ClientInfo,
     caller: &Account,
     target: AccountId,
-    admin: bool,
+    role: &'static str,
+    grant: bool,
 ) -> ApiResult<()> {
     // Confirms the account exists before writing a grant that references it.
     let account = load(state, target).await?;
-    if admin {
-        state.roles.grant(target, ADMIN_ROLE).await?;
+    if grant {
+        state.roles.grant(target, role).await?;
     } else {
-        deny_self(caller, target, "demote")?;
-        deny_last_admin(state, target, "demote").await?;
-        state.roles.revoke(target, ADMIN_ROLE).await?;
+        if role == ADMIN_ROLE {
+            deny_self(caller, target, "demote")?;
+            deny_last_admin(state, target, "demote").await?;
+        }
+        state.roles.revoke(target, role).await?;
     }
     audit::emit(
-        if admin {
+        if grant {
             audit::ROLE_GRANTED
         } else {
             audit::ROLE_REVOKED
         },
         client,
         Some(target),
-        &format!("{ADMIN_ROLE} for {} by {}", account.email, caller.email),
+        &format!("{role} for {} by {}", account.email, caller.email),
     );
     Ok(())
 }
@@ -208,13 +245,8 @@ async fn first_account_without_admins(state: &AppState) -> ApiResult<bool> {
     Ok(state.accounts.count().await? == 1)
 }
 
-async fn admin_ids(state: &AppState) -> ApiResult<std::collections::HashSet<AccountId>> {
-    Ok(state
-        .roles
-        .accounts_with(ADMIN_ROLE)
-        .await?
-        .into_iter()
-        .collect())
+async fn ids_with(state: &AppState, role: &str) -> ApiResult<std::collections::HashSet<AccountId>> {
+    Ok(state.roles.accounts_with(role).await?.into_iter().collect())
 }
 
 async fn load(state: &AppState, id: AccountId) -> ApiResult<Account> {
@@ -341,7 +373,7 @@ mod tests {
                 "ban" => set_banned(&state, &client(), &other, admin.id, true)
                     .await
                     .unwrap_err(),
-                "demote" => set_admin(&state, &client(), &other, admin.id, false)
+                "demote" => set_role(&state, &client(), &other, admin.id, ADMIN_ROLE, false)
                     .await
                     .unwrap_err(),
                 _ => delete_user(&state, &client(), &other, admin.id, &admin.email)
@@ -352,13 +384,52 @@ mod tests {
         }
 
         // A second administrator lifts the guard.
-        set_admin(&state, &client(), &other, other.id, true)
+        set_role(&state, &client(), &other, other.id, ADMIN_ROLE, true)
             .await
             .unwrap();
-        set_admin(&state, &client(), &other, admin.id, false)
+        set_role(&state, &client(), &other, admin.id, ADMIN_ROLE, false)
             .await
             .unwrap();
         assert!(!is_admin(&state, admin.id).await.unwrap());
+    }
+
+    /// The two guards are about administrative access, so the paid tier is
+    /// free of them — including on the acting administrator's own row.
+    #[tokio::test]
+    async fn the_paid_tier_is_unguarded_and_toggles_both_ways() {
+        let state = AppState::in_memory();
+        let admin = account(&state, "admin@example.com").await;
+        bootstrap_first_admin(&state, &admin).await;
+
+        // Self, and the only administrator: both guards would have fired.
+        set_role(&state, &client(), &admin, admin.id, PAYMENT_USER_ROLE, true)
+            .await
+            .unwrap();
+        assert!(has_role(&state, admin.id, PAYMENT_USER_ROLE).await.unwrap());
+        set_role(
+            &state,
+            &client(),
+            &admin,
+            admin.id,
+            PAYMENT_USER_ROLE,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(!has_role(&state, admin.id, PAYMENT_USER_ROLE).await.unwrap());
+        // Taking the paid tier away leaves administrative access alone.
+        assert!(is_admin(&state, admin.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn only_the_two_named_roles_are_addressable() {
+        assert_eq!(known_role("").unwrap(), ADMIN_ROLE);
+        assert_eq!(known_role(ADMIN_ROLE).unwrap(), ADMIN_ROLE);
+        assert_eq!(known_role(PAYMENT_USER_ROLE).unwrap(), PAYMENT_USER_ROLE);
+        // Not a 404 out of the store: the form named something we don't offer.
+        let err = known_role("admin").unwrap_err();
+        assert_eq!(err.code, "unknown_role");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -412,16 +483,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_user_list_flags_admins_and_the_caller() {
+    async fn the_user_list_flags_roles_and_the_caller() {
         let state = AppState::in_memory();
         let admin = account(&state, "admin@example.com").await;
         bootstrap_first_admin(&state, &admin).await;
         let other = account(&state, "other@example.com").await;
+        state
+            .roles
+            .grant(other.id, PAYMENT_USER_ROLE)
+            .await
+            .unwrap();
 
         let (users, total) = list_users(&state, admin.id, 0).await.unwrap();
         assert_eq!(total, 2);
         let row = |id| users.iter().find(|u| u.account.id == id).unwrap();
         assert!(row(admin.id).is_admin && row(admin.id).is_self);
+        assert!(!row(admin.id).is_payment_user);
         assert!(!row(other.id).is_admin && !row(other.id).is_self);
+        assert!(row(other.id).is_payment_user);
     }
 }

@@ -12,9 +12,9 @@ use uuid::Uuid;
 
 use super::{
     ADMIN_ROLE, Account, AccountId, AccountStore, IdTokenError, IdTokenVerifier, Mailer,
-    MailerError, NewAccount, Role, RoleStore, Session, SessionStore, StoreError, VaultBlobStore,
-    VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
-    VerifiedIdToken,
+    MailerError, NewAccount, PAYMENT_USER_ROLE, Role, RoleStore, Session, SessionStore, StoreError,
+    VaultBlobStore, VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId,
+    VaultVersionStore, VerifiedIdToken,
 };
 
 #[derive(Debug, Default)]
@@ -90,8 +90,10 @@ impl AccountStore for MemoryAccountStore {
     }
 }
 
-/// In-memory [`RoleStore`], seeded with the same embedded `ADMIN` role the
-/// migration inserts — including its uuid, so the two backends agree on it.
+/// In-memory [`RoleStore`], seeded with the same embedded roles the migration
+/// inserts — including their uuids and descriptions, so the two backends
+/// agree on them. Keep this list in step with
+/// `migrations/0002_auth.sql`.
 #[derive(Debug)]
 pub struct MemoryRoleStore {
     roles: Vec<Role>,
@@ -100,15 +102,24 @@ pub struct MemoryRoleStore {
 
 /// The uuid `migrations/0002_auth.sql` gives the embedded ADMIN role.
 const ADMIN_ROLE_ID: Uuid = Uuid::from_u128(0xa000_0000_0000_4000_8000_0000_0000_0001);
+/// The uuid `migrations/0002_auth.sql` gives the embedded PAYMENT_USER role.
+const PAYMENT_USER_ROLE_ID: Uuid = Uuid::from_u128(0xa000_0000_0000_4000_8000_0000_0000_0002);
 
 impl Default for MemoryRoleStore {
     fn default() -> Self {
         Self {
-            roles: vec![Role {
-                id: ADMIN_ROLE_ID,
-                name: ADMIN_ROLE.to_string(),
-                description: "Full administrative access to the user list.".to_string(),
-            }],
+            roles: vec![
+                Role {
+                    id: ADMIN_ROLE_ID,
+                    name: ADMIN_ROLE.to_string(),
+                    description: "Full administrative access to the user list.".to_string(),
+                },
+                Role {
+                    id: PAYMENT_USER_ROLE_ID,
+                    name: PAYMENT_USER_ROLE.to_string(),
+                    description: "Paid storage tier: the full account storage quota.".to_string(),
+                },
+            ],
             grants: Mutex::new(HashSet::new()),
         }
     }
@@ -593,15 +604,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn roles_seed_admin_and_grants_are_a_set() {
+    async fn roles_seed_the_vocabulary_and_grants_are_a_set() {
         let store = MemoryRoleStore::default();
         let roles = store.list().await.unwrap();
-        assert_eq!(roles.len(), 1);
+        // Name-ordered, so ADMIN comes before PAYMENT_USER.
+        assert_eq!(roles.len(), 2);
         assert_eq!(roles[0].name, ADMIN_ROLE);
-        // The uuid the migration writes, so both backends name the same role.
+        assert_eq!(roles[1].name, PAYMENT_USER_ROLE);
+        // The uuids the migration writes, so both backends name the same rows.
         assert_eq!(
             roles[0].id.to_string(),
             "a0000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(
+            roles[1].id.to_string(),
+            "a0000000-0000-4000-8000-000000000002"
         );
 
         let one = Uuid::new_v4();

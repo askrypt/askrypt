@@ -44,18 +44,24 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::admin;
 use crate::auth::AuthSession;
 use crate::error::{ApiBytes, ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
-use crate::store::{AccountId, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId};
+use crate::store::{
+    AccountId, PAYMENT_USER_ROLE, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId,
+};
 use crate::vaultfile;
 
 /// Hard cap on a single vault file. Real vaults are small ZIPs (tens of
 /// KBs); 10 MiB is deliberately generous. Also enforced as the request
 /// body limit on the vault routes.
 pub const MAX_VAULT_BYTES: usize = 10 * 1024 * 1024;
-/// Total bytes one account may store across all its vaults.
-pub const ACCOUNT_QUOTA_BYTES: u64 = 100 * 1024 * 1024;
+/// Total bytes an ordinary account may store across all its vaults.
+pub const ACCOUNT_QUOTA_BYTES: u64 = 1024 * 1024;
+/// The quota an account holding [`PAYMENT_USER_ROLE`] gets instead. The role
+/// grants nothing but this.
+pub const PAID_ACCOUNT_QUOTA_BYTES: u64 = 100 * 1024 * 1024;
 /// Maximum number of vault files per account.
 pub const MAX_VAULTS_PER_ACCOUNT: usize = 100;
 /// How many superseded generations of a vault are kept. The newest is the
@@ -223,7 +229,12 @@ pub(crate) async fn create(
     if existing.iter().any(|m| m.name == name) {
         return Err(name_taken());
     }
-    check_quota(&existing, None, bytes.len())?;
+    check_quota(
+        &existing,
+        None,
+        bytes.len(),
+        quota_for(state, account_id).await?,
+    )?;
 
     let stamp = vaultfile::read_stamp(bytes);
     let meta = VaultMeta {
@@ -382,7 +393,10 @@ pub(crate) async fn overwrite(
         return Err(stale_vault());
     }
     check_vault_bytes(bytes)?;
-    check_quota(&existing, Some(vault_id), bytes.len())?;
+    // Fetched once and handed to the trim below, so an overwrite costs one
+    // role lookup rather than two.
+    let quota = quota_for(state, account_id).await?;
+    check_quota(&existing, Some(vault_id), bytes.len(), quota)?;
 
     let stamp = vaultfile::read_stamp(bytes);
     let updated = VaultMeta {
@@ -411,6 +425,7 @@ pub(crate) async fn overwrite(
         state,
         account_id,
         used_bytes(&existing, Some(vault_id)) + updated.size,
+        quota,
     )
     .await;
     Ok(updated)
@@ -474,22 +489,28 @@ async fn archive(state: &AppState, meta: &VaultMeta) -> Result<(), StoreError> {
 ///
 /// Walks the account's versions newest first and keeps each one only while
 /// its vault is under [`MAX_VAULT_VERSIONS`] *and* it fits in what is left of
-/// [`ACCOUNT_QUOTA_BYTES`] after the live files. So history never pushes an
-/// account past the quota it already had, and the generations that survive a
-/// squeeze are the recent ones.
+/// `quota` after the live files. So history never pushes an account past the
+/// quota it already had, and the generations that survive a squeeze are the
+/// recent ones.
 ///
 /// `live_used` is the total size of the account's live vaults *after* the
-/// save that triggered this. Like archiving, failures are logged rather than
+/// save that triggered this, and `quota` the account's own allowance — the
+/// caller has both already. Like archiving, failures are logged rather than
 /// propagated: the save has already succeeded.
-async fn trim_history(state: &AppState, account_id: AccountId, live_used: u64) {
-    if let Err(err) = trim(state, account_id, live_used).await {
+async fn trim_history(state: &AppState, account_id: AccountId, live_used: u64, quota: u64) {
+    if let Err(err) = trim(state, account_id, live_used, quota).await {
         tracing::warn!(%account_id, %err, "could not trim vault version history");
     }
 }
 
-async fn trim(state: &AppState, account_id: AccountId, live_used: u64) -> Result<(), StoreError> {
+async fn trim(
+    state: &AppState,
+    account_id: AccountId,
+    live_used: u64,
+    quota: u64,
+) -> Result<(), StoreError> {
     let versions = state.vault_versions.list_for_account(account_id).await?;
-    let mut budget = ACCOUNT_QUOTA_BYTES.saturating_sub(live_used);
+    let mut budget = quota.saturating_sub(live_used);
     let mut kept: HashMap<VaultId, usize> = HashMap::new();
     let mut doomed = Vec::new();
     for version in versions {
@@ -942,19 +963,34 @@ fn check_vault_bytes(bytes: &[u8]) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Enforces the per-account byte quota; `replacing` excludes the vault
+/// How many bytes this account may store, which depends on whether it holds
+/// [`PAYMENT_USER_ROLE`].
+///
+/// Read on every write and on every render of the file manager, so it is one
+/// role lookup and nothing more; callers that need it twice pass the value
+/// along rather than asking again.
+pub(crate) async fn quota_for(state: &AppState, account_id: AccountId) -> ApiResult<u64> {
+    if admin::has_role(state, account_id, PAYMENT_USER_ROLE).await? {
+        Ok(PAID_ACCOUNT_QUOTA_BYTES)
+    } else {
+        Ok(ACCOUNT_QUOTA_BYTES)
+    }
+}
+
+/// Enforces the account's byte quota; `replacing` excludes the vault
 /// being overwritten from the current usage.
 fn check_quota(
     existing: &[VaultMeta],
     replacing: Option<VaultId>,
     new_size: usize,
+    quota: u64,
 ) -> Result<(), ApiError> {
     let used = used_bytes(existing, replacing);
-    if used + new_size as u64 > ACCOUNT_QUOTA_BYTES {
+    if used + new_size as u64 > quota {
         return Err(ApiError::new(
             StatusCode::INSUFFICIENT_STORAGE,
             "quota_exceeded",
-            format!("account storage quota of {ACCOUNT_QUOTA_BYTES} bytes exceeded"),
+            format!("account storage quota of {quota} bytes exceeded"),
         ));
     }
     Ok(())
@@ -1033,9 +1069,12 @@ mod tests {
             meta(big, ACCOUNT_QUOTA_BYTES - 10),
             meta(Uuid::new_v4(), 10),
         ];
-        assert!(check_quota(&existing, None, 1).is_err());
-        assert!(check_quota(&existing, Some(big), 100).is_ok());
-        assert!(check_quota(&existing[..1], None, 10).is_ok());
+        let quota = ACCOUNT_QUOTA_BYTES;
+        assert!(check_quota(&existing, None, 1, quota).is_err());
+        assert!(check_quota(&existing, Some(big), 100, quota).is_ok());
+        assert!(check_quota(&existing[..1], None, 10, quota).is_ok());
+        // The same account on the paid tier has room for all of it.
+        assert!(check_quota(&existing, None, 1, PAID_ACCOUNT_QUOTA_BYTES).is_ok());
     }
 
     /// Files a version away with a controlled size and archival time. The
@@ -1085,7 +1124,9 @@ mod tests {
             ids.push(seed_version(&state, account_id, vault_id, age, 10).await);
         }
 
-        trim(&state, account_id, 0).await.unwrap();
+        trim(&state, account_id, 0, ACCOUNT_QUOTA_BYTES)
+            .await
+            .unwrap();
 
         let kept = state
             .vault_versions
@@ -1123,9 +1164,14 @@ mod tests {
         }
 
         // Live files leave room for two generations, so three of the four go.
-        trim(&state, account_id, ACCOUNT_QUOTA_BYTES - 2 * size)
-            .await
-            .unwrap();
+        trim(
+            &state,
+            account_id,
+            ACCOUNT_QUOTA_BYTES - 2 * size,
+            ACCOUNT_QUOTA_BYTES,
+        )
+        .await
+        .unwrap();
         let kept = state
             .vault_versions
             .list_for_account(account_id)
@@ -1135,7 +1181,9 @@ mod tests {
 
         // A full account keeps no history at all rather than exceeding the
         // quota it always had.
-        trim(&state, account_id, ACCOUNT_QUOTA_BYTES).await.unwrap();
+        trim(&state, account_id, ACCOUNT_QUOTA_BYTES, ACCOUNT_QUOTA_BYTES)
+            .await
+            .unwrap();
         assert!(
             state
                 .vault_versions

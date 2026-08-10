@@ -160,7 +160,7 @@ first account created on a server is granted the `ADMIN` role automatically,
 and that is the only automatic grant there is — a later registration is never
 promoted, not even if every administrator is later deleted. Whoever registers
 first gets the Users page at `/admin/users`, from which they can suspend,
-promote and delete accounts.
+promote, delete accounts and move them on and off the paid storage tier.
 
 If a server somehow ends up with no administrator (two people registering in
 the same instant, or a hand-edited database), grant the role from a shell on
@@ -176,7 +176,27 @@ It needs `ASKRYPT_BACKEND=sqlite` and an account that already exists.
 `migrations/0002_auth.sql` rather than a new numbered migration, so a database
 created before it **will not** pick them up. Back it up, delete it, and let the
 server recreate it — accounts and vaults are lost, so on a server with real
-data, don't upgrade past this point without a plan for it.
+data, don't upgrade past this point without a plan for it. The same applies to
+the `PAYMENT_USER` role, which was added to that same script later: `sqlx`
+checksums the migrations it applied and refuses to run against a database that
+saw the earlier version, so the server will fail to start rather than start
+without it.
+
+### The paid storage tier
+
+Every account gets 1 MiB of vault storage. Granting it the `PAYMENT_USER` role
+from the Users page raises that to 100 MiB and changes nothing else — the role
+carries no other privilege. Notes for whoever operates this:
+
+- **The quota is checked on writes only.** An account over its limit (because
+  the role was taken away, or because it was already storing more) keeps full
+  access to what it has: listing, downloading and deleting all work. It simply
+  cannot upload a new file or grow an existing one until it is back under.
+- **Version history shares the same allowance**, so a standard-tier account
+  keeps fewer generations than a paid one. Nothing is ever refused because of
+  history — the oldest generations are dropped instead.
+- There is no billing here. The role is the switch; collecting the money and
+  granting it are yours to connect.
 
 ### State
 
@@ -237,9 +257,11 @@ Applied to every response by `src/hardening.rs`:
 
 Accounts and roles:
 
-- The `roles` table is seeded by the migration with one role, `ADMIN`; it is
+- The `roles` table is seeded by the migration with two roles. `ADMIN` is
   granted automatically to the first account registered and otherwise only
-  from the Users page or `grant-admin`.
+  from the Users page or `grant-admin`. `PAYMENT_USER` is granted only from
+  the Users page, is never automatic, and raises the storage quota — it
+  confers nothing else.
 - A suspended account (`banned_at` set) cannot sign in by password or by
   Google, and its existing sessions stop resolving on the very next request —
   bearer tokens and browser cookies alike. Its stored vaults are kept
@@ -268,10 +290,11 @@ Limits and backpressure:
 - 20 requests/minute per client on `/api/v1/auth/*` and on the email/password
   mutations → 429 `rate_limited` with `Retry-After`. The admin actions share
   that second bucket.
-- Per account: 100 MiB total, 100 vaults, 10 MiB per file. Each vault also
+- Per account: 100 vaults, 10 MiB per file, and 1 MiB of total storage — or
+  100 MiB with the `PAYMENT_USER` role. Each vault also
   keeps the 5 generations its last saves replaced; those bytes are charged to
-  the same 100 MiB, and the oldest are dropped to make room rather than a
-  save being refused.
+  the same allowance, and the oldest are dropped to make room rather than a
+  save being refused. The quota is enforced on writes only.
 
 ---
 

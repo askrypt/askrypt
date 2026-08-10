@@ -26,8 +26,7 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use crate::store::{VaultMeta, VaultVersion};
 use crate::vaults::{
-    ACCOUNT_QUOTA_BYTES, MAX_VAULT_BYTES, MAX_VAULT_VERSIONS, MAX_VAULTS_PER_ACCOUNT,
-    parse_vault_id, parse_version_id,
+    MAX_VAULT_BYTES, MAX_VAULT_VERSIONS, MAX_VAULTS_PER_ACCOUNT, parse_vault_id, parse_version_id,
 };
 use crate::web::WebResult;
 use crate::web::csrf::{CsrfForm, CsrfMultipart};
@@ -412,7 +411,9 @@ async fn refused(
         return Err(err.into());
     }
     let notice = Notice {
-        text: explain(&err),
+        // The quota sentence names the account's own allowance, so it has to
+        // be looked up rather than read off a constant.
+        text: explain(&err, crate::vaults::quota_for(state, web.account.id).await?),
         danger: true,
     };
     let (chrome, cookies) = Shell::build(headers, Some(web.account.email.clone()))
@@ -440,14 +441,14 @@ async fn refused(
 /// cases a visitor actually hits get a sentence instead. A 5xx never reaches
 /// here — [`crate::web::WebError`] replaces those wholesale — so nothing
 /// internal can leak through this.
-fn explain(err: &ApiError) -> String {
+fn explain(err: &ApiError, quota: u64) -> String {
     match err.code {
         "precondition_failed" => "This vault changed on another device since this page was \
              loaded. Reload to see the current file before replacing it."
             .to_string(),
         "quota_exceeded" => format!(
             "That would put you over your {} of storage. Delete a vault first.",
-            human_bytes(ACCOUNT_QUOTA_BYTES)
+            human_bytes(quota)
         ),
         "vault_limit_reached" => {
             format!("You already have the maximum of {MAX_VAULTS_PER_ACCOUNT} vault files.")
@@ -484,6 +485,8 @@ async fn listing(
     // would read as free space that isn't.
     let archived: u64 = history.values().flatten().map(|v| v.size).sum();
     let used = live + archived;
+    // The account's own allowance, which the paid tier raises.
+    let quota = crate::vaults::quota_for(state, web.account.id).await?;
     Ok(Listing {
         csrf,
         vaults: metas
@@ -500,15 +503,16 @@ async fn listing(
         max_versions: MAX_VAULT_VERSIONS,
         used: human_bytes(used),
         archived: human_bytes(archived),
-        quota: human_bytes(ACCOUNT_QUOTA_BYTES),
-        used_percent: (used.saturating_mul(100) / ACCOUNT_QUOTA_BYTES).min(100),
+        quota: human_bytes(quota),
+        used_percent: (used.saturating_mul(100) / quota).min(100),
         notice,
     })
 }
 
 /// Sizes as a person reads them. Vaults are tens of KB, so one decimal is
-/// plenty and there is no need to go past MiB.
-fn human_bytes(bytes: u64) -> String {
+/// plenty and there is no need to go past MiB. Shared with
+/// [`crate::web::admin`], so the storage figures read alike on both pages.
+pub(crate) fn human_bytes(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;
     match bytes {
@@ -530,6 +534,7 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vaults::{ACCOUNT_QUOTA_BYTES, PAID_ACCOUNT_QUOTA_BYTES};
 
     #[test]
     fn sizes_read_the_way_a_person_expects() {
@@ -569,11 +574,29 @@ mod tests {
 
     #[test]
     fn the_conflict_is_explained_rather_than_shown_as_a_412() {
-        let message = explain(&ApiError::new(
-            StatusCode::PRECONDITION_FAILED,
-            "precondition_failed",
-            "the stored vault changed since it was last fetched",
-        ));
+        let message = explain(
+            &ApiError::new(
+                StatusCode::PRECONDITION_FAILED,
+                "precondition_failed",
+                "the stored vault changed since it was last fetched",
+            ),
+            ACCOUNT_QUOTA_BYTES,
+        );
         assert!(message.contains("another device"), "{message}");
+    }
+
+    /// The quota sentence quotes the account's own allowance, not a constant,
+    /// so a paid account is not told to free up space it has.
+    #[test]
+    fn the_quota_message_names_the_accounts_own_allowance() {
+        let err = || {
+            ApiError::new(
+                StatusCode::INSUFFICIENT_STORAGE,
+                "quota_exceeded",
+                "account storage quota exceeded",
+            )
+        };
+        assert!(explain(&err(), ACCOUNT_QUOTA_BYTES).contains("1.0 MB"));
+        assert!(explain(&err(), PAID_ACCOUNT_QUOTA_BYTES).contains("100.0 MB"));
     }
 }

@@ -1270,12 +1270,13 @@ async fn a_host_name_from_a_file_cannot_inject_markup() {
 }
 
 /// The listing shows what is left of the quota; the count limit and the byte
-/// quota themselves are the API suite's gate.
+/// quota themselves are the API suite's gate. A fresh account is on the
+/// standard tier, so the meter reads against that allowance.
 #[tokio::test]
 async fn the_listing_shows_quota_usage() {
     let app = app();
     let (cookies, html) = with_vaults_page(&app, "usage@example.com").await;
-    assert!(html.contains("0 B of 100.0 MB"), "{html}");
+    assert!(html.contains("0 B of 1.0 MB"), "{html}");
     assert!(html.contains("0 of 100 files"), "{html}");
 
     send(

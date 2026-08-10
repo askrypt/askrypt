@@ -15,9 +15,9 @@ CREATE TABLE accounts (
     banned_at     TEXT
 );
 
--- The role vocabulary. ADMIN is embedded in the migration rather than
--- granted at runtime, so its id is the same in every deployment and code
--- may refer to it by name without first having to create it.
+-- The role vocabulary. Roles are embedded in the migration rather than
+-- granted at runtime, so their ids are the same in every deployment and code
+-- may refer to them by name without first having to create them.
 CREATE TABLE roles (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -26,7 +26,9 @@ CREATE TABLE roles (
 
 INSERT INTO roles (id, name, description) VALUES
     ('a0000000-0000-4000-8000-000000000001', 'ADMIN',
-     'Full administrative access to the user list.');
+     'Full administrative access to the user list.'),
+    ('a0000000-0000-4000-8000-000000000002', 'PAYMENT_USER',
+     'Paid storage tier: the full account storage quota.');
 
 CREATE TABLE account_roles (
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -35,8 +37,8 @@ CREATE TABLE account_roles (
     PRIMARY KEY (account_id, role_id)
 );
 
--- Answering "who holds ADMIN?" is on the path of every page render, and the
--- primary key indexes the other direction only.
+-- Answering "who holds this role?" is on the path of every page render, and
+-- the primary key indexes the other direction only.
 CREATE INDEX account_roles_by_role ON account_roles(role_id);
 
 CREATE TABLE sessions (

@@ -34,6 +34,8 @@ pub enum Flash {
     UserDeleted,
     AdminGranted,
     AdminRevoked,
+    PaymentGranted,
+    PaymentRevoked,
 }
 
 impl Flash {
@@ -57,6 +59,8 @@ impl Flash {
             Self::UserDeleted => "udel",
             Self::AdminGranted => "agrant",
             Self::AdminRevoked => "arevoke",
+            Self::PaymentGranted => "pgrant",
+            Self::PaymentRevoked => "prevoke",
         }
     }
 
@@ -80,6 +84,8 @@ impl Flash {
             "udel" => Some(Self::UserDeleted),
             "agrant" => Some(Self::AdminGranted),
             "arevoke" => Some(Self::AdminRevoked),
+            "pgrant" => Some(Self::PaymentGranted),
+            "prevoke" => Some(Self::PaymentRevoked),
             _ => None,
         }
     }
@@ -108,6 +114,8 @@ impl Flash {
             Self::UserDeleted => "That account and every vault it stored have been deleted.",
             Self::AdminGranted => "That account is now an administrator.",
             Self::AdminRevoked => "That account is no longer an administrator.",
+            Self::PaymentGranted => "That account is now on the paid storage tier.",
+            Self::PaymentRevoked => "That account is back on the standard storage quota.",
         }
     }
 }
@@ -158,6 +166,8 @@ mod tests {
             Flash::UserDeleted,
             Flash::AdminGranted,
             Flash::AdminRevoked,
+            Flash::PaymentGranted,
+            Flash::PaymentRevoked,
         ];
         for flash in all {
             assert_eq!(Flash::from_code(flash.code()), Some(flash));

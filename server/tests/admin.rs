@@ -351,8 +351,100 @@ async fn admin_rights_can_be_granted_and_taken_away() {
     assert!(html.contains("second@example.com"), "{html}");
 }
 
+/// The markup of one account's row, from its email cell to the end of the
+/// row — enough to tell one account's badges and buttons from another's.
+fn row(html: &str, email: &str) -> String {
+    let start = html
+        .find(email)
+        .unwrap_or_else(|| panic!("no row for {email} in the page"));
+    let rest = &html[start..];
+    rest[..rest.find("</tr>").expect("unterminated row")].to_string()
+}
+
+/// The paid storage tier is the second role the page manages, so the toggle
+/// has to name it: the same route, the same CSRF door, a different `role`.
+#[tokio::test]
+async fn the_paid_storage_tier_can_be_granted_and_taken_away() {
+    let app = app();
+    let admin = register(&app, "admin@example.com").await;
+    register(&app, "second@example.com").await;
+
+    let (admin, token, html) = users_page(&app, &admin).await;
+    let second_id = row_id(&html, "second@example.com");
+    assert!(
+        !row(&html, "second@example.com").contains(">paid</span>"),
+        "a new account must not start on the paid tier: {html}"
+    );
+
+    let (status, _, _) = send(
+        &app,
+        post_form(
+            &format!("{USERS}/{second_id}/role"),
+            &admin,
+            &format!("csrf={token}&role=PAYMENT_USER&action=grant"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    let (admin, token, html) = users_page(&app, &admin).await;
+    let paid = row(&html, "second@example.com");
+    assert!(paid.contains(">paid</span>"), "{html}");
+    // The tier says nothing about administrative access.
+    assert!(!paid.contains(">admin</span>"), "{html}");
+    assert!(paid.contains("Remove paid tier"), "{html}");
+
+    let (status, _, _) = send(
+        &app,
+        post_form(
+            &format!("{USERS}/{second_id}/role"),
+            &admin,
+            &format!("csrf={token}&role=PAYMENT_USER&action=revoke"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    let (_, _, html) = users_page(&app, &admin).await;
+    assert!(
+        !row(&html, "second@example.com").contains(">paid</span>"),
+        "{html}"
+    );
+}
+
+/// A hand-made POST cannot name a role the page does not offer. It is
+/// refused with a readable notice rather than reaching the store, which
+/// would answer an unknown name with a misleading 404.
+#[tokio::test]
+async fn an_unknown_role_is_refused_rather_than_granted() {
+    let app = app();
+    let admin = register(&app, "admin@example.com").await;
+    register(&app, "second@example.com").await;
+
+    let (admin, token, html) = users_page(&app, &admin).await;
+    let second_id = row_id(&html, "second@example.com");
+    let (status, _, body) = send(
+        &app,
+        post_form(
+            &format!("{USERS}/{second_id}/role"),
+            &admin,
+            &format!("csrf={token}&role=SUPERUSER&action=grant"),
+        ),
+    )
+    .await;
+    // Not a redirect: the refusal is worded above the table it re-renders.
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("not a role this page can grant"), "{body}");
+
+    let (_, _, html) = users_page(&app, &admin).await;
+    let untouched = row(&html, "second@example.com");
+    assert!(!untouched.contains(">paid</span>"), "{html}");
+    assert!(!untouched.contains(">admin</span>"), "{html}");
+}
+
 /// The signed-in account's own id, via the JSON profile — the Users page
-/// deliberately offers no form on the caller's own row to read it from.
+/// offers no *destructive* form on the caller's own row to read it from, and
+/// its paid-tier form is not one this helper should depend on.
 async fn own_account_id(app: &Router, cookies: &str) -> String {
     let token = cookies
         .split("; ")

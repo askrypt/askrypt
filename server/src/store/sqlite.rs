@@ -695,7 +695,7 @@ impl VaultVersionStore for SqliteVaultVersionStore {
 mod tests {
     use chrono::Duration;
 
-    use super::super::ADMIN_ROLE;
+    use super::super::{ADMIN_ROLE, PAYMENT_USER_ROLE};
     use super::*;
 
     async fn setup() -> (tempfile::TempDir, SqlitePool) {
@@ -1009,16 +1009,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_migration_seeds_exactly_the_admin_role() {
+    async fn the_migration_seeds_exactly_the_role_vocabulary() {
         let (_dir, pool) = setup().await;
         let roles = SqliteRoleStore::new(pool).list().await.unwrap();
-        assert_eq!(roles.len(), 1);
+        // Name-ordered, so ADMIN comes before PAYMENT_USER.
+        assert_eq!(roles.len(), 2);
         assert_eq!(roles[0].name, ADMIN_ROLE);
-        // The id is fixed by the migration; the in-memory fake copies it, and
-        // a change here would silently split the two backends.
+        assert_eq!(roles[1].name, PAYMENT_USER_ROLE);
+        // The ids are fixed by the migration; the in-memory fake copies them,
+        // and a change here would silently split the two backends.
         assert_eq!(
             roles[0].id.to_string(),
             "a0000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(
+            roles[1].id.to_string(),
+            "a0000000-0000-4000-8000-000000000002"
         );
     }
 

@@ -8,7 +8,7 @@ use std::path::Path;
 use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
-use askrypt_server::store::VaultMeta;
+use askrypt_server::store::{PAYMENT_USER_ROLE, VaultMeta};
 use askrypt_server::vaults::{
     ACCOUNT_QUOTA_BYTES, MAX_VAULT_BYTES, MAX_VAULT_VERSIONS, MAX_VAULTS_PER_ACCOUNT,
 };
@@ -426,6 +426,50 @@ async fn size_quota_and_count_limits_are_enforced() {
     let (status, body) = send(&t.app, upload("one-more.askrypt", &token, VAULT_V1)).await;
     assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
     assert_eq!(body["error"]["code"], "vault_limit_reached");
+}
+
+/// The byte quota is the account's own, not a constant: `PAYMENT_USER` is
+/// the difference between a refused upload and an accepted one, and taking
+/// the role away puts the account back where it was.
+#[tokio::test]
+async fn the_paid_role_raises_the_byte_quota() {
+    let t = test_app();
+    let token = register_and_login(&t.app, "payer@example.com").await;
+    let (_, me) = send(&t.app, get_authed("/api/v1/me", &token)).await;
+    let account_id: Uuid = me["id"].as_str().unwrap().parse().unwrap();
+
+    // Fill the standard allowance, leaving no room for the next file.
+    seed_meta(&t.state, account_id, "full.askrypt", ACCOUNT_QUOTA_BYTES).await;
+    let (status, body) = send(&t.app, upload("more.askrypt", &token, VAULT_V1)).await;
+    assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE, "{body}");
+    assert_eq!(body["error"]["code"], "quota_exceeded");
+
+    // The same upload, the same bytes, one role later.
+    t.state
+        .roles
+        .grant(account_id, PAYMENT_USER_ROLE)
+        .await
+        .unwrap();
+    let (status, body) = send(&t.app, upload("more.askrypt", &token, VAULT_V1)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Revoking is not retroactive — the stored file stays — but the next
+    // save is refused again.
+    t.state
+        .roles
+        .revoke(account_id, PAYMENT_USER_ROLE)
+        .await
+        .unwrap();
+    let (status, _, _) =
+        send_raw(&t.app, get_authed(&format!("/api/v1/vaults/{id}"), &token)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an over-quota account can still read"
+    );
+    let (status, body) = send(&t.app, replace(&id, &token, Some("*"), VAULT_V1)).await;
+    assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE, "{body}");
 }
 
 fn restore_req(id: &str, version_id: &str, token: &str) -> Request<Body> {

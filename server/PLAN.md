@@ -228,8 +228,10 @@ askrypt/
     | `POST` | `/vaults/{id}/versions/{version_id}/restore` | make that generation current; `If-Match` honored if sent |
 
     ETags are the SHA-256 of the stored bytes, quoted in headers. Limits:
-    10 MiB per file (also the route body limit), 100 MiB and 100 files per
-    account, answered as 507 `quota_exceeded` / `vault_limit_reached`.
+    10 MiB per file (also the route body limit) and 100 files per account,
+    plus a per-account byte quota — 1 MiB, or 100 MiB for an account holding
+    `PAYMENT_USER` (see Phase 9) — answered as 507 `quota_exceeded` /
+    `vault_limit_reached`.
 
   - **Version history** *(added 2026-08-08, after the phase gate)*. Every
     overwrite files the bytes it replaced away as a `VaultVersion`:
@@ -243,8 +245,8 @@ askrypt/
       write has landed.
     - **History shares the account quota** rather than adding to it: the trim
       keeps the newest generations that fit in what the live files leave of
-      the 100 MiB, so total disk per account is unchanged from before the
-      feature. A full account simply keeps no history.
+      the account's own allowance, so total disk per account is unchanged
+      from before the feature. A full account simply keeps no history.
     - **Identical bytes make no generation**, so a client that re-uploads on
       a timer cannot flush the real history out of the window.
     - **A restore is an ordinary overwrite** with old bytes, which archives
@@ -527,11 +529,12 @@ askrypt/
   registered, and no way to lock out or remove an account short of editing
   SQLite by hand.
 
-  - **Roles are tables, not a flag.** `roles` (seeded by the migration with
-    exactly one row, `ADMIN`, at a fixed uuid) plus the `account_roles`
+  - **Roles are tables, not a flag.** `roles` (seeded by the migration, `ADMIN`
+    at a fixed uuid) plus the `account_roles`
     many-to-many grant table, both added to `migrations/0002_auth.sql` rather
     than a new numbered script — dev databases get recreated. A second role
-    later is a data change, not a schema change.
+    later is a data change, not a schema change; Phase 9 added `PAYMENT_USER`
+    to the same `INSERT`.
   - **The first registered account becomes the administrator.**
     `admin::bootstrap_first_admin` runs after both account-creation paths
     (password and Google) and grants `ADMIN` only when no administrator exists
@@ -562,8 +565,41 @@ askrypt/
     non-administrator gets 403 and a signed-out visitor gets the login
     redirect; a ban kills live sessions *and* fresh logins and is reversible;
     delete cascades the target's vaults; CSRF and htmx-fragment behaviour
-    match the rest of the site. `server/tests/admin.rs` (9 tests) plus unit
+    match the rest of the site. `server/tests/admin.rs` (11 tests) plus unit
     tests in `src/admin.rs` and both store backends.
+
+- **Phase 9 — The paid storage tier.** ✅ *(done 2026-08-10)*
+  The storage quota was one constant for everybody, which left no way to
+  offer more space to some accounts than others. Phase 8's role table was
+  built for exactly this, so the tier is a role rather than a column.
+
+  - **`PAYMENT_USER` is the second seeded role**, added to the same
+    `INSERT INTO roles` in `migrations/0002_auth.sql` at a fixed uuid, and
+    mirrored by hand in `MemoryRoleStore::default`. It grants nothing but
+    storage. Because the migration changed, **existing databases have to be
+    recreated**: `sqlx::migrate!` checksums what it applied and refuses a
+    rewritten script.
+  - **The quota became per-account.** `ACCOUNT_QUOTA_BYTES` is now 1 MiB and
+    `PAID_ACCOUNT_QUOTA_BYTES` 100 MiB — the figure everyone used to get.
+    `vaults::quota_for` picks between them; `create` and `overwrite` fetch it
+    once and thread it through `check_quota` and the history trim, so a save
+    costs one role lookup. Nothing was backfilled: every existing account
+    dropped to the standard tier, and an administrator grants the role.
+  - **Only writes are checked.** An account over its quota keeps list,
+    download and delete — losing the role cannot strand somebody's data
+    behind a paywall, it only stops the next save.
+  - **The Users page grew a second toggle** on the existing `/{id}/role`
+    route, told apart by a hidden `role` field (absent = `ADMIN`, so the
+    older form still works) and whitelisted by `admin::known_role` so a
+    hand-made POST cannot name anything else. `set_role` applies the
+    self- and last-admin guards **only** to `ADMIN`, so the paid-tier button
+    appears on every row including the administrator's own.
+  - **Phase gate:** ✅ the same upload is refused at 507 `quota_exceeded` and
+    then accepted once the role is granted; revoking it leaves the stored
+    file readable but the next save refused; the badge and both toggles
+    round-trip through the page; an unknown role name is refused rather than
+    granted. `server/tests/vaults.rs`, `server/tests/admin.rs` and unit tests
+    in `src/admin.rs`, `src/vaults.rs` and `src/web/vaults.rs`.
 
 ## Open decisions (not blocking)
 

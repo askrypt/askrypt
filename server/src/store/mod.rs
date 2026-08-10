@@ -92,9 +92,15 @@ pub trait AccountStore: Send + Sync {
     async fn count(&self) -> Result<u64, StoreError>;
 }
 
-/// The one role the migration embeds. Named rather than looked up by id so
-/// callers never carry a uuid literal around.
+/// Administrative access to the user list. Named rather than looked up by id
+/// so callers never carry a uuid literal around; the same goes for
+/// [`PAYMENT_USER_ROLE`].
 pub const ADMIN_ROLE: &str = "ADMIN";
+
+/// The paid storage tier. Holding it lifts an account's vault quota from
+/// [`crate::vaults::ACCOUNT_QUOTA_BYTES`] to
+/// [`crate::vaults::PAID_ACCOUNT_QUOTA_BYTES`]; it grants nothing else.
+pub const PAYMENT_USER_ROLE: &str = "PAYMENT_USER";
 
 /// An entry in the role vocabulary. Roles are seeded by the migration, not
 /// created at runtime, so there is no `NewRole`.

@@ -10,7 +10,8 @@
 
   The administrator's own row deliberately offers no destructive action —
   `web::admin` refuses them anyway, but the safest button is the one that
-  isn't there.
+  isn't there. The storage tier is the exception: it locks nobody out, so
+  `admin::set_role` leaves it unguarded and every row offers it.
 -#}
 <section class="card" id="user-list">
   <h2>Accounts</h2>
@@ -37,6 +38,9 @@
 {%- if user.is_admin %}
             <span class="tag">admin</span>
 {%- endif %}
+{%- if user.is_payment_user %}
+            <span class="tag">paid</span>
+{%- endif %}
           </td>
           <td>{{ user.created }}</td>
           <td>{{ user.providers }}</td>
@@ -49,8 +53,30 @@
 {%- endif %}
           </td>
           <td class="row-actions">
+            <details class="confirm">
+              <summary>{% if user.is_payment_user %}Remove paid tier{% else %}Grant paid tier{% endif %}</summary>
+              <form method="post" action="/admin/users/{{ user.id }}/role"
+                    hx-post="/admin/users/{{ user.id }}/role" hx-target="#user-list"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <input type="hidden" name="role" value="PAYMENT_USER">
+                <input type="hidden" name="action"
+                       value="{% if user.is_payment_user %}revoke{% else %}grant{% endif %}">
+{%- if user.is_payment_user %}
+                <p class="hint">Puts <strong>{{ user.email }}</strong> back on the
+                standard {{ free_quota }} of storage. Nothing already stored is
+                deleted, but they cannot save more until they are under it.</p>
+                <button class="button small" type="submit">Remove paid tier</button>
+{%- else %}
+                <p class="hint">Raises the storage <strong>{{ user.email }}</strong>
+                may use from {{ free_quota }} to {{ paid_quota }}. It changes
+                nothing else about the account.</p>
+                <button class="button small" type="submit">Grant paid tier</button>
+{%- endif %}
+              </form>
+            </details>
 {%- if user.is_self %}
-            <span class="hint">Manage your own account from the
+            <span class="hint">Manage the rest of your own account from the
             <a href="/account">account page</a>.</span>
 {%- else %}
 {%- if user.banned.is_some() %}
@@ -80,6 +106,7 @@
                     hx-post="/admin/users/{{ user.id }}/role" hx-target="#user-list"
                     hx-swap="outerHTML">
                 <input type="hidden" name="csrf" value="{{ csrf }}">
+                <input type="hidden" name="role" value="ADMIN">
                 <input type="hidden" name="action"
                        value="{% if user.is_admin %}revoke{% else %}grant{% endif %}">
 {%- if user.is_admin %}

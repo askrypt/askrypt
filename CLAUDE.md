@@ -108,8 +108,15 @@ manager) and 8 (roles + the admin Users page) are done. Still open: Phase 6
 Self-hosting is documented in **`server/DEPLOY.md`**.
 
 **Roles and the first account.** The `roles` table is seeded by the migration
-with exactly one role, `ADMIN` (fixed uuid, so both backends name the same
-row); `account_roles` is the many-to-many grant table. `admin::bootstrap_first_admin`
+with two roles at fixed uuids, so both backends name the same rows: `ADMIN`
+(the Users page) and `PAYMENT_USER` (the paid storage tier — it grants
+`vaults::PAID_ACCOUNT_QUOTA_BYTES` instead of `ACCOUNT_QUOTA_BYTES` and
+nothing else). `account_roles` is the many-to-many grant table. Adding a role
+means four places: the migration's `INSERT`, `MemoryRoleStore::default` (which
+copies the uuid and description by hand), a `pub const` in `store/mod.rs`, and
+`admin::known_role`, the whitelist that keeps a hand-made POST to
+`/admin/users/{id}/role` from naming anything the page does not offer.
+`admin::bootstrap_first_admin`
 grants `ADMIN` to the **first account ever registered** — the rule is narrow
 on purpose (no administrator exists *and* `accounts.count() == 1`), so a later
 registration can never be promoted just because the administrators were
@@ -270,12 +277,18 @@ next request.
   `trace`, not `debug`: it fires on every authenticated request and the crate
   defaults to `debug`.
 - **`server/src/admin.rs`** — Phase 8 administrative rules, the same
-  handlers-are-wrappers split as `profile.rs`: `list_users` (two store calls
-  and a count, never one per row), `set_banned` (which also drops the target's
-  sessions), `set_admin`, `delete_user` (reusing `profile::delete_account_data`
+  handlers-are-wrappers split as `profile.rs`: `list_users` (a fixed number of
+  store calls — one `accounts_with` per role, folded into a lookup, never one
+  per row), `set_banned` (which also drops the target's
+  sessions), `set_role`, `delete_user` (reusing `profile::delete_account_data`
   rather than a second cascade) and `bootstrap_first_admin`. The three guards
   live here, so the htmx and no-JS paths cannot drift: `cannot_target_self`,
-  `last_admin`, `confirmation_mismatch`. **There is no JSON admin API** —
+  `last_admin`, `confirmation_mismatch` — and `set_role` applies the first two
+  **only to `ADMIN`**, since losing `PAYMENT_USER` locks nobody out, which is
+  why the paid-tier button appears on the administrator's own row and the
+  destructive ones do not. `has_role` is the single read-side role check
+  (`is_admin` and `vaults::quota_for` are both wrappers over it).
+  **There is no JSON admin API** —
   administration is a website capability, and no desktop or mobile client
   needs it.
 - **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`
@@ -307,7 +320,7 @@ next request.
   deliberately *best effort* — they log a `warn!` and never fail a save — and
   the trim runs after the write lands. `trim` walks the account's versions
   newest-first and keeps each only while its vault is under the cap **and**
-  it fits in what the live files leave of `ACCOUNT_QUOTA_BYTES`, so history
+  it fits in what the live files leave of the account's quota, so history
   shares the existing quota instead of multiplying disk use; re-uploading
   identical bytes makes no generation; a restore is an ordinary `overwrite`
   with old bytes, so it archives what it displaces and is itself undoable.
@@ -317,8 +330,15 @@ next request.
   generation it files away. ETags are the SHA-256 of
   the stored bytes: downloads honor `If-None-Match` (304), overwrites
   require `If-Match` (428 without it, 412 when stale) so multi-device sync
-  detects conflicts. Enforces `MAX_VAULT_BYTES` (10 MiB),
-  `ACCOUNT_QUOTA_BYTES` (100 MiB) and `MAX_VAULTS_PER_ACCOUNT` (100).
+  detects conflicts. Enforces `MAX_VAULT_BYTES` (10 MiB) and
+  `MAX_VAULTS_PER_ACCOUNT` (100) globally, plus a **per-account** byte quota:
+  `quota_for` returns `PAID_ACCOUNT_QUOTA_BYTES` (100 MiB) for an account
+  holding `PAYMENT_USER`, otherwise `ACCOUNT_QUOTA_BYTES` (1 MiB). It is the
+  one role lookup on the write path, so `overwrite` fetches it once and hands
+  it to both `check_quota` and the trim; `restore_version` inherits it by
+  delegating to `overwrite`. Only *writes* are checked — an account that drops
+  off the paid tier keeps full read, download and delete access to what it
+  already stored, it simply cannot save more until it is back under the line.
   Downloads set `Cache-Control: private, no-cache` so they opt out of the
   blanket `no-store` without losing ETag revalidation.
   **Every operation logs**, on the module's own `askrypt_server::vaults`
@@ -387,8 +407,13 @@ next request.
   plain name order. Plus `explain`, which turns the handful of reachable `ApiError`
   codes into sentences; `pages.rs` landing and the HTML 404; and `admin.rs`
   the Phase 8 Users page (`/admin/users` behind `AdminSession`, with per-row
-  suspend/lift, promote/demote and typed-confirmation delete, paged 50 at a
-  time). Every admin action re-renders the **whole** `#user-list` fragment,
+  suspend/lift, promote/demote, paid-tier grant/revoke and typed-confirmation
+  delete, paged 50 at a
+  time). Both role toggles POST to the **same** `/{id}/role` route, differing
+  only in a hidden `role` field (absent means `ADMIN`, so the older
+  promote/demote form still works) — one CSRF-checked door per row action
+  rather than a route per role. Every admin action re-renders the **whole**
+  `#user-list` fragment,
   not the row: each one moves the account total and the administrator count
   the guards depend on. `Chrome` carries `is_admin` (set by `Shell::as_admin`,
   defaulting to *off*) so the nav can offer the Users link on every page —
@@ -404,10 +429,12 @@ next request.
   `SessionStore`, `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
   `Mailer`,
   `IdTokenVerifier` (+ `StoreError`/`MailerError`/`IdTokenError`, all
-  `#[non_exhaustive]`, and the `ADMIN_ROLE` name constant); `memory.rs`
+  `#[non_exhaustive]`, and the `ADMIN_ROLE`/`PAYMENT_USER_ROLE` name
+  constants — the stores themselves are name-generic, so a new role needs no
+  code in either backend); `memory.rs`
   in-memory fakes for all of them (used by tests
-  and the `memory` backend — `MemoryRoleStore::default` seeds `ADMIN` with the
-  *same fixed uuid* the migration writes, so the two backends agree);
+  and the `memory` backend — `MemoryRoleStore::default` seeds both roles with
+  the *same fixed uuids* the migration writes, so the two backends agree);
   `sqlite.rs` SQLite pool + embedded migration
   runner over `server/migrations/` plus `SqliteAccountStore`/`SqliteRoleStore`/
   `SqliteSessionStore`/`SqliteVaultMetaStore`/`SqliteVaultVersionStore`
@@ -464,10 +491,12 @@ next request.
   upload → list → byte-identical download → rename → delete with the
   stale-ETag conflict, the oversize 413 page, and the `Saved` column —
   including that a host name out of a file cannot inject markup) and
-  `admin.rs` (the Phase 8 gate, 9 tests: first-account-is-admin and the nav
+  `admin.rs` (the Phase 8 gate, 11 tests: first-account-is-admin and the nav
   link that follows, 403-vs-redirect for non-admin and signed-out visitors,
   suspend → old session dies *and* a fresh JSON login is refused → lift
-  restores both, the self-guard, grant/revoke of ADMIN, the typed-confirmation
+  restores both, the self-guard, grant/revoke of ADMIN, grant/revoke of the
+  paid tier and its badge, an unknown role name refused rather than granted,
+  the typed-confirmation
   delete taking the target's vaults with it, CSRF rejection, and the htmx
   fragment swap). Middleware needing a slow
   or parked handler (timeout, shedding) is unit-tested inside

@@ -26,12 +26,15 @@ use crate::admin::{self, USERS_PER_PAGE};
 use crate::audit::ClientInfo;
 use crate::error::ApiError;
 use crate::state::AppState;
+use crate::store::PAYMENT_USER_ROLE;
+use crate::vaults::{ACCOUNT_QUOTA_BYTES, PAID_ACCOUNT_QUOTA_BYTES};
 use crate::web::WebResult;
 use crate::web::account::{TokenOnly, describe_providers};
 use crate::web::csrf::CsrfForm;
 use crate::web::flash::{self, Flash};
 use crate::web::render::{self, Chrome, Page, Shell, is_htmx, timestamp, with_cookies};
 use crate::web::session::AdminSession;
+use crate::web::vaults::human_bytes;
 
 pub const USERS_PATH: &str = "/admin/users";
 
@@ -47,6 +50,10 @@ struct UsersPage {
 pub struct UserList {
     csrf: String,
     users: Vec<UserRow>,
+    /// The two storage allowances, worded for the paid-tier confirmation so
+    /// the figures come from the constants rather than the markup.
+    free_quota: String,
+    paid_quota: String,
     total: u64,
     /// 1-based, for display only; the query parameter stays 0-based.
     page_number: u32,
@@ -84,6 +91,7 @@ pub struct UserRow {
     created: String,
     providers: String,
     is_admin: bool,
+    is_payment_user: bool,
     is_self: bool,
     /// When the account was suspended, or `None` while it is active.
     banned: Option<String>,
@@ -99,6 +107,7 @@ impl From<admin::AdminUser> for UserRow {
             created: timestamp(user.account.created_at),
             providers,
             is_admin: user.is_admin,
+            is_payment_user: user.is_payment_user,
             is_self: user.is_self,
             banned: user.account.banned_at.map(timestamp),
         }
@@ -187,10 +196,14 @@ pub async fn unban(
 
 #[derive(Deserialize)]
 pub struct RoleInput {
-    /// `"grant"` promotes, anything else demotes. A single route for both
-    /// directions keeps one CSRF-checked door per row action.
+    /// `"grant"` adds the role, anything else takes it away. A single route
+    /// for both directions keeps one CSRF-checked door per row action.
     #[serde(default)]
     action: String,
+    /// Which role, by name. Absent means `ADMIN`: the promote/demote form
+    /// predates the paid tier and never sent this.
+    #[serde(default)]
+    role: String,
 }
 
 /// `POST /admin/users/{id}/role`
@@ -204,13 +217,28 @@ pub async fn set_role(
 ) -> WebResult<Response> {
     let web = &admin_session.0;
     let grant = input.action == "grant";
-    let outcome = admin::set_admin(&state, &client, &web.account, id, grant).await;
-    let flash = if grant {
-        Flash::AdminGranted
-    } else {
-        Flash::AdminRevoked
+    // Resolved before anything is written, so a hand-made POST cannot name a
+    // role this page does not offer. An unresolvable one still travels
+    // through `finish`, which words it above the table like any other refusal.
+    let (outcome, flash) = match admin::known_role(&input.role) {
+        Ok(role) => (
+            admin::set_role(&state, &client, &web.account, id, role, grant).await,
+            flash_for(role, grant),
+        ),
+        Err(err) => (Err(err), Flash::AdminGranted),
     };
     finish(&state, &admin_session, &headers, outcome, flash).await
+}
+
+/// The confirmation a successful role change shows. Unreachable on the error
+/// path, where `finish` uses the explained error instead.
+fn flash_for(role: &str, grant: bool) -> Flash {
+    match (role, grant) {
+        (PAYMENT_USER_ROLE, true) => Flash::PaymentGranted,
+        (PAYMENT_USER_ROLE, false) => Flash::PaymentRevoked,
+        (_, true) => Flash::AdminGranted,
+        (_, false) => Flash::AdminRevoked,
+    }
 }
 
 #[derive(Deserialize)]
@@ -293,6 +321,8 @@ async fn listing(
     Ok(UserList {
         csrf,
         users: users.into_iter().map(UserRow::from).collect(),
+        free_quota: human_bytes(ACCOUNT_QUOTA_BYTES),
+        paid_quota: human_bytes(PAID_ACCOUNT_QUOTA_BYTES),
         total,
         page_number: page + 1,
         prev_page: (page > 0).then_some(page),
@@ -307,6 +337,8 @@ async fn listing(
 fn explain(err: &ApiError) -> String {
     match err.code {
         "not_found" => "That account no longer exists.".to_string(),
+        // Only reachable from a hand-made request; the page offers two roles.
+        "unknown_role" => "That is not a role this page can grant.".to_string(),
         _ => err.message.clone(),
     }
 }
