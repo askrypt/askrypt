@@ -92,6 +92,17 @@ impl VaultLocation {
         }
     }
 
+    /// Window-title name: the file name for a local vault, `name @ host` for a
+    /// server one, so the title says which server a vault came from the way the
+    /// rest of the UI does. A local vault's full path is too long for a title.
+    pub fn title_name(&self) -> String {
+        if self.is_server() {
+            self.display_location()
+        } else {
+            self.display_name()
+        }
+    }
+
     /// Whether this vault lives on a server (so the UI can say so).
     pub fn is_server(&self) -> bool {
         matches!(self, VaultLocation::Server { .. })
@@ -523,6 +534,18 @@ mod tests {
             "MyVault.askrypt @ askrypt.example.com"
         );
         assert!(location.is_server());
+    }
+
+    #[test]
+    fn the_window_title_names_the_server_but_never_a_full_path() {
+        assert_eq!(
+            server_location().title_name(),
+            "MyVault.askrypt @ askrypt.example.com"
+        );
+        assert_eq!(
+            VaultLocation::LocalFile(PathBuf::from("/tmp/v.askrypt")).title_name(),
+            "v.askrypt"
+        );
     }
 
     #[test]

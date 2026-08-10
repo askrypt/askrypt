@@ -304,7 +304,7 @@ impl Session {
 
     pub fn title(&self) -> String {
         if let Some(location) = &self.location {
-            let mut title = location.display_name();
+            let mut title = location.title_name();
             if self.is_modified {
                 title.push('*');
             }
