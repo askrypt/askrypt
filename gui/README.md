@@ -214,8 +214,8 @@ up.
 
 The server step also no longer asks for an address, an email or a password: the
 address is a setting and the sign-in happens in a browser (see invariant 4), so
-that step is either one button, the shared waiting card, or the account's vault
-list.
+that step is one button, the shared waiting card, the account's vault list
+(Open), or — saving — a name field over that same list, rendered read-only.
 
 **Entering the server step always refetches that list.** Caching it per sign-in
 (which is what `src/screens/server.rs` does, and what this pane used to do)
@@ -225,6 +225,42 @@ direction as a missing row, and from the save direction as a missing or false
 there is no flicker; `Refresh` is now an explicit re-fetch rather than the only
 one. `State::listing` is what keeps a first, still-running listing from
 rendering as "No vaults on this account yet."
+
+**The save direction says what it knows, including that it knows nothing.** A
+server vault is addressed by name (invariant 3), so a typed name that an account
+already holds replaces that vault in place. `name_status` reduces the typed name
+plus the listing to a `NameStatus`, and every value renders a line:
+
+| `NameStatus` | when | line |
+|---|---|---|
+| `Empty` | nothing typed | — |
+| `Checking` | no listing yet, one in flight | "Checking your vaults…" |
+| `Unknown` | no listing, none in flight (the fetch failed) | "Could not check this account's vaults…" |
+| `Free` | listed, no match | "This will create a new vault on the server." |
+| `Replaces(i)` | listed, row `i` matches | "…already exists and will be replaced." |
+
+`Checking` and `Unknown` are the point of the enum. The pane used to compute one
+boolean off `Option<Vec<_>>`, so a listing that was in flight, had failed, or had
+never run all rendered as *silence* — indistinguishable from a name it had
+checked and found free, which is the one reading that invites an accidental
+overwrite. A refresh over rows already held keeps answering off those rows;
+going blank on every refresh would be the worse lie.
+
+Below the field, the same rows the Open direction offers are rendered read-only
+(`info_row`, a container rather than a button — these name what is there, they
+are not a pick), and the row `Replaces(i)` matched is marked `WILL BE REPLACED`,
+so the warning points at something the user can see. Each row carries the
+server's `updated_at` **and** the file's own `host`/`saved_at` write stamp, which
+`RemoteVault` now keeps (the server has always sent both; the client dropped
+them). The two timestamps differ after a restore, or when an older file is
+uploaded from another device.
+
+One known inaccuracy, deliberate: the match is `eq_ignore_ascii_case` while the
+server's uniqueness is byte-exact (`UNIQUE (account_id, name)` with no `COLLATE
+NOCASE`, and `ServerStorage::resolve` compares with `==`). Typing `work` when
+`Work` exists therefore warns about a replacement that would in fact create a
+second vault. The marked row is the mitigation — it spells the existing name out
+next to what was typed — and a unit test pins the behavior so it stays a choice.
 
 **Opening never has a confirm button.** A vault row — a recent file or one of
 the account's server vaults — is a destination, not a setting, so clicking it
@@ -284,11 +320,11 @@ only case `confirm()` acts on.
    shipping app does not gate Smart Lock, which silently loses unsaved edits
    because `apply_smart_lock` zeroizes the entries.
 7. **Pane state that holds secrets wipes on drop.** → `Drop` impls on
-   `unlock::State` (answers), `questions::State` (answers), `wizard::State`
-   (password), `passgen::State` (the generated password) and
-   `session::SaveRequest`; the editor's draft is wiped by `SecretEntry`'s own
-   `ZeroizeOnDrop`. Any new pane holding a typed answer or password needs the
-   same.
+   `unlock::State` (answers), `questions::State` (answers), `passgen::State`
+   (the generated password) and `session::SaveRequest`; the editor's draft is
+   wiped by `SecretEntry`'s own `ZeroizeOnDrop`. `wizard::State` needs none —
+   it has held no password since sign-in moved to the browser. Any new pane
+   holding a typed answer or password needs the same.
 8. **The idle timeout must not destroy work.** An automatic Smart Lock wipes the
    decrypted entries with nobody at the keyboard to be asked about it, so
    `App::auto_smart_lock` saves first when the vault has a home — and declines

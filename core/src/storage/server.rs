@@ -50,8 +50,19 @@ pub struct RemoteVault {
     pub size: u64,
     /// SHA-256 of the stored bytes, *unquoted* (headers carry it quoted).
     pub etag: String,
-    /// RFC 3339 timestamp of the last write.
+    /// RFC 3339 timestamp of the last write, as the *server* recorded it.
     pub updated_at: String,
+    /// The machine that wrote the file, lifted by the server from the vault's
+    /// own unencrypted stamp. Absent for a pre-stamp file, or for a server too
+    /// old to report one — hence the `default`, which is what lets this type
+    /// keep parsing a listing from either.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// When the file itself says it was saved, from that same stamp. Not the
+    /// same instant as `updated_at`: a restore, or an upload of an older file
+    /// from another device, moves one without the other.
+    #[serde(default)]
+    pub saved_at: Option<String>,
 }
 
 /// The server's uniform error envelope: `{"error": {"code", "message"}}`.
@@ -957,9 +968,13 @@ mod tests {
     const VAULT_ID: &str = "11111111-2222-3333-4444-555555555555";
     const VAULT_NAME: &str = "My Vault.askrypt";
 
+    /// One vault as the current server serializes it — write stamp included,
+    /// and the two stamp keys always present even when the file carries none.
     fn vault_json(etag: &str) -> String {
         format!(
-            r#"{{"id":"{VAULT_ID}","name":"{VAULT_NAME}","size":42,"etag":"{etag}","updated_at":"2026-08-07T10:00:00Z"}}"#
+            r#"{{"id":"{VAULT_ID}","name":"{VAULT_NAME}","size":42,"etag":"{etag}",
+                 "updated_at":"2026-08-07T10:00:00Z",
+                 "host":"ubuntu@mypc","saved_at":"2026-08-07T09:59:00Z"}}"#
         )
     }
 
@@ -1064,6 +1079,8 @@ mod tests {
             size: 7,
             etag: "stale-etag".to_string(),
             updated_at: "2026-08-07T10:00:00Z".to_string(),
+            host: None,
+            saved_at: None,
         };
         let storage = ServerStorage::existing(server.client(), &seed);
 
@@ -1099,6 +1116,8 @@ mod tests {
             size: 7,
             etag: "stale".to_string(),
             updated_at: "2026-08-07T10:00:00Z".to_string(),
+            host: None,
+            saved_at: None,
         };
         let storage = ServerStorage::existing(server.client(), &seed);
 
@@ -1195,6 +1214,49 @@ mod tests {
         }
         // The point of the local check: nothing went over the wire.
         assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn listing_carries_the_files_own_write_stamp() {
+        let server = FakeServer::new(|_| Reply::json(200, &format!("[{}]", vault_json("aaaa"))));
+        let listed = server.client().list().expect("list failed");
+
+        let vault = &listed[0];
+        assert_eq!(vault.updated_at, "2026-08-07T10:00:00Z");
+        assert_eq!(vault.host.as_deref(), Some("ubuntu@mypc"));
+        assert_eq!(vault.saved_at.as_deref(), Some("2026-08-07T09:59:00Z"));
+    }
+
+    #[test]
+    fn listing_without_a_write_stamp_still_parses() {
+        // Two shapes have to keep working: an unstamped file, which the current
+        // server reports as explicit nulls, and a server old enough to omit the
+        // keys altogether.
+        let nulls = FakeServer::new(|_| {
+            Reply::json(
+                200,
+                &format!(
+                    r#"[{{"id":"{VAULT_ID}","name":"{VAULT_NAME}","size":42,"etag":"aaaa",
+                          "updated_at":"2026-08-07T10:00:00Z","host":null,"saved_at":null}}]"#
+                ),
+            )
+        });
+        let listed = nulls.client().list().expect("list failed");
+        assert_eq!(listed[0].host, None);
+        assert_eq!(listed[0].saved_at, None);
+
+        let omitted = FakeServer::new(|_| {
+            Reply::json(
+                200,
+                &format!(
+                    r#"[{{"id":"{VAULT_ID}","name":"{VAULT_NAME}","size":42,"etag":"aaaa",
+                          "updated_at":"2026-08-07T10:00:00Z"}}]"#
+                ),
+            )
+        });
+        let listed = omitted.client().list().expect("list failed");
+        assert_eq!(listed[0].host, None);
+        assert_eq!(listed[0].saved_at, None);
     }
 
     #[test]

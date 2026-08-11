@@ -474,6 +474,56 @@ fn list_vaults(state: &mut State, session: &mut Session) -> Action {
     ))
 }
 
+/// What the typed save name means against the account's current listing.
+///
+/// The absence of a collision is not the same as a free name: with no listing to
+/// check against, nothing is known, and a pane that only speaks up on a
+/// collision reports "unknown" and "free" as the same silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameStatus {
+    /// Nothing typed yet, so there is nothing to say.
+    Empty,
+    /// A first listing is in flight.
+    Checking,
+    /// No listing at all: never fetched, or the fetch failed.
+    Unknown,
+    /// No vault carries this name; saving creates one.
+    Free,
+    /// Index into `State::vaults` of the vault this name would replace.
+    Replaces(usize),
+}
+
+/// [`NameStatus`] for what is currently typed. Pure, so the rule is tested
+/// rather than inferred from the rendering.
+///
+/// A *refresh* over an existing listing keeps answering off the rows already
+/// held — those stay on screen while the request runs, and going blank on every
+/// refresh would be a worse lie than a listing a few seconds old.
+fn name_status(state: &State) -> NameStatus {
+    let typed = state.vault_name.trim();
+    if typed.is_empty() {
+        return NameStatus::Empty;
+    }
+
+    let Some(vaults) = state.vaults.as_deref() else {
+        return if state.listing {
+            NameStatus::Checking
+        } else {
+            NameStatus::Unknown
+        };
+    };
+
+    // Case-insensitive on purpose, though the server's uniqueness is byte-exact
+    // (`UNIQUE (account_id, name)`, no `COLLATE NOCASE`, and `ServerStorage`
+    // resolves by `==`). So a case-only difference warns about a replacement
+    // that would in fact be a second vault; the listing below names the row it
+    // matched, which is what makes that visible.
+    vaults
+        .iter()
+        .position(|vault| vault.name.eq_ignore_ascii_case(typed))
+        .map_or(NameStatus::Free, NameStatus::Replaces)
+}
+
 /// Human-readable byte size for the vault listing.
 fn human_size(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
@@ -690,6 +740,56 @@ fn picker_row<'a>(
     .into()
 }
 
+/// One read-only listing row. The save direction shows what the account already
+/// holds without offering it as a choice, so unlike [`picker_row`] this is a
+/// container rather than a button and carries no chevron.
+///
+/// Two timestamps, deliberately: the first line is when the *server* stored the
+/// bytes, the second is what the file says about itself (`params.host` /
+/// `params.updated_at`, the two fields the vault format leaves unencrypted). A
+/// restore, or an upload of an older file from another device, moves one and not
+/// the other.
+fn info_row<'a>(vault: &RemoteVault, replaced: bool) -> Element<'a, Message> {
+    let mut heading = row![
+        text(vault.name.clone())
+            .size(14)
+            .font(theme::bold())
+            .width(Length::Fill),
+    ]
+    .spacing(10)
+    .align_y(Vertical::Center);
+
+    if replaced {
+        heading = heading.push(text("WILL BE REPLACED").size(11).style(text::danger));
+    }
+
+    let mut lines = column![
+        heading,
+        text(format!(
+            "{} · {}",
+            human_size(vault.size),
+            data::format_rfc3339_local(&vault.updated_at)
+        ))
+        .size(12)
+        .style(text::secondary),
+    ]
+    .spacing(2)
+    .width(Length::Fill);
+
+    if let Some(stamp) = data::format_stamp(vault.host.as_deref(), vault.saved_at.as_deref()) {
+        lines = lines.push(
+            text(format!("Last saved: {stamp}"))
+                .size(11)
+                .style(text::secondary),
+        );
+    }
+
+    container(lines)
+        .padding([10, 14])
+        .width(Length::Fill)
+        .into()
+}
+
 fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
     if !session.is_signed_in() {
         // Waiting on the browser: one card, shared with the Settings pane.
@@ -746,12 +846,7 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
     .align_y(Vertical::Center);
 
     if state.purpose.is_save() {
-        let typed = state.vault_name.trim();
-        let collides = state.vaults.as_ref().is_some_and(|vaults| {
-            vaults
-                .iter()
-                .any(|vault| vault.name.eq_ignore_ascii_case(typed))
-        });
+        let status = name_status(state);
 
         let mut fields = column![
             text("Vault name").size(13),
@@ -763,19 +858,83 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
         ]
         .spacing(8);
 
-        // A server vault is addressed by name, so an existing one is replaced
-        // in place rather than duplicated.
-        if collides {
-            fields = fields.push(
-                text("A vault with this name already exists and will be replaced.")
+        // A server vault is addressed by name, so an existing one is replaced in
+        // place rather than duplicated. Every state says something: silence here
+        // would read as "the name is free" even when nothing has been checked.
+        match status {
+            NameStatus::Empty => {}
+            NameStatus::Replaces(_) => {
+                fields = fields.push(
+                    text("A vault with this name already exists and will be replaced.")
+                        .size(12)
+                        .style(text::danger),
+                );
+            }
+            NameStatus::Checking => {
+                fields = fields.push(text("Checking your vaults…").size(12).style(text::secondary));
+            }
+            NameStatus::Unknown => {
+                fields = fields.push(
+                    text(
+                        "Could not check this account's vaults — a vault with this name \
+                         may be replaced.",
+                    )
                     .size(12)
                     .style(text::danger),
-            );
+                );
+            }
+            NameStatus::Free => {
+                fields = fields.push(
+                    text("This will create a new vault on the server.")
+                        .size(12)
+                        .style(text::secondary),
+                );
+            }
         }
 
-        return column![account, theme::card(container(fields).padding(14))]
+        let name_card = theme::card(container(fields).padding(14));
+
+        // The read-only listing: what is on the account, so "will be replaced"
+        // names something the user can actually see.
+        let listed = state.vaults.as_deref().unwrap_or_default();
+        if listed.is_empty() {
+            let caption = match (state.vaults.is_none(), state.listing) {
+                (true, true) => "Loading your vaults…",
+                (true, false) => "Could not load your vaults.",
+                _ => "No vaults on this account yet.",
+            };
+            return column![
+                account,
+                name_card,
+                text(caption).size(12).style(text::secondary)
+            ]
             .spacing(10)
             .into();
+        }
+
+        let replaced = match status {
+            NameStatus::Replaces(index) => Some(index),
+            _ => None,
+        };
+
+        let mut rows = iced::widget::column![].width(Length::Fill);
+        for (index, vault) in listed.iter().enumerate() {
+            if index > 0 {
+                rows = rows.push(rule::horizontal(1).style(theme::pane_divider));
+            }
+            rows = rows.push(info_row(vault, replaced == Some(index)));
+        }
+
+        return column![
+            account,
+            name_card,
+            text("YOUR VAULTS ON THE SERVER")
+                .size(11)
+                .style(text::secondary),
+            theme::card(rows),
+        ]
+        .spacing(10)
+        .into();
     }
 
     let listed = state.vaults.as_deref().unwrap_or_default();
@@ -797,13 +956,21 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
         if index > 0 {
             rows = rows.push(rule::horizontal(1).style(theme::pane_divider));
         }
+        // The writing machine when the file records one, so both directions of
+        // the wizard identify the device a vault last came from.
+        let mut subtitle = format!(
+            "{} · {}",
+            human_size(vault.size),
+            data::format_rfc3339_local(&vault.updated_at)
+        );
+        if let Some(host) = &vault.host {
+            subtitle.push_str(" · ");
+            subtitle.push_str(host);
+        }
+
         rows = rows.push(picker_row(
             vault.name.clone(),
-            format!(
-                "{} · {}",
-                human_size(vault.size),
-                data::format_rfc3339_local(&vault.updated_at)
-            ),
+            subtitle,
             state.picked_vault == Some(index),
             icon::chevron_right(12).into(),
             Message::Wizard(Msg::ServerVaultPicked(index)),
@@ -872,5 +1039,80 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KiB");
         assert_eq!(human_size(3 * 1024 * 1024), "3.0 MiB");
+    }
+
+    fn remote(name: &str) -> RemoteVault {
+        RemoteVault {
+            id: format!("id-{name}"),
+            name: name.to_string(),
+            size: 42,
+            etag: "aaaa".to_string(),
+            updated_at: "2026-08-07T10:00:00Z".to_string(),
+            host: Some("ubuntu@mypc".to_string()),
+            saved_at: Some("2026-08-07T09:59:00Z".to_string()),
+        }
+    }
+
+    fn armed(typed: &str, vaults: Listing, listing: bool) -> State {
+        State {
+            purpose: Purpose::SaveAs,
+            vault_name: typed.to_string(),
+            vaults,
+            listing,
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn an_empty_name_says_nothing() {
+        let state = armed("   ", Some(vec![remote("Work")]), false);
+        assert_eq!(name_status(&state), NameStatus::Empty);
+    }
+
+    #[test]
+    fn a_listing_in_flight_reads_as_checking_not_as_free() {
+        let state = armed("Work", None, true);
+        assert_eq!(name_status(&state), NameStatus::Checking);
+    }
+
+    #[test]
+    fn no_listing_and_nothing_in_flight_is_unknown() {
+        // The case the old code rendered as silence, which was indistinguishable
+        // from a name it had actually checked and found free.
+        let state = armed("Work", None, false);
+        assert_eq!(name_status(&state), NameStatus::Unknown);
+    }
+
+    #[test]
+    fn an_unused_name_is_free() {
+        let state = armed("Backup", Some(vec![remote("Work")]), false);
+        assert_eq!(name_status(&state), NameStatus::Free);
+    }
+
+    #[test]
+    fn a_taken_name_names_the_row_it_would_replace() {
+        let state = armed(
+            " Personal ",
+            Some(vec![remote("Work"), remote("Personal")]),
+            false,
+        );
+        assert_eq!(name_status(&state), NameStatus::Replaces(1));
+    }
+
+    #[test]
+    fn a_case_only_difference_still_reads_as_a_replacement() {
+        // Pinned as a decision, not an accident: the server's uniqueness is
+        // byte-exact, so this save would in fact create a second vault. The
+        // marked row spells the existing name out next to what was typed.
+        let state = armed("work", Some(vec![remote("Work")]), false);
+        assert_eq!(name_status(&state), NameStatus::Replaces(0));
+    }
+
+    #[test]
+    fn a_refresh_answers_off_the_rows_already_held() {
+        // `listing` is true while a re-fetch runs, but the previous rows are
+        // still on screen and still the best answer available.
+        let state = armed("Work", Some(vec![remote("Work")]), true);
+        assert_eq!(name_status(&state), NameStatus::Replaces(0));
     }
 }
