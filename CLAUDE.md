@@ -111,6 +111,33 @@ the website's auth forms) are done. Still open: Phase 6
 (CI/CD) and browser Google sign-in.
 Self-hosting is documented in **`server/DEPLOY.md`**.
 
+**Types live apart from behaviour.** Every struct, enum and type alias the
+crate declares sits in a `types.rs` for its module tree — `server/src/types.rs`
+(the API envelope and extractors, request/response bodies, `Config`,
+`AppState`, the middleware's marker types), `server/src/store/types.rs` (the
+records the seams move, the error enums, the concrete backend handles and the
+`sqlx` row structs) and `server/src/web/types.rs` (every askama template, form
+input, cookie-session extractor and the flash vocabulary). Each module then
+**re-exports what it owns**, so `auth::LoginRequest`, `error::ApiJson`,
+`store::Account`, `store::memory::MemoryAccountStore` and
+`web::render::Chrome` all resolve exactly as before — nothing outside the
+crate learned a new path. Three rules follow, and each has bitten already:
+`impl` blocks stay with their module (Rust only wants them in the same
+*crate*), so `impl Config` is still beside the `ASKRYPT_*` constants and the
+hand-written `Debug` impls that redact the SMTP and reCAPTCHA secrets are
+still in `store/smtp.rs` and `store/recaptcha.rs`; **derives moved with their
+struct**, which puts every `impl Template` in `web/types.rs` and means a
+template may only name types in scope *there* (today just `Outcome`, which
+`link.html` writes out); and fields that were module-private are now
+`pub(crate)`, since the handlers that build them are no longer in the same
+module — the *types* kept the visibility they had. Adding a type means
+declaring it in the right `types.rs` and re-exporting it from the module whose
+behaviour it belongs to. Three names that had been copied per module —
+`TokenOnly`, `DeleteInput` and `Notice` — were byte-identical and are now
+single types re-exported by each of their old homes. The one thing left in
+place is `main.rs`'s `Command`: the binary is its own crate, and `mod types;`
+there would resolve to the *library's* `src/types.rs`.
+
 **Desktop sign-in is browser-driven** (`server/src/devicelink.rs` +
 `server/src/web/devicelink.rs`, `BrowserLogin` in `core`, `gui/src/link.rs`).
 The app never asks for an account password: it opens a *device link*, launches
@@ -142,6 +169,14 @@ password verify, to keep login timing non-enumerable),
 covers bearer tokens and browser cookies alike, so a ban bites on the very
 next request.
 
+- **`server/src/types.rs`** — Every type the crate root declares, grouped by
+  the module that owns the behaviour over it: `ApiError`/`ApiResult`/`ApiJson`/
+  `ApiBytes` and the serialized `ErrorBody`, `ClientIpPolicy`, `ClientInfo`,
+  `Config`/`Backend`/`LogFormat`/`ConfigError`, `AppState`, `RateLimiter`,
+  `RelaxedCsp`/`SecurityHeaders`, the auth/devicelink/profile/vaults request
+  and response bodies, `AuthSession`, `AdminUser`, `VaultStamp`, and the
+  `#[cfg(test)]` tracing-capture types. See the "Types live apart from
+  behaviour" note above before adding one.
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
   wires `SqliteAccountStore`/`SqliteRoleStore`/`SqliteSessionStore`/
@@ -437,7 +472,10 @@ next request.
   `pub(crate)` so `web` can bucket identically); 429s carry `Retry-After`.
 - **`server/src/web/`** — The website (Phase 7): server-rendered HTML with
   askama templates from `server/templates/`, htmx as a progressive
-  enhancement. `mod.rs` builds the HTML router and holds `rate_limit`, an
+  enhancement. `types.rs` declares every page and fragment template (so all
+  the `#[derive(Template)]`s expand there), every form input, the three
+  cookie-session extractors, the CSRF wrappers and the `Flash` vocabulary;
+  each module below re-exports its own. `mod.rs` builds the HTML router and holds `rate_limit`, an
   HTML-rendering twin of `ratelimit::middleware` sharing the *same*
   `RateLimiter` instances as `/api/v1/auth` and the `/api/v1/me` mutations,
   plus `htmx_error_fragment`, the outermost layer: htmx refuses to swap a
@@ -547,7 +585,11 @@ next request.
   `IdTokenError`/`CaptchaError`, all
   `#[non_exhaustive]`, and the `ADMIN_ROLE`/`PAYMENT_USER_ROLE` name
   constants — the stores themselves are name-generic, so a new role needs no
-  code in either backend); `memory.rs`
+  code in either backend). `mod.rs` keeps the traits, the constants and the
+  inherent impls; every *type* — `Account`, `Session`, `VaultMeta`, the id
+  aliases, the error enums, and each backend's own handle and `sqlx` row
+  struct — is declared in `types.rs` and re-exported by the module that
+  implements over it. `memory.rs`
   in-memory fakes for all of them (used by tests
   and the `memory` backend — `MemoryRoleStore::default` seeds both roles with
   the *same fixed uuids* the migration writes, so the two backends agree;

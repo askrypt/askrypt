@@ -49,12 +49,13 @@
 //! log ([`crate::audit`]) is emitted there. Everything written to the console
 //! is also written to the log directory, in the same format.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::store::recaptcha::RecaptchaConfig;
 use crate::store::smtp::{SmtpConfig, SmtpCredentials, SmtpEncryption};
+
+pub use crate::types::{Backend, Config, ConfigError, LogFormat};
 
 pub const ENV_BIND: &str = "ASKRYPT_BIND";
 pub const ENV_DATA_DIR: &str = "ASKRYPT_DATA_DIR";
@@ -101,68 +102,6 @@ const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
 const DEFAULT_SMTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Google's own suggested cut between "probably human" and "probably a bot".
 const DEFAULT_RECAPTCHA_MIN_SCORE: f32 = 0.5;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    /// In-memory fakes only; nothing persisted. For development and tests.
-    Memory,
-    /// SQLite database + on-disk vault blobs under the data directory.
-    Sqlite,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogFormat {
-    /// Human-readable console output.
-    Text,
-    /// One JSON object per event, for log shipping.
-    Json,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("invalid {var}={value:?}: {reason}")]
-pub struct ConfigError {
-    pub var: &'static str,
-    pub value: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub bind: SocketAddr,
-    pub data_dir: PathBuf,
-    pub backend: Backend,
-    pub static_dir: PathBuf,
-    /// Google OAuth client ids (web/desktop/mobile) accepted as ID-token
-    /// audiences; empty means Google sign-in is disabled.
-    pub google_client_ids: Vec<String>,
-    /// Trust proxy-set client-address headers. Defaults to `false` (fail
-    /// closed): when the listener is reachable directly, those headers are
-    /// attacker-controlled and would let one client forge rate-limit buckets
-    /// and audit-log entries.
-    pub trust_proxy: bool,
-    /// Send `Strict-Transport-Security`. Off by default so plain-HTTP local
-    /// runs don't pin a browser to HTTPS for a year.
-    pub hsts: bool,
-    /// Per-request handler timeout; `Duration::ZERO` disables it.
-    pub request_timeout: Duration,
-    /// In-flight request ceiling; `0` disables shedding.
-    pub max_concurrent_requests: usize,
-    /// Body limit outside the vault routes, which set their own.
-    pub max_body_bytes: usize,
-    pub log_format: LogFormat,
-    /// Directory the log files are written to, alongside the console output.
-    /// They roll over daily. `None` (an empty `ASKRYPT_LOG_DIR`) means console
-    /// only — for setups where the supervisor already captures stdout.
-    pub log_dir: Option<PathBuf>,
-    /// Daily files kept on disk; `0` disables pruning.
-    pub log_max_files: usize,
-    /// SMTP relay to deliver through. `None` (no `ASKRYPT_SMTP_HOST`) leaves
-    /// the log-only mailer in place — mail is captured, never sent.
-    pub smtp: Option<SmtpConfig>,
-    /// reCAPTCHA v3 on the website's auth forms. `None` (no
-    /// `ASKRYPT_RECAPTCHA_SITE_KEY`) leaves them exactly as they were.
-    pub recaptcha: Option<RecaptchaConfig>,
-}
 
 impl Default for Config {
     fn default() -> Self {

@@ -15,9 +15,10 @@ use chrono::{DateTime, Utc};
 use crate::admin;
 use crate::auth;
 use crate::state::AppState;
-use crate::store::{Account, Session};
 use crate::web::error::WebError;
 use crate::web::render::{HX_REDIRECT, is_htmx, with_cookies};
+
+pub use crate::web::types::{AdminSession, MaybeWebSession, WebSession};
 
 pub const SESSION_COOKIE: &str = "askrypt_session";
 
@@ -34,19 +35,6 @@ pub const WEB_SESSION_LABEL: &str = "Web browser";
 
 pub const LOGIN_PATH: &str = "/login";
 
-/// A signed-in browser. Rejects with a redirect to the sign-in page rather
-/// than the API's 401 — that is the whole reason it isn't
-/// [`crate::auth::AuthSession`].
-pub struct WebSession {
-    pub account: Account,
-    pub session: Session,
-    /// Whether this visitor holds [`crate::store::ADMIN_ROLE`]. Resolved
-    /// once here rather than by each handler, because the shared nav has to
-    /// know on *every* page whether to offer the Users link — not only on
-    /// the admin pages themselves.
-    pub is_admin: bool,
-}
-
 impl FromRequestParts<AppState> for WebSession {
     type Rejection = Response;
 
@@ -57,15 +45,6 @@ impl FromRequestParts<AppState> for WebSession {
         }
     }
 }
-
-/// A signed-in browser that also holds [`crate::store::ADMIN_ROLE`].
-///
-/// Layered on [`WebSession`] rather than replacing it, so the two failures
-/// stay distinct: a signed-*out* visitor is sent to the sign-in page as
-/// usual, while a signed-in one who simply isn't an administrator gets a
-/// plain 403 page. Redirecting the latter to a login they have already
-/// completed would be a loop.
-pub struct AdminSession(pub WebSession);
 
 impl FromRequestParts<AppState> for AdminSession {
     type Rejection = Response;
@@ -81,10 +60,6 @@ impl FromRequestParts<AppState> for AdminSession {
         Ok(Self(web))
     }
 }
-
-/// [`WebSession`] for pages that render either way — the landing page needs
-/// to know whether to greet you or offer a sign-in link.
-pub struct MaybeWebSession(pub Option<WebSession>);
 
 impl MaybeWebSession {
     pub fn email(&self) -> Option<String> {

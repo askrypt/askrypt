@@ -18,15 +18,15 @@
 //! `Origin`/`Referer` are checked as a backstop, and `SameSite=Lax` on the
 //! session cookie is a third layer.
 
-use std::collections::HashMap;
-
 use axum::extract::{FromRequest, Multipart, RawForm, Request};
 use axum::http::{HeaderMap, header};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::web::error::WebError;
 use crate::web::session::{cookie_value, set_cookie};
+use crate::web::types::CsrfField;
+
+pub use crate::web::types::{CsrfForm, CsrfMultipart, MultipartForm};
 
 pub const CSRF_COOKIE: &str = "askrypt_csrf";
 
@@ -69,18 +69,6 @@ fn new_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Form extractor that refuses to hand over `T` until the request has proven
-/// it wasn't made by another site.
-///
-/// Use it for *every* mutating HTML route; there is no way to read the form
-/// body without going through the check.
-pub struct CsrfForm<T>(pub T);
-
-#[derive(Deserialize)]
-struct CsrfField {
-    csrf: String,
-}
-
 impl<T, S> FromRequest<S> for CsrfForm<T>
 where
     T: DeserializeOwned,
@@ -106,30 +94,6 @@ where
             .map_err(|_| WebError::bad_request("That form was missing something."))?;
         Ok(Self(value))
     }
-}
-
-/// A `multipart/form-data` submission whose CSRF token has been checked.
-///
-/// The file upload in Phase 7.4 can't go through [`CsrfForm`] — a file is
-/// not urlencoded — so this is its twin, and the same rule holds: it is the
-/// only way to read a multipart body.
-///
-/// The token has to arrive *before* any other part. That is how the
-/// templates are written (the hidden input precedes the file input), and it
-/// means a forged cross-origin upload is refused before its megabytes are
-/// buffered rather than after.
-pub struct CsrfMultipart(pub MultipartForm);
-
-/// A whole multipart body, read into memory: the named text fields plus at
-/// most one file. Vault files are capped at
-/// [`crate::vaults::MAX_VAULT_BYTES`] by the route's body limit, so there is
-/// nothing here worth streaming to disk.
-#[derive(Default)]
-pub struct MultipartForm {
-    fields: HashMap<String, String>,
-    /// The uploaded file's own name, as the browser reported it.
-    pub file_name: Option<String>,
-    pub file: Vec<u8>,
 }
 
 /// Cap on a text field. Names and ETags are the only ones the site sends;

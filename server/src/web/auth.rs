@@ -9,11 +9,9 @@
 //! Failed ones re-render the form: as a fragment when htmx asked, as the
 //! whole page otherwise, so the flow works with JavaScript disabled.
 
-use askama::Template;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use serde::Deserialize;
 
 use crate::audit::{self, ClientInfo};
 use crate::auth;
@@ -24,55 +22,15 @@ use crate::web::WebError;
 use crate::web::captcha;
 use crate::web::csrf::{self, CsrfForm};
 use crate::web::flash::{self, Flash};
-use crate::web::render::{Chrome, Page, Shell, is_htmx, with_cookies};
+use crate::web::render::{Page, Shell, is_htmx, with_cookies};
 use crate::web::session::{
     self, LOGIN_PATH, MaybeWebSession, WEB_SESSION_LABEL, WEB_SESSION_TTL_DAYS, WebSession,
 };
+use crate::web::types::{AuthPage, BuildForm};
+
+pub use crate::web::types::{AuthForm, AuthQuery, Credentials, TokenOnly};
 
 const ACCOUNT_PATH: &str = "/account";
-
-#[derive(Template)]
-#[template(path = "fragments/auth_form.html")]
-pub struct AuthForm {
-    action: &'static str,
-    heading: &'static str,
-    submit: &'static str,
-    alt_prompt: &'static str,
-    alt_href: &'static str,
-    alt_link: &'static str,
-    password_autocomplete: &'static str,
-    password_hint: Option<&'static str>,
-    csrf: String,
-    email: String,
-    error: Option<String>,
-    /// The desktop sign-in that sent the visitor here, if one did. Carried
-    /// through the form so approving it survives login or registration.
-    ///
-    /// A uuid re-rendered from the *parsed* value, never the raw query string:
-    /// it lands in a hidden input and an `href`, and a general `next=` would be
-    /// an open redirect waiting to happen.
-    link: Option<String>,
-    /// The reCAPTCHA v3 action a token for *this* form must be minted for.
-    /// Fixed per form, and the reason a login token cannot be spent on the
-    /// registration form or the other way round.
-    captcha_action: &'static str,
-    /// The public site key, or `None` when no captcha is configured — which
-    /// is what the template reads to decide whether to render the field at
-    /// all. Filled in by [`AuthForm::with_captcha`], never by the two
-    /// constructors, so the action and the key can't be set out of step.
-    captcha_key: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "auth_page.html")]
-struct AuthPage {
-    chrome: Chrome,
-    form: AuthForm,
-}
-
-/// How a form is rebuilt after a rejection, or built fresh: csrf, email, error,
-/// device link.
-type BuildForm = fn(String, String, Option<String>, Option<String>) -> AuthForm;
 
 impl AuthForm {
     fn login(csrf: String, email: String, error: Option<String>, link: Option<String>) -> Self {
@@ -124,34 +82,6 @@ impl AuthForm {
         self
     }
 }
-
-#[derive(Deserialize)]
-pub struct Credentials {
-    #[serde(default)]
-    email: String,
-    #[serde(default)]
-    password: String,
-    /// The device link being signed in for, carried by the hidden field.
-    #[serde(default)]
-    link: Option<String>,
-    /// The reCAPTCHA v3 token the page minted. Defaulted rather than
-    /// required: a browser with scripts off submits the form with this field
-    /// empty, and that has to reach [`captcha::check`] to be turned into a
-    /// sentence about JavaScript instead of a form-parse rejection.
-    #[serde(default)]
-    captcha_token: String,
-}
-
-/// `?link=<uuid>` on the two auth pages.
-#[derive(Deserialize)]
-pub struct AuthQuery {
-    #[serde(default)]
-    link: Option<String>,
-}
-
-/// A form with nothing in it but its CSRF token.
-#[derive(Deserialize)]
-pub struct TokenOnly {}
 
 pub async fn login_form(
     State(state): State<AppState>,

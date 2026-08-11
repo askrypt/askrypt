@@ -20,19 +20,13 @@ use std::convert::Infallible;
 use crate::clientip;
 use crate::store::AccountId;
 
+pub use crate::types::ClientInfo;
+
 /// Tracing target carrying audit events.
 pub const TARGET: &str = "askrypt_server::audit";
 
 /// Long user-agent strings are attacker-controlled; cap what reaches the log.
 const MAX_USER_AGENT: usize = 256;
-
-/// Who made the request, for the audit record. Infallible — a missing or
-/// unreadable header just means less detail, never a rejected request.
-#[derive(Debug, Clone)]
-pub struct ClientInfo {
-    pub ip: String,
-    pub user_agent: Option<String>,
-}
 
 impl ClientInfo {
     fn from_parts(parts: &Parts) -> Self {

@@ -25,9 +25,11 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 
+use super::types::SiteVerify;
 use super::{CaptchaError, CaptchaVerifier};
+
+pub use super::types::{DisabledCaptchaVerifier, RecaptchaConfig, RecaptchaVerifier};
 
 const VERIFY_URL: &str = "https://www.google.com/recaptcha/api/siteverify";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -41,18 +43,6 @@ const OUR_FAULT: [&str; 3] = [
     "bad-request",
 ];
 
-/// reCAPTCHA v3 settings. Parsed by `config::recaptcha_from`, which is also
-/// where the environment variables are documented.
-#[derive(Clone)]
-pub struct RecaptchaConfig {
-    /// Public key embedded in the pages. Not a secret.
-    pub site_key: String,
-    /// Shared secret for `siteverify`. Never reaches a template or a log.
-    pub secret: String,
-    /// Lowest score accepted, in `0.0..=1.0`.
-    pub min_score: f32,
-}
-
 /// Hand-written so the secret cannot ride out in `Config`'s derived `Debug`,
 /// which is rendered at startup.
 impl fmt::Debug for RecaptchaConfig {
@@ -63,27 +53,6 @@ impl fmt::Debug for RecaptchaConfig {
             .field("min_score", &self.min_score)
             .finish()
     }
-}
-
-/// The subset of `siteverify`'s reply we act on. Every field is `default`ed:
-/// a reply missing one is a refusal, not a parse error.
-#[derive(Debug, Default, Deserialize)]
-struct SiteVerify {
-    #[serde(default)]
-    success: bool,
-    /// Absent on a failure, and on the v2 endpoints.
-    #[serde(default)]
-    score: Option<f32>,
-    #[serde(default)]
-    action: Option<String>,
-    #[serde(default, rename = "error-codes")]
-    error_codes: Vec<String>,
-}
-
-pub struct RecaptchaVerifier {
-    config: RecaptchaConfig,
-    verify_url: String,
-    http: reqwest::Client,
 }
 
 impl RecaptchaVerifier {
@@ -191,12 +160,6 @@ fn assess(
     }
     Ok(Some(score))
 }
-
-/// Wired in `main` when no site key is configured: the forms render no
-/// captcha and every submit passes. Also what [`crate::state::AppState`]'s
-/// in-memory wiring uses, so the test suite is unaffected by this feature
-/// unless a test asks for it.
-pub struct DisabledCaptchaVerifier;
 
 #[async_trait]
 impl CaptchaVerifier for DisabledCaptchaVerifier {

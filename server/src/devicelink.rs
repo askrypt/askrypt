@@ -37,13 +37,14 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
-use serde::{Deserialize, Serialize};
 
 use crate::audit::{self, ClientInfo};
 use crate::auth::{self, SessionResponse};
 use crate::error::{ApiJson, ApiResult};
 use crate::state::AppState;
 use crate::store::{Account, DeviceLink, DeviceLinkId, DeviceLinkStatus, StoreError};
+
+pub use crate::types::{PollRequest, PollResponse, StartRequest, StartResponse};
 
 /// How long a link stays usable. A full day, so a user who walks away from the
 /// browser can still finish later — and a link nobody ever completes is *gone*
@@ -66,53 +67,6 @@ const USER_CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /// Characters in a user code, before the hyphen is inserted.
 const USER_CODE_LEN: usize = 8;
-
-#[derive(Deserialize)]
-pub struct StartRequest {
-    /// What the app calls itself in the account's device list.
-    #[serde(default)]
-    pub device_label: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct StartResponse {
-    /// Public identifier: this is what goes in the browser URL.
-    pub link_id: DeviceLinkId,
-    /// Secret. Only the app that started the link ever holds it, and only it
-    /// can trade the approval for a token.
-    pub poll_token: String,
-    /// Shown to the user in the app so they can compare it with the page.
-    pub user_code: String,
-    /// Path to open in the browser. A *path*, not an absolute URL: the client
-    /// knows which server it is talking to, and the server has no configured
-    /// canonical origin to speak for.
-    pub verification_path: String,
-    /// Seconds until the link expires.
-    pub expires_in: i64,
-    /// Seconds the client should wait between polls.
-    pub interval: u64,
-}
-
-#[derive(Deserialize)]
-pub struct PollRequest {
-    pub poll_token: String,
-}
-
-/// What a poll found.
-///
-/// `Expired` is deliberately the answer for an unknown token, an expired link
-/// and one that has already been claimed alike — see [`poll`].
-#[derive(Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum PollResponse {
-    Pending,
-    Denied,
-    Expired,
-    /// An internally tagged newtype variant flattens its struct, so the
-    /// approved payload is exactly the shape `/api/v1/auth/login` returns and
-    /// clients need one deserializer for both.
-    Approved(SessionResponse),
-}
 
 /// `POST /api/v1/auth/device` — open a device link.
 ///

@@ -23,20 +23,10 @@ use crate::profile;
 use crate::state::AppState;
 use crate::store::{ADMIN_ROLE, Account, AccountId, PAYMENT_USER_ROLE};
 
+pub(crate) use crate::types::AdminUser;
+
 /// How many accounts one page of the user list shows.
 pub(crate) const USERS_PER_PAGE: u32 = 50;
-
-/// One row of the user list: the account plus the two facts the page needs
-/// that the account record itself does not carry.
-pub(crate) struct AdminUser {
-    pub account: Account,
-    pub is_admin: bool,
-    /// Whether the account is on the paid storage tier.
-    pub is_payment_user: bool,
-    /// True for the administrator doing the looking, whose row offers no
-    /// destructive actions.
-    pub is_self: bool,
-}
 
 /// Does this account hold `role`?
 pub(crate) async fn has_role(state: &AppState, account: AccountId, role: &str) -> ApiResult<bool> {

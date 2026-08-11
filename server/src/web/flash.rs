@@ -8,35 +8,13 @@ use axum::http::HeaderMap;
 
 use crate::web::session::{clear_cookie, cookie_value, set_cookie};
 
+pub use crate::web::types::Flash;
+
 pub const FLASH_COOKIE: &str = "askrypt_flash";
 
 /// Long enough to survive the redirect it was set on, short enough that a
 /// stale one never surfaces later.
 const FLASH_TTL_SECS: i64 = 60;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Flash {
-    AccountCreated,
-    SignedOut,
-    AlreadySignedIn,
-    EmailChanged,
-    PasswordChanged,
-    PasswordSet,
-    SessionRevoked,
-    AccountDeleted,
-    VaultUploaded,
-    VaultReplaced,
-    VaultRenamed,
-    VaultDeleted,
-    VaultRestored,
-    UserBanned,
-    UserUnbanned,
-    UserDeleted,
-    AdminGranted,
-    AdminRevoked,
-    PaymentGranted,
-    PaymentRevoked,
-}
 
 impl Flash {
     fn code(self) -> &'static str {

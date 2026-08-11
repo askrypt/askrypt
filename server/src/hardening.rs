@@ -37,6 +37,8 @@ use tokio::sync::Semaphore;
 
 use crate::error::ApiError;
 
+pub use crate::types::{RelaxedCsp, SecurityHeaders};
+
 /// Content Security Policy sent with every response. `'self'`-only, with no
 /// `unsafe-inline` anywhere — see the module docs before relaxing it.
 pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
@@ -65,15 +67,6 @@ connect-src 'self' https://www.google.com; font-src 'self'; object-src 'none'; \
 base-uri 'none'; form-action 'self'; frame-src https://www.google.com; \
 frame-ancestors 'none'";
 
-/// Response marker asking for [`CSP_CAPTCHA`] instead of [`CSP`].
-///
-/// A response extension rather than a path match, so the decision stays with
-/// the handler that knows whether it actually rendered a captcha — and so
-/// this layer, which is the outermost one and therefore the last to touch the
-/// headers, is still the only place a CSP is written.
-#[derive(Debug, Clone, Copy)]
-pub struct RelaxedCsp;
-
 const PERMISSIONS_POLICY: &str = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
 magnetometer=(), microphone=(), payment=(), usb=()";
 
@@ -100,13 +93,6 @@ const HSTS: &str = "max-age=31536000; includeSubDomains";
 /// Path exempt from shedding: an overloaded server that fails its own health
 /// check gets killed by the orchestrator instead of recovering.
 const HEALTH_PATH: &str = "/healthz";
-
-#[derive(Debug, Clone, Copy)]
-pub struct SecurityHeaders {
-    /// Send HSTS. Only meaningful once TLS terminates in front; on a plain
-    /// HTTP origin it would pin browsers to a scheme that doesn't answer.
-    pub hsts: bool,
-}
 
 /// Adds the security headers to every response, including the error
 /// responses produced by the middleware below it.

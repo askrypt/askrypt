@@ -18,8 +18,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 use crate::audit::{self, ClientInfo};
@@ -28,21 +27,9 @@ use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
 use crate::store::{Account, AccountId, StoreError};
 
-/// The full profile answered by `GET /api/v1/me` and the email update.
-#[derive(Serialize)]
-pub struct Profile {
-    pub id: AccountId,
-    pub email: String,
-    pub created_at: DateTime<Utc>,
-    pub providers: Providers,
-}
-
-/// Which login providers are usable on the account.
-#[derive(Serialize)]
-pub struct Providers {
-    pub password: bool,
-    pub google: bool,
-}
+pub use crate::types::{
+    ChangePasswordRequest, Profile, Providers, SessionInfo, UpdateEmailRequest,
+};
 
 impl From<&Account> for Profile {
     fn from(account: &Account) -> Self {
@@ -61,11 +48,6 @@ impl From<&Account> for Profile {
 /// `GET /api/v1/me` — the current account's profile.
 pub async fn me(auth: AuthSession) -> Json<Profile> {
     Json(Profile::from(&auth.account))
-}
-
-#[derive(Deserialize)]
-pub struct UpdateEmailRequest {
-    pub email: String,
 }
 
 /// `PUT /api/v1/me/email` — change the account email (normalized and
@@ -102,15 +84,6 @@ pub(crate) async fn set_email(
         );
     }
     Ok(account)
-}
-
-#[derive(Deserialize)]
-pub struct ChangePasswordRequest {
-    /// Required when the account already has a password; Google-created
-    /// accounts without one set their first password with just `new_password`.
-    #[serde(default)]
-    pub current_password: Option<String>,
-    pub new_password: String,
 }
 
 /// `PUT /api/v1/me/password` — change the password, or set the first one on
@@ -222,19 +195,6 @@ async fn revoke_other_sessions(
         }
     }
     Ok(revoked)
-}
-
-/// One entry in the `GET /api/v1/me/sessions` device list.
-#[derive(Serialize)]
-pub struct SessionInfo {
-    /// Non-secret session id (SHA-256 of the bearer token, hex); pass it to
-    /// `DELETE /api/v1/me/sessions/{id}` to revoke.
-    pub id: String,
-    pub label: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    /// Whether this entry is the session making the request.
-    pub current: bool,
 }
 
 /// `GET /api/v1/me/sessions` — the account's active (non-expired) sessions.

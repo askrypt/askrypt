@@ -1,27 +1,12 @@
 //! The plain pages: landing and the HTML 404. The account tree lives in
 //! [`crate::web::account`], the file manager in [`crate::web::vaults`].
 
-use askama::Template;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use crate::web::render::{Chrome, Page, Shell, with_cookies};
+use crate::web::render::{Page, Shell, with_cookies};
 use crate::web::session::MaybeWebSession;
-
-#[derive(Template)]
-#[template(path = "landing.html")]
-struct Landing {
-    chrome: Chrome,
-}
-
-#[derive(Template)]
-#[template(path = "error.html")]
-struct NotFound {
-    chrome: Chrome,
-    status: u16,
-    title: &'static str,
-    message: String,
-}
+use crate::web::types::{Landing, NotFound};
 
 pub async fn landing(session: MaybeWebSession, headers: HeaderMap) -> Response {
     let shell = Shell::build(&headers, session.email()).as_admin(session.is_admin());

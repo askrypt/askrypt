@@ -15,12 +15,10 @@
 
 use std::cmp::Reverse;
 
-use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -31,65 +29,13 @@ use crate::vaults::{
 use crate::web::WebResult;
 use crate::web::csrf::{CsrfForm, CsrfMultipart};
 use crate::web::flash::{self, Flash};
-use crate::web::render::{self, Chrome, Page, Shell, is_htmx, timestamp, with_cookies};
+use crate::web::render::{self, Page, Shell, is_htmx, timestamp, with_cookies};
 use crate::web::session::WebSession;
+use crate::web::types::{HistoryRow, Row, VaultsPage};
+
+pub use crate::web::types::{Listing, Notice, RenameInput, RestoreInput, TokenOnly, UploadForm};
 
 pub const VAULTS_PATH: &str = "/vaults";
-
-#[derive(Template)]
-#[template(path = "vaults.html")]
-struct VaultsPage {
-    chrome: Chrome,
-    listing: Listing,
-    upload: UploadForm,
-}
-
-/// The table plus the usage figures. Every mutation re-renders this whole
-/// fragment rather than a single row: a change moves the totals too, and one
-/// swap keeps them honest.
-#[derive(Template)]
-#[template(path = "fragments/vault_list.html")]
-pub struct Listing {
-    csrf: String,
-    vaults: Vec<Row>,
-    count: usize,
-    max_count: usize,
-    /// How many superseded generations each file keeps.
-    max_versions: usize,
-    used: String,
-    /// The share of `used` held by superseded generations.
-    archived: String,
-    quota: String,
-    /// Percentage of the byte quota in use, for the meter.
-    used_percent: u64,
-    notice: Option<Notice>,
-}
-
-#[derive(Template)]
-#[template(path = "fragments/vault_upload.html")]
-pub struct UploadForm {
-    csrf: String,
-    max_size: String,
-}
-
-struct Row {
-    id: String,
-    name: String,
-    size: String,
-    updated: String,
-    /// Where and when the file itself says it was saved, `None` when it
-    /// carries no stamp. This is the client's own account of the save; the
-    /// `updated` column is the server's account of the upload.
-    saved: Option<String>,
-    /// First 12 hex characters of the content hash — enough to tell two
-    /// versions apart by eye, and it is not a secret.
-    short_etag: String,
-    /// The full ETag, carried in the replace form so the overwrite goes
-    /// through the same `If-Match` check the apps use.
-    etag: String,
-    /// The kept generations of this file, newest first.
-    history: Vec<HistoryRow>,
-}
 
 impl Row {
     fn new(meta: &VaultMeta, history: &[VaultVersion]) -> Self {
@@ -104,20 +50,6 @@ impl Row {
             history: history.iter().map(HistoryRow::from).collect(),
         }
     }
-}
-
-/// One superseded generation, as a line in a row's history disclosure.
-struct HistoryRow {
-    id: String,
-    size: String,
-    /// When these bytes stopped being the current file — the useful date
-    /// when picking which one to go back to.
-    archived: String,
-    short_etag: String,
-    /// The write stamp these bytes carry, as on the live row. Picking a
-    /// version to go back to is much easier when the line says which device
-    /// wrote it.
-    saved: Option<String>,
 }
 
 impl From<&VaultVersion> for HistoryRow {
@@ -145,13 +77,6 @@ fn saved_stamp(host: Option<&str>, saved_at: Option<DateTime<Utc>>) -> Option<St
         (None, Some(at)) => Some(timestamp(at)),
         (None, None) => None,
     }
-}
-
-/// A message rendered above the table: the outcome of the last change, or
-/// why it was refused.
-pub struct Notice {
-    text: String,
-    danger: bool,
 }
 
 /// `GET /vaults`
@@ -220,12 +145,6 @@ pub async fn replace(
     }
 }
 
-#[derive(Deserialize)]
-pub struct RenameInput {
-    #[serde(default)]
-    name: String,
-}
-
 /// `POST /vaults/{id}/name` — rename a vault file.
 pub async fn rename(
     State(state): State<AppState>,
@@ -240,10 +159,6 @@ pub async fn rename(
         Err(err) => refused(&state, &web, &headers, err).await,
     }
 }
-
-/// A form carrying nothing but its CSRF token.
-#[derive(Deserialize)]
-pub struct TokenOnly {}
 
 /// `POST /vaults/{id}/delete`
 pub async fn remove(
@@ -314,14 +229,6 @@ pub async fn restore(
         Ok(_) => finish(&state, &web, &headers, Flash::VaultRestored).await,
         Err(err) => refused(&state, &web, &headers, err).await,
     }
-}
-
-#[derive(Deserialize)]
-pub struct RestoreInput {
-    /// The current file's ETag as the row was drawn. Missing rather than
-    /// stale means a hand-made form, so it is treated as a mismatch.
-    #[serde(default)]
-    etag: String,
 }
 
 /// `GET /vaults/{id}/versions/{version_id}/download` — an archived

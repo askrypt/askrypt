@@ -18,10 +18,11 @@ use super::{
     VaultVersionStore, VerifiedIdToken,
 };
 
-#[derive(Debug, Default)]
-pub struct MemoryAccountStore {
-    accounts: Mutex<HashMap<AccountId, Account>>,
-}
+pub use super::types::{
+    FakeCaptchaVerifier, FakeIdTokenVerifier, MemoryAccountStore, MemoryDeviceLinkStore,
+    MemoryMailer, MemoryRoleStore, MemorySessionStore, MemoryVaultBlobStore, MemoryVaultMetaStore,
+    MemoryVaultVersionStore, SentMail,
+};
 
 #[async_trait]
 impl AccountStore for MemoryAccountStore {
@@ -89,16 +90,6 @@ impl AccountStore for MemoryAccountStore {
     async fn count(&self) -> Result<u64, StoreError> {
         Ok(self.accounts.lock().unwrap().len() as u64)
     }
-}
-
-/// In-memory [`RoleStore`], seeded with the same embedded roles the migration
-/// inserts — including their uuids and descriptions, so the two backends
-/// agree on them. Keep this list in step with
-/// `migrations/0002_auth.sql`.
-#[derive(Debug)]
-pub struct MemoryRoleStore {
-    roles: Vec<Role>,
-    grants: Mutex<HashSet<(AccountId, Uuid)>>,
 }
 
 /// The uuid `migrations/0002_auth.sql` gives the embedded ADMIN role.
@@ -206,11 +197,6 @@ fn check_unique(
     Ok(())
 }
 
-#[derive(Debug, Default)]
-pub struct MemorySessionStore {
-    sessions: Mutex<HashMap<String, Session>>,
-}
-
 #[async_trait]
 impl SessionStore for MemorySessionStore {
     async fn insert(&self, session: Session) -> Result<(), StoreError> {
@@ -250,11 +236,6 @@ impl SessionStore for MemorySessionStore {
             .retain(|_, s| s.account_id != account_id);
         Ok(())
     }
-}
-
-#[derive(Debug, Default)]
-pub struct MemoryDeviceLinkStore {
-    links: Mutex<HashMap<DeviceLinkId, DeviceLink>>,
 }
 
 #[async_trait]
@@ -330,11 +311,6 @@ impl DeviceLinkStore for MemoryDeviceLinkStore {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct MemoryVaultMetaStore {
-    metas: Mutex<HashMap<(AccountId, VaultId), VaultMeta>>,
-}
-
 #[async_trait]
 impl VaultMetaStore for MemoryVaultMetaStore {
     async fn upsert(&self, meta: VaultMeta) -> Result<(), StoreError> {
@@ -390,11 +366,6 @@ impl VaultMetaStore for MemoryVaultMetaStore {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct MemoryVaultBlobStore {
-    blobs: Mutex<HashMap<(AccountId, VaultId), Vec<u8>>>,
-}
-
 #[async_trait]
 impl VaultBlobStore for MemoryVaultBlobStore {
     async fn put(
@@ -437,11 +408,6 @@ impl VaultBlobStore for MemoryVaultBlobStore {
             .retain(|(owner, _), _| *owner != account_id);
         Ok(())
     }
-}
-
-#[derive(Debug, Default)]
-pub struct MemoryVaultVersionStore {
-    versions: Mutex<HashMap<(AccountId, VaultVersionId), VaultVersion>>,
 }
 
 /// Newest first, matching the SQLite `ORDER BY archived_at DESC`. Ties break
@@ -528,26 +494,6 @@ impl VaultVersionStore for MemoryVaultVersionStore {
     }
 }
 
-/// An email captured by [`MemoryMailer`] instead of being delivered.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SentMail {
-    pub to: String,
-    pub subject: String,
-    pub body: String,
-}
-
-/// Records outgoing mail instead of delivering it, and logs every field so a
-/// developer can read verification / reset links straight out of the console.
-/// Used by tests, by the `memory` backend, and by any run that leaves
-/// `ASKRYPT_SMTP_HOST` unset — see [`crate::store::smtp`] for real delivery.
-///
-/// **Never select this in production**: the log line below contains the full
-/// message body, tokens and all.
-#[derive(Debug, Default)]
-pub struct MemoryMailer {
-    sent: Mutex<Vec<SentMail>>,
-}
-
 impl MemoryMailer {
     pub fn sent(&self) -> Vec<SentMail> {
         self.sent.lock().unwrap().clone()
@@ -581,13 +527,6 @@ impl Mailer for MemoryMailer {
     }
 }
 
-/// Fake verifier: accepts exactly the tokens registered via
-/// [`FakeIdTokenVerifier::register`], rejects everything else.
-#[derive(Debug, Default)]
-pub struct FakeIdTokenVerifier {
-    tokens: Mutex<HashMap<String, VerifiedIdToken>>,
-}
-
 impl FakeIdTokenVerifier {
     pub fn register(&self, id_token: impl Into<String>, claims: VerifiedIdToken) {
         self.tokens.lock().unwrap().insert(id_token.into(), claims);
@@ -604,22 +543,6 @@ impl IdTokenVerifier for FakeIdTokenVerifier {
             .cloned()
             .ok_or_else(|| IdTokenError::Invalid("unknown token".into()))
     }
-}
-
-/// Fake captcha: presents a site key (so the forms render exactly as they do
-/// in production) and accepts only tokens registered via
-/// [`FakeCaptchaVerifier::register`], applying the same action and score
-/// rules the real verifier does.
-///
-/// **Not** what [`crate::state::AppState::in_memory`] wires — that uses
-/// [`super::recaptcha::DisabledCaptchaVerifier`], so a suite that says
-/// nothing about captchas sees none. Tests opt in by overriding the seam.
-#[derive(Debug)]
-pub struct FakeCaptchaVerifier {
-    site_key: String,
-    min_score: f32,
-    /// token → (action it was minted for, score it scored)
-    tokens: Mutex<HashMap<String, (String, f32)>>,
 }
 
 impl FakeCaptchaVerifier {

@@ -16,7 +16,6 @@
 //! prefetchers because approval needs the session cookie, which they do not
 //! carry: to them the page is an ordinary sign-in prompt.
 
-use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -28,41 +27,11 @@ use crate::store::{DeviceLink, DeviceLinkId, DeviceLinkStatus};
 use crate::web::WebError;
 use crate::web::auth::TokenOnly;
 use crate::web::csrf::CsrfForm;
-use crate::web::render::{Chrome, Page, Shell, with_cookies};
+use crate::web::render::{Page, Shell, with_cookies};
 use crate::web::session::{LOGIN_PATH, MaybeWebSession};
+use crate::web::types::LinkPage;
 
-/// What the page is saying this time round.
-#[derive(PartialEq, Eq)]
-pub enum Outcome {
-    /// Nobody is signed in yet: the visitor is offered login and registration,
-    /// both carrying the link.
-    SignInNeeded,
-    /// Approved just now by this visit.
-    Approved,
-    /// Approved earlier — a reload, or a second tab. Deliberately not a second
-    /// approval: the app collects the link exactly once.
-    AlreadyApproved,
-    Denied,
-    /// Unknown, expired, or already collected by the app. All one message: a
-    /// link id is not a secret, and there is nothing useful to tell apart.
-    Unusable,
-}
-
-#[derive(Template)]
-#[template(path = "link.html")]
-struct LinkPage {
-    chrome: Chrome,
-    outcome: Outcome,
-    /// What the app called itself; `None` when it did not say.
-    device_label: Option<String>,
-    /// The code to compare against the app's.
-    user_code: String,
-    /// Where the deny form posts, when there is something to deny.
-    deny_path: String,
-    /// Sign-in and registration, carrying the link through.
-    login_href: String,
-    register_href: String,
-}
+pub use crate::web::types::Outcome;
 
 /// `GET /link/{id}` — approve the link if someone is signed in, and say what
 /// happened either way.

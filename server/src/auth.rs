@@ -25,8 +25,7 @@ use axum::Json;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
-use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{Duration, Utc};
 use tokio::sync::Semaphore;
 
 use crate::admin;
@@ -34,6 +33,10 @@ use crate::audit::{self, ClientInfo};
 use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
 use crate::store::{Account, AccountId, NewAccount, Session, StoreError, VerifiedIdToken};
+
+pub use crate::types::{
+    AccountInfo, AuthSession, GoogleLoginRequest, LoginRequest, RegisterRequest, SessionResponse,
+};
 
 /// How long an API login session stays valid. Long-lived per-device sessions
 /// per the plan's client-access rule; clients re-login after expiry. Browser
@@ -68,34 +71,6 @@ static ARGON2_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| {
     Semaphore::new(permits)
 });
 
-#[derive(Deserialize)]
-pub struct RegisterRequest {
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Deserialize)]
-pub struct LoginRequest {
-    pub email: String,
-    pub password: String,
-    /// Shown in the profile's session list ("Pixel 9", "work laptop", ...).
-    #[serde(default)]
-    pub device_label: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct GoogleLoginRequest {
-    pub id_token: String,
-    #[serde(default)]
-    pub device_label: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct AccountInfo {
-    pub id: AccountId,
-    pub email: String,
-}
-
 impl From<&Account> for AccountInfo {
     fn from(account: &Account) -> Self {
         Self {
@@ -103,13 +78,6 @@ impl From<&Account> for AccountInfo {
             email: account.email.clone(),
         }
     }
-}
-
-#[derive(Serialize)]
-pub struct SessionResponse {
-    pub token: String,
-    pub expires_at: DateTime<Utc>,
-    pub account: AccountInfo,
 }
 
 impl SessionResponse {
@@ -385,13 +353,6 @@ pub(crate) async fn revoke_session_token(
         }
         Err(other) => Err(other.into()),
     }
-}
-
-/// Extractor for protected routes: validates the `Authorization: Bearer`
-/// token against the session store and loads the owning account.
-pub struct AuthSession {
-    pub account: Account,
-    pub session: Session,
 }
 
 impl FromRequestParts<AppState> for AuthSession {

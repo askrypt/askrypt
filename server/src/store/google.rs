@@ -6,15 +6,16 @@
 //! Whether the email may be trusted (`email_verified`) is left to the
 //! caller, per the [`IdTokenVerifier`] contract.
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
-use serde::Deserialize;
 use tokio::sync::RwLock;
 
+use super::types::{GoogleClaims, Jwk, JwkSet, KeyCache};
 use super::{IdTokenError, IdTokenVerifier, VerifiedIdToken};
+
+pub use super::types::{GoogleIdTokenVerifier, NotConfiguredIdTokenVerifier};
 
 const JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
 const ISSUERS: [&str; 2] = ["https://accounts.google.com", "accounts.google.com"];
@@ -22,47 +23,6 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Floor between JWKS refetches, so a flood of tokens with bogus key ids
 /// cannot make us hammer Google.
 const MIN_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
-
-#[derive(Deserialize)]
-struct JwkSet {
-    keys: Vec<Jwk>,
-}
-
-/// The subset of a JWK we need for RS256: base64url modulus + exponent.
-#[derive(Deserialize, Clone)]
-struct Jwk {
-    #[serde(default)]
-    kid: String,
-    #[serde(default)]
-    kty: String,
-    #[serde(default)]
-    n: String,
-    #[serde(default)]
-    e: String,
-}
-
-#[derive(Deserialize)]
-struct GoogleClaims {
-    sub: String,
-    email: Option<String>,
-    #[serde(default)]
-    email_verified: bool,
-}
-
-#[derive(Default)]
-struct KeyCache {
-    keys: HashMap<String, Jwk>,
-    fetched_at: Option<Instant>,
-}
-
-pub struct GoogleIdTokenVerifier {
-    /// Accepted `aud` values: the Google OAuth client ids of the web,
-    /// desktop and mobile apps.
-    client_ids: Vec<String>,
-    jwks_url: String,
-    http: reqwest::Client,
-    keys: RwLock<KeyCache>,
-}
 
 impl GoogleIdTokenVerifier {
     pub fn new(client_ids: Vec<String>) -> Self {
@@ -151,10 +111,6 @@ impl IdTokenVerifier for GoogleIdTokenVerifier {
         })
     }
 }
-
-/// Wired in `main` when no Google client ids are configured: every Google
-/// sign-in attempt answers "not configured" instead of hitting the network.
-pub struct NotConfiguredIdTokenVerifier;
 
 #[async_trait]
 impl IdTokenVerifier for NotConfiguredIdTokenVerifier {

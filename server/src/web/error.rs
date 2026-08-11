@@ -6,22 +6,16 @@
 //! `From<ApiError>` below is the seam that turns one into the other — so
 //! there is still exactly one implementation of every rule.
 
-use askama::Template;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use crate::error::ApiError;
 use crate::store::StoreError;
 use crate::web::render::{Chrome, Page};
+use crate::web::types::{ErrorNotice, ErrorTemplate};
 
-pub type WebResult<T> = Result<T, WebError>;
-
-#[derive(Debug)]
-pub struct WebError {
-    pub status: StatusCode,
-    pub title: &'static str,
-    pub message: String,
-}
+pub(crate) use crate::web::types::ErrorInfo;
+pub use crate::web::types::{WebError, WebResult};
 
 impl WebError {
     pub fn new(status: StatusCode, title: &'static str, message: impl Into<String>) -> Self {
@@ -102,37 +96,6 @@ impl From<StoreError> for WebError {
     fn from(err: StoreError) -> Self {
         ApiError::from(err).into()
     }
-}
-
-#[derive(Template)]
-#[template(path = "error.html")]
-struct ErrorTemplate {
-    chrome: Chrome,
-    status: u16,
-    title: &'static str,
-    message: String,
-}
-
-/// A rendered [`WebError`], riding along on the response so that
-/// `web::htmx_error_fragment` can render it a second time as a fragment.
-///
-/// A response extension is the only channel available: `IntoResponse` cannot
-/// see the request, so it cannot know htmx made it, and by the time a layer
-/// can tell, the error is already a whole page.
-#[derive(Clone)]
-pub(crate) struct ErrorInfo {
-    status: StatusCode,
-    title: &'static str,
-    message: String,
-}
-
-#[derive(Template)]
-#[template(path = "fragments/error_notice.html")]
-struct ErrorNotice {
-    status: u16,
-    title: &'static str,
-    message: String,
-    back: String,
 }
 
 impl ErrorInfo {

@@ -8,17 +8,12 @@
 use std::sync::{Arc, Mutex};
 
 use tracing::field::{Field, Visit};
-use tracing::subscriber::DefaultGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::Registry;
 
-/// One recorded event: its target and every `field=value` pair, rendered the
-/// way a subscriber would see them.
-#[derive(Default)]
-pub struct Captured {
-    pub target: String,
-    pub fields: Vec<(String, String)>,
-}
+use crate::types::CaptureLayer;
+
+pub use crate::types::{Capture, Captured};
 
 impl Captured {
     /// The value of a field, or `None` if the event does not carry it.
@@ -48,8 +43,6 @@ impl Visit for Captured {
     }
 }
 
-struct CaptureLayer(Arc<Mutex<Vec<Captured>>>);
-
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
     fn on_event(
         &self,
@@ -63,17 +56,6 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
         event.record(&mut captured);
         self.0.lock().unwrap().push(captured);
     }
-}
-
-/// Collects every event emitted on this thread for as long as it is alive.
-///
-/// The subscriber is installed thread-locally, so tests stay deterministic
-/// while the binary runs them in parallel. The guard is held rather than
-/// scoped around a closure so `async` tests can `.await` inside the recorded
-/// stretch — `#[tokio::test]` polls on the thread that installed it.
-pub struct Capture {
-    events: Arc<Mutex<Vec<Captured>>>,
-    _guard: DefaultGuard,
 }
 
 impl Capture {

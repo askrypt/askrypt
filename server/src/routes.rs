@@ -36,7 +36,6 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
-use serde::Serialize;
 use tokio::sync::Semaphore;
 use tower_http::services::ServeDir;
 
@@ -49,6 +48,7 @@ use crate::hardening::{self, SecurityHeaders};
 use crate::profile;
 use crate::ratelimit::{self, RateLimiter};
 use crate::state::AppState;
+use crate::types::{About, Health};
 use crate::vaults;
 use crate::web;
 
@@ -175,19 +175,8 @@ fn concurrency_semaphore(max: usize) -> Arc<Semaphore> {
     }))
 }
 
-#[derive(Serialize)]
-struct Health {
-    status: &'static str,
-}
-
 async fn healthz() -> Json<Health> {
     Json(Health { status: "ok" })
-}
-
-#[derive(Serialize)]
-struct About {
-    name: &'static str,
-    version: &'static str,
 }
 
 async fn about() -> Json<About> {

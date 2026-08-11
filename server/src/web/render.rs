@@ -12,6 +12,8 @@ use chrono::{DateTime, Utc};
 use crate::web::csrf;
 use crate::web::flash;
 
+pub use crate::web::types::{Chrome, Page, Shell};
+
 /// Set by htmx on every request it makes.
 pub const HX_REQUEST: HeaderName = HeaderName::from_static("hx-request");
 
@@ -28,9 +30,6 @@ const RENDER_FAILURE: &str = "<!doctype html><html lang=\"en\"><head>\
 <meta charset=\"utf-8\"><title>Askrypt</title></head><body>\
 <h1>Something went wrong</h1><p>The page could not be rendered.</p>\
 </body></html>";
-
-/// Renders `T` as an HTML response.
-pub struct Page<T>(pub T);
 
 impl<T: Template> IntoResponse for Page<T> {
     fn into_response(self) -> Response {
@@ -61,24 +60,6 @@ pub fn is_htmx(headers: &HeaderMap) -> bool {
     headers.get(HX_REQUEST).is_some_and(|value| value == "true")
 }
 
-/// Everything `layout.html` needs. Every page template carries one.
-pub struct Chrome {
-    /// Signed-in address, shown in the nav; `None` when signed out.
-    pub email: Option<String>,
-    /// Token embedded in every mutating form on the page.
-    pub csrf: String,
-    /// One-shot message carried over from the previous request.
-    pub flash: Option<&'static str>,
-    /// Whether the nav offers "Sign in" / "Create account". Off on the auth
-    /// pages themselves, and on error pages, where the signed-in state
-    /// isn't known.
-    pub auth_links: bool,
-    /// Whether the nav offers the admin Users link. Defaults to off, so a
-    /// page that forgets to set it hides the link rather than advertising a
-    /// route the visitor would only be refused at.
-    pub is_admin: bool,
-}
-
 impl Chrome {
     /// Chrome for a response rendered outside a normal page handler — error
     /// pages produced by an extractor rejection, which have no session
@@ -92,14 +73,6 @@ impl Chrome {
             is_admin: false,
         }
     }
-}
-
-/// Page chrome plus the cookies the response has to carry back: a freshly
-/// minted CSRF cookie when the visitor didn't have one, and the expiry of a
-/// flash that has now been shown.
-pub struct Shell {
-    pub chrome: Chrome,
-    cookies: Vec<String>,
 }
 
 impl Shell {

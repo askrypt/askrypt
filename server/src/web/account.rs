@@ -17,11 +17,9 @@
 //! [`render::redirect_either_way`]. With JavaScript off, every one of them is
 //! an ordinary POST-redirect-GET.
 
-use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
 
 use crate::audit::ClientInfo;
 use crate::profile::{self, SessionInfo};
@@ -32,56 +30,14 @@ use crate::web::csrf::CsrfForm;
 use crate::web::flash::{self, Flash};
 use crate::web::render::{self, Chrome, Page, Shell, is_htmx, timestamp, with_cookies};
 use crate::web::session::{self, WEB_SESSION_TTL_DAYS, WebSession};
+use crate::web::types::{AccountPage, Device, Section, Sections};
+
+pub use crate::web::types::{
+    DeleteForm, DeleteInput, DeviceList, EmailForm, EmailInput, PasswordForm, PasswordInput,
+    TokenOnly,
+};
 
 pub const ACCOUNT_PATH: &str = "/account";
-
-#[derive(Template)]
-#[template(path = "account.html")]
-struct AccountPage {
-    chrome: Chrome,
-    email: String,
-    providers: String,
-    created: String,
-    session_days: i64,
-    email_form: EmailForm,
-    password_form: PasswordForm,
-    devices: DeviceList,
-    delete_form: DeleteForm,
-}
-
-#[derive(Template)]
-#[template(path = "fragments/email_form.html")]
-pub struct EmailForm {
-    csrf: String,
-    email: String,
-    error: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "fragments/password_form.html")]
-pub struct PasswordForm {
-    csrf: String,
-    /// False on a Google-created account with no password yet: there is
-    /// nothing to re-authenticate against, so the form asks for one field.
-    needs_current: bool,
-    error: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "fragments/devices.html")]
-pub struct DeviceList {
-    csrf: String,
-    devices: Vec<Device>,
-    error: Option<String>,
-}
-
-struct Device {
-    id: String,
-    label: String,
-    created: String,
-    expires: String,
-    current: bool,
-}
 
 impl From<SessionInfo> for Device {
     fn from(info: SessionInfo) -> Self {
@@ -97,14 +53,6 @@ impl From<SessionInfo> for Device {
     }
 }
 
-#[derive(Template)]
-#[template(path = "fragments/delete_account.html")]
-pub struct DeleteForm {
-    csrf: String,
-    email: String,
-    error: Option<String>,
-}
-
 /// `GET /account`
 pub async fn page(
     State(state): State<AppState>,
@@ -116,12 +64,6 @@ pub async fn page(
         .into_parts();
     let page = build_page(&state, &web, chrome, Sections::default()).await?;
     Ok(with_cookies(Page(page).into_response(), cookies))
-}
-
-#[derive(Deserialize)]
-pub struct EmailInput {
-    #[serde(default)]
-    email: String,
 }
 
 /// `POST /account/email`
@@ -148,16 +90,6 @@ pub async fn update_email(
             respond_with_section(&state, &web, &headers, sections, Section::Email).await
         }
     }
-}
-
-#[derive(Deserialize)]
-pub struct PasswordInput {
-    #[serde(default)]
-    current_password: String,
-    #[serde(default)]
-    new_password: String,
-    #[serde(default)]
-    confirm_password: String,
 }
 
 /// `POST /account/password`
@@ -253,16 +185,6 @@ pub async fn revoke_device(
     }
 }
 
-/// A form carrying nothing but its CSRF token.
-#[derive(Deserialize)]
-pub struct TokenOnly {}
-
-#[derive(Deserialize)]
-pub struct DeleteInput {
-    #[serde(default)]
-    confirm: String,
-}
-
 /// `POST /account/delete` — delete the account and everything it holds.
 ///
 /// Guarded by a typed confirmation: the visitor has to write their own email
@@ -303,26 +225,6 @@ pub async fn delete_account(
             respond_with_section(&state, &web, &headers, sections, Section::Delete).await
         }
     }
-}
-
-/// Which fragment a failed submission should swap back.
-#[derive(Clone, Copy)]
-enum Section {
-    Email,
-    Password,
-    Devices,
-    Delete,
-}
-
-/// The per-section state a re-render needs: the typed-back values and at most
-/// one error.
-#[derive(Default)]
-struct Sections {
-    email: Option<String>,
-    email_error: Option<String>,
-    password_error: Option<String>,
-    devices_error: Option<String>,
-    delete_error: Option<String>,
 }
 
 /// Answers a refused submission: the single failed fragment for htmx, the

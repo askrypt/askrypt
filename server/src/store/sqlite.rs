@@ -16,10 +16,16 @@ use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
+use super::types::{AccountRow, DeviceLinkRow, RoleRow, SessionRow, VaultMetaRow, VaultVersionRow};
 use super::{
     Account, AccountId, AccountStore, DeviceLink, DeviceLinkId, DeviceLinkStatus, DeviceLinkStore,
     NewAccount, Role, RoleStore, Session, SessionStore, StoreError, VaultId, VaultMeta,
     VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
+};
+
+pub use super::types::{
+    SqliteAccountStore, SqliteDeviceLinkStore, SqliteRoleStore, SqliteSessionStore,
+    SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -64,16 +70,6 @@ fn parse_uuid(raw: &str) -> Result<Uuid, StoreError> {
 /// Every column of `accounts`, in the order the queries below list them.
 const ACCOUNT_COLUMNS: &str = "id, email, password_hash, google_sub, created_at, banned_at";
 
-#[derive(sqlx::FromRow)]
-struct AccountRow {
-    id: String,
-    email: String,
-    password_hash: Option<String>,
-    google_sub: Option<String>,
-    created_at: DateTime<Utc>,
-    banned_at: Option<DateTime<Utc>>,
-}
-
 impl AccountRow {
     fn into_account(self) -> Result<Account, StoreError> {
         Ok(Account {
@@ -85,11 +81,6 @@ impl AccountRow {
             banned_at: self.banned_at,
         })
     }
-}
-
-#[derive(Clone)]
-pub struct SqliteAccountStore {
-    pool: SqlitePool,
 }
 
 impl SqliteAccountStore {
@@ -203,13 +194,6 @@ impl AccountStore for SqliteAccountStore {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct RoleRow {
-    id: String,
-    name: String,
-    description: String,
-}
-
 impl RoleRow {
     fn into_role(self) -> Result<Role, StoreError> {
         Ok(Role {
@@ -218,11 +202,6 @@ impl RoleRow {
             description: self.description,
         })
     }
-}
-
-#[derive(Clone)]
-pub struct SqliteRoleStore {
-    pool: SqlitePool,
 }
 
 impl SqliteRoleStore {
@@ -316,15 +295,6 @@ impl RoleStore for SqliteRoleStore {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct SessionRow {
-    token: String,
-    account_id: String,
-    label: Option<String>,
-    created_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
-}
-
 impl SessionRow {
     fn into_session(self) -> Result<Session, StoreError> {
         Ok(Session {
@@ -335,11 +305,6 @@ impl SessionRow {
             expires_at: self.expires_at,
         })
     }
-}
-
-#[derive(Clone)]
-pub struct SqliteSessionStore {
-    pool: SqlitePool,
 }
 
 impl SqliteSessionStore {
@@ -416,18 +381,6 @@ impl SessionStore for SqliteSessionStore {
 const DEVICE_LINK_COLUMNS: &str =
     "id, poll_token, user_code, device_label, status, account_id, created_at, expires_at";
 
-#[derive(sqlx::FromRow)]
-struct DeviceLinkRow {
-    id: String,
-    poll_token: String,
-    user_code: String,
-    device_label: Option<String>,
-    status: String,
-    account_id: Option<String>,
-    created_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
-}
-
 impl DeviceLinkRow {
     fn into_link(self) -> Result<DeviceLink, StoreError> {
         let status = DeviceLinkStatus::from_stored(&self.status)
@@ -445,11 +398,6 @@ impl DeviceLinkRow {
             expires_at: self.expires_at,
         })
     }
-}
-
-#[derive(Clone)]
-pub struct SqliteDeviceLinkStore {
-    pool: SqlitePool,
 }
 
 impl SqliteDeviceLinkStore {
@@ -561,18 +509,6 @@ impl DeviceLinkStore for SqliteDeviceLinkStore {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct VaultMetaRow {
-    id: String,
-    account_id: String,
-    name: String,
-    size: i64,
-    etag: String,
-    updated_at: DateTime<Utc>,
-    host: Option<String>,
-    saved_at: Option<DateTime<Utc>>,
-}
-
 impl VaultMetaRow {
     fn into_meta(self) -> Result<VaultMeta, StoreError> {
         Ok(VaultMeta {
@@ -590,11 +526,6 @@ impl VaultMetaRow {
 
 /// The columns every vault query selects, in [`VaultMetaRow`]'s order.
 const VAULT_COLUMNS: &str = "id, account_id, name, size, etag, updated_at, host, saved_at";
-
-#[derive(Clone)]
-pub struct SqliteVaultMetaStore {
-    pool: SqlitePool,
-}
 
 impl SqliteVaultMetaStore {
     pub fn new(pool: SqlitePool) -> Self {
@@ -691,20 +622,6 @@ impl VaultMetaStore for SqliteVaultMetaStore {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct VaultVersionRow {
-    id: String,
-    vault_id: String,
-    account_id: String,
-    name: String,
-    size: i64,
-    etag: String,
-    updated_at: DateTime<Utc>,
-    archived_at: DateTime<Utc>,
-    host: Option<String>,
-    saved_at: Option<DateTime<Utc>>,
-}
-
 impl VaultVersionRow {
     fn into_version(self) -> Result<VaultVersion, StoreError> {
         Ok(VaultVersion {
@@ -725,11 +642,6 @@ impl VaultVersionRow {
 /// The columns every version query selects, in [`VaultVersionRow`]'s order.
 const VERSION_COLUMNS: &str =
     "id, vault_id, account_id, name, size, etag, updated_at, archived_at, host, saved_at";
-
-#[derive(Clone)]
-pub struct SqliteVaultVersionStore {
-    pool: SqlitePool,
-}
 
 impl SqliteVaultVersionStore {
     pub fn new(pool: SqlitePool) -> Self {

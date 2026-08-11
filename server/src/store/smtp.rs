@@ -10,7 +10,6 @@
 //! `SmtpMailer` should be built once at startup and shared.
 
 use std::fmt;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use lettre::message::Mailbox;
@@ -21,19 +20,7 @@ use lettre::{AsyncTransport, Message, Tokio1Executor};
 
 use super::{Mailer, MailerError};
 
-/// How the connection to the relay is protected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SmtpEncryption {
-    /// Connect in the clear, then upgrade with `STARTTLS`. The submission
-    /// default, and what most relays expect on port 587.
-    #[default]
-    StartTls,
-    /// TLS from the first byte ("SMTPS"), normally port 465.
-    ImplicitTls,
-    /// No TLS at all. Only sane for a relay on localhost or a private
-    /// network — credentials and message bodies cross the wire in clear.
-    None,
-}
+pub use super::types::{SmtpConfig, SmtpCredentials, SmtpEncryption, SmtpMailer};
 
 impl SmtpEncryption {
     /// The conventional submission port for this mode, used when
@@ -60,14 +47,6 @@ impl SmtpEncryption {
     pub const SPELLINGS: &'static str = "\"starttls\", \"tls\" or \"none\"";
 }
 
-/// Relay login. Both halves are required together — a username with no
-/// password is a configuration mistake, not an anonymous session.
-#[derive(Clone, PartialEq, Eq)]
-pub struct SmtpCredentials {
-    pub username: String,
-    pub password: String,
-}
-
 /// Hides the password: `Config` derives `Debug` and gets logged on startup.
 impl fmt::Debug for SmtpCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -76,30 +55,6 @@ impl fmt::Debug for SmtpCredentials {
             .field("password", &"<redacted>")
             .finish()
     }
-}
-
-/// Everything needed to reach a relay. Built by [`crate::config`] from the
-/// `ASKRYPT_SMTP_*` variables.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SmtpConfig {
-    pub host: String,
-    pub port: u16,
-    pub encryption: SmtpEncryption,
-    /// Envelope sender, e.g. `Askrypt <no-reply@example.com>` or a bare
-    /// address. Parsed at startup so a typo fails fast.
-    pub from: String,
-    pub credentials: Option<SmtpCredentials>,
-    /// Per-operation network timeout.
-    pub timeout: Duration,
-}
-
-/// Pooled SMTP transport. Cheap to clone-share behind an `Arc`.
-pub struct SmtpMailer {
-    transport: AsyncSmtpTransport<Tokio1Executor>,
-    from: Mailbox,
-    /// Kept for the startup log line; never contains the password (see the
-    /// `Debug` impl on [`SmtpCredentials`]).
-    relay: String,
 }
 
 /// Hand-written so the transport — which holds the relay credentials — is
@@ -185,6 +140,8 @@ impl Mailer for SmtpMailer {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn config() -> SmtpConfig {

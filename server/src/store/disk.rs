@@ -21,15 +21,10 @@ use uuid::Uuid;
 
 use super::{AccountId, StoreError, VaultBlobStore, VaultId};
 
+pub use super::types::DiskVaultBlobStore;
+
 /// Where archived generations live inside an account's own directory.
 const VERSIONS_SUBDIR: &str = "versions";
-
-pub struct DiskVaultBlobStore {
-    root: PathBuf,
-    /// Inserted between the account directory and the file name. `None` for
-    /// the live vaults; `Some("versions")` for their history.
-    subdir: Option<&'static str>,
-}
 
 impl DiskVaultBlobStore {
     /// The live vaults: `<root>/<account-id>/<vault-id>.askrypt`.

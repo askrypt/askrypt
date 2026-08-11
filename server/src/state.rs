@@ -10,41 +10,8 @@ use crate::store::memory::{
     MemorySessionStore, MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
 };
 use crate::store::recaptcha::DisabledCaptchaVerifier;
-use crate::store::{
-    AccountStore, CaptchaVerifier, DeviceLinkStore, IdTokenVerifier, Mailer, RoleStore,
-    SessionStore, VaultBlobStore, VaultMetaStore, VaultVersionStore,
-};
 
-#[derive(Clone)]
-pub struct AppState {
-    pub accounts: Arc<dyn AccountStore>,
-    /// Which accounts hold which roles. The vocabulary itself is seeded by
-    /// the migration, so this seam only ever reads it and writes grants.
-    pub roles: Arc<dyn RoleStore>,
-    pub sessions: Arc<dyn SessionStore>,
-    /// Desktop sign-ins in flight: the app creates one, the browser approves
-    /// it, the app claims the session it authorizes. Short-lived by
-    /// construction — every record is deleted on claim or swept at expiry.
-    pub device_links: Arc<dyn DeviceLinkStore>,
-    pub vault_meta: Arc<dyn VaultMetaStore>,
-    pub vault_blobs: Arc<dyn VaultBlobStore>,
-    /// Index over the archived generations of each vault.
-    pub vault_versions: Arc<dyn VaultVersionStore>,
-    /// The archived bytes — the same trait as [`Self::vault_blobs`], but a
-    /// **separate store keyed by *version* id**, writing into a `versions/`
-    /// subdirectory of each account's vault directory. History stays out of
-    /// the live vault namespace (so "the file for vault X" is a single path
-    /// nothing else can occupy) while everything one account stores remains
-    /// under one directory.
-    pub vault_version_blobs: Arc<dyn VaultBlobStore>,
-    pub mailer: Arc<dyn Mailer>,
-    pub id_verifier: Arc<dyn IdTokenVerifier>,
-    /// Scores the reCAPTCHA tokens the website's sign-in and registration
-    /// forms carry. Also the single source of truth for *whether* there is a
-    /// captcha at all: its `site_key` is what the templates and the CSP
-    /// decision both read.
-    pub captcha: Arc<dyn CaptchaVerifier>,
-}
+pub use crate::types::AppState;
 
 impl AppState {
     /// State wired entirely to the in-memory fakes. Used by tests and the

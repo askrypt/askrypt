@@ -20,17 +20,9 @@ use axum::response::Response;
 
 use crate::clientip;
 use crate::error::ApiError;
+use crate::types::Window;
 
-pub struct RateLimiter {
-    max_per_window: u32,
-    window: Duration,
-    windows: Mutex<HashMap<String, Window>>,
-}
-
-struct Window {
-    started: Instant,
-    count: u32,
-}
+pub use crate::types::RateLimiter;
 
 impl RateLimiter {
     pub fn new(max_per_window: u32, window: Duration) -> Self {

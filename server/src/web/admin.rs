@@ -15,11 +15,9 @@
 //! total and the administrator count that the guards depend on, so a swapped
 //! row would sit inside a stale table.
 
-use askama::Template;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::admin::{self, USERS_PER_PAGE};
@@ -32,42 +30,14 @@ use crate::web::WebResult;
 use crate::web::account::{TokenOnly, describe_providers};
 use crate::web::csrf::CsrfForm;
 use crate::web::flash::{self, Flash};
-use crate::web::render::{self, Chrome, Page, Shell, is_htmx, timestamp, with_cookies};
+use crate::web::render::{self, Page, Shell, is_htmx, timestamp, with_cookies};
 use crate::web::session::AdminSession;
+use crate::web::types::UsersPage;
 use crate::web::vaults::human_bytes;
 
+pub use crate::web::types::{DeleteInput, Notice, Paging, RoleInput, UserList, UserRow};
+
 pub const USERS_PATH: &str = "/admin/users";
-
-#[derive(Template)]
-#[template(path = "admin_users.html")]
-struct UsersPage {
-    chrome: Chrome,
-    users: UserList,
-}
-
-#[derive(Template)]
-#[template(path = "fragments/user_list.html")]
-pub struct UserList {
-    csrf: String,
-    users: Vec<UserRow>,
-    /// The two storage allowances, worded for the paid-tier confirmation so
-    /// the figures come from the constants rather than the markup.
-    free_quota: String,
-    paid_quota: String,
-    total: u64,
-    /// 1-based, for display only; the query parameter stays 0-based.
-    page_number: u32,
-    prev_page: Option<u32>,
-    next_page: Option<u32>,
-    notice: Option<Notice>,
-}
-
-/// The one line above the table after an action. Carries its own severity so
-/// the template needs no second field to decide how to paint it.
-pub struct Notice {
-    text: String,
-    danger: bool,
-}
 
 impl Notice {
     fn good(text: impl Into<String>) -> Self {
@@ -85,18 +55,6 @@ impl Notice {
     }
 }
 
-pub struct UserRow {
-    id: String,
-    email: String,
-    created: String,
-    providers: String,
-    is_admin: bool,
-    is_payment_user: bool,
-    is_self: bool,
-    /// When the account was suspended, or `None` while it is active.
-    banned: Option<String>,
-}
-
 impl From<admin::AdminUser> for UserRow {
     fn from(user: admin::AdminUser) -> Self {
         // Read off the account before it is broken up into fields.
@@ -112,14 +70,6 @@ impl From<admin::AdminUser> for UserRow {
             banned: user.account.banned_at.map(timestamp),
         }
     }
-}
-
-/// Which page of the table to show. Absent, empty or unparseable means the
-/// first one — a hand-edited URL should not be an error page.
-#[derive(Deserialize, Default)]
-pub struct Paging {
-    #[serde(default)]
-    page: Option<u32>,
 }
 
 impl Paging {
@@ -194,18 +144,6 @@ pub async fn unban(
     .await
 }
 
-#[derive(Deserialize)]
-pub struct RoleInput {
-    /// `"grant"` adds the role, anything else takes it away. A single route
-    /// for both directions keeps one CSRF-checked door per row action.
-    #[serde(default)]
-    action: String,
-    /// Which role, by name. Absent means `ADMIN`: the promote/demote form
-    /// predates the paid tier and never sent this.
-    #[serde(default)]
-    role: String,
-}
-
 /// `POST /admin/users/{id}/role`
 pub async fn set_role(
     State(state): State<AppState>,
@@ -239,12 +177,6 @@ fn flash_for(role: &str, grant: bool) -> Flash {
         (_, true) => Flash::AdminGranted,
         (_, false) => Flash::AdminRevoked,
     }
-}
-
-#[derive(Deserialize)]
-pub struct DeleteInput {
-    #[serde(default)]
-    confirm: String,
 }
 
 /// `POST /admin/users/{id}/delete`

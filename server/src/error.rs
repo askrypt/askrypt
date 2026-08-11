@@ -4,29 +4,22 @@
 //! `{"error": {"code": "<machine_code>", "message": "<human text>"}}` with a
 //! matching HTTP status. Handlers return [`ApiResult`] and convert domain
 //! errors via the `From` impls below.
+//!
+//! The shapes themselves — [`ApiError`], [`ApiJson`], [`ApiBytes`] and the
+//! serialized envelope — are declared in [`crate::types`] and re-exported
+//! here; everything below is behaviour over them.
 
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::store::{IdTokenError, StoreError};
+use crate::types::{ErrorBody, ErrorDetail};
 
-pub type ApiResult<T> = Result<T, ApiError>;
-
-#[derive(Debug)]
-pub struct ApiError {
-    pub status: StatusCode,
-    /// Stable machine-readable code (snake_case), independent of the message.
-    pub code: &'static str,
-    pub message: String,
-    /// Emitted as `Retry-After: <seconds>`; set on the throttling and
-    /// overload responses so clients back off instead of hammering.
-    pub retry_after: Option<u64>,
-}
+pub use crate::types::{ApiBytes, ApiError, ApiJson, ApiResult};
 
 impl ApiError {
     /// Every other constructor funnels through here, which makes this the one
@@ -100,17 +93,6 @@ impl ApiError {
     }
 }
 
-#[derive(Serialize)]
-struct ErrorBody<'a> {
-    error: ErrorDetail<'a>,
-}
-
-#[derive(Serialize)]
-struct ErrorDetail<'a> {
-    code: &'a str,
-    message: &'a str,
-}
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         // Destructured up front: the body borrows `message` while `status`
@@ -173,11 +155,6 @@ impl From<IdTokenError> for ApiError {
     }
 }
 
-/// Drop-in replacement for [`axum::Json`] as an extractor whose rejection
-/// (malformed/missing body) follows the JSON error envelope instead of
-/// axum's plain-text default.
-pub struct ApiJson<T>(pub T);
-
 impl<T, S> FromRequest<S> for ApiJson<T>
 where
     T: DeserializeOwned,
@@ -196,11 +173,6 @@ where
         }
     }
 }
-
-/// Raw-body counterpart of [`ApiJson`]: buffers the request body as
-/// [`Bytes`], with rejections (over the body limit, aborted transfers)
-/// following the JSON error envelope instead of axum's plain-text default.
-pub struct ApiBytes(pub Bytes);
 
 impl<S> FromRequest<S> for ApiBytes
 where

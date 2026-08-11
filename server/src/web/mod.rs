@@ -37,6 +37,7 @@ pub mod flash;
 pub mod pages;
 pub mod render;
 pub mod session;
+pub mod types;
 pub mod vaults;
 
 use std::sync::Arc;

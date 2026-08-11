@@ -21,19 +21,10 @@
 use std::io::{Cursor, Read};
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
 
-/// What a vault file records about its own last write. Both halves are
-/// independently optional: older files carry neither, and a file whose
-/// timestamp does not parse can still name its host.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct VaultStamp {
-    /// Host name of the machine that wrote the file.
-    pub host: Option<String>,
-    /// When it was written, as the *file* records it — unrelated to when the
-    /// server received it.
-    pub saved_at: Option<DateTime<Utc>>,
-}
+use crate::types::StampedFile;
+
+pub use crate::types::VaultStamp;
 
 impl VaultStamp {
     pub fn is_empty(&self) -> bool {
@@ -51,23 +42,6 @@ const MAX_JSON_BYTES: u64 = 1024 * 1024;
 /// Host names are at most 253 characters; anything longer is not a host name
 /// and has no business in a table cell.
 const MAX_HOST_CHARS: usize = 128;
-
-/// The sliver of the vault JSON this module cares about. Unknown fields —
-/// which is to say all the rest of the format — are ignored by serde, so
-/// this struct does not have to track the format as it grows.
-#[derive(Deserialize)]
-struct StampedFile {
-    #[serde(default)]
-    params: StampParams,
-}
-
-#[derive(Deserialize, Default)]
-struct StampParams {
-    #[serde(default)]
-    host: Option<String>,
-    #[serde(default)]
-    updated_at: Option<String>,
-}
 
 /// Reads the write stamp out of vault bytes, or an empty stamp if there is
 /// none to read.

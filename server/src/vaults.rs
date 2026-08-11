@@ -39,8 +39,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -52,6 +51,8 @@ use crate::store::{
     AccountId, PAYMENT_USER_ROLE, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId,
 };
 use crate::vaultfile;
+
+pub use crate::types::{RenameRequest, UploadQuery, VaultInfo, VersionInfo};
 
 /// Hard cap on a single vault file. Real vaults are small ZIPs (tens of
 /// KBs); 10 MiB is deliberately generous. Also enforced as the request
@@ -133,21 +134,6 @@ fn log_list(account_id: AccountId, count: usize) {
     tracing::debug!(op = op::LISTED, %account_id, count, "vault operation");
 }
 
-/// One vault's metadata as answered by the list/upload/rename endpoints.
-#[derive(Serialize)]
-pub struct VaultInfo {
-    pub id: VaultId,
-    pub name: String,
-    pub size: u64,
-    pub etag: String,
-    /// When the server stored these bytes.
-    pub updated_at: DateTime<Utc>,
-    /// The machine that saved the file, from its own unencrypted stamp.
-    pub host: Option<String>,
-    /// When the file says it was saved, from the same stamp.
-    pub saved_at: Option<DateTime<Utc>>,
-}
-
 impl From<&VaultMeta> for VaultInfo {
     fn from(meta: &VaultMeta) -> Self {
         Self {
@@ -178,11 +164,6 @@ pub(crate) async fn list_for(state: &AppState, account_id: AccountId) -> ApiResu
     metas.sort_by_key(|meta| meta.name.to_lowercase());
     log_list(account_id, metas.len());
     Ok(metas)
-}
-
-#[derive(Deserialize)]
-pub struct UploadQuery {
-    name: Option<String>,
 }
 
 /// `POST /api/v1/vaults?name=<file name>` — upload a new vault file (raw
@@ -563,11 +544,6 @@ async fn drop_version(state: &AppState, version: &VaultVersion) -> Result<(), St
     }
 }
 
-#[derive(Deserialize)]
-pub struct RenameRequest {
-    pub name: String,
-}
-
 /// `PUT /api/v1/vaults/{id}/name` — rename the vault file. The ETag is a
 /// content hash, so renaming does not change it.
 pub async fn rename(
@@ -660,25 +636,6 @@ pub(crate) async fn destroy(
         "vault operation"
     );
     Ok(())
-}
-
-/// One archived generation as answered by the version endpoints.
-#[derive(Serialize)]
-pub struct VersionInfo {
-    pub id: VaultVersionId,
-    pub vault_id: VaultId,
-    /// The vault's name when this generation was archived.
-    pub name: String,
-    pub size: u64,
-    pub etag: String,
-    /// When these bytes were the live vault's last write.
-    pub updated_at: DateTime<Utc>,
-    /// When they were superseded.
-    pub archived_at: DateTime<Utc>,
-    /// The machine that saved these bytes, from the file's own stamp.
-    pub host: Option<String>,
-    /// When the file says they were saved.
-    pub saved_at: Option<DateTime<Utc>>,
 }
 
 impl From<&VaultVersion> for VersionInfo {

@@ -20,6 +20,8 @@ use std::net::SocketAddr;
 use axum::extract::ConnectInfo;
 use axum::http::{Extensions, HeaderMap};
 
+pub use crate::types::ClientIpPolicy;
+
 /// Placeholder key for requests with no resolvable address (in-process
 /// tests, unusual transports). They all share one rate-limit bucket, which
 /// is the conservative direction.
@@ -27,14 +29,6 @@ pub const UNKNOWN: &str = "unknown";
 
 const HEADER_REAL_IP: &str = "x-real-ip";
 const HEADER_FORWARDED_FOR: &str = "x-forwarded-for";
-
-/// Whether proxy-set client-address headers may be believed. Travels as a
-/// request extension installed by the router, so middleware and extractors
-/// alike can read it without threading config through every signature.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ClientIpPolicy {
-    pub trust_forwarded_for: bool,
-}
 
 /// Best-effort client address as a string key.
 pub fn client_ip(headers: &HeaderMap, extensions: &Extensions, policy: ClientIpPolicy) -> String {
