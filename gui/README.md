@@ -205,7 +205,12 @@ The "fill it in" half is skipped where the system can do it better: picking
 **Local file** while saving opens `rfd`'s save dialog straight away, prefilled
 with the vault's name, because that dialog already asks for the folder *and* the
 name. So the file step exists only in the Open direction (the recent list plus
-`Browse…`), and only the server step asks the save direction for a name.
+`Browse…`), and only the server step asks the save direction for a name. That
+recent list is **filtered to `VaultLocation::LocalFile`** — the MRU records both
+kinds of home, and a server vault offered by the local-file step would open over
+a backend that step does not offer. It is filtered after `enumerate`, so a row
+still carries the index into `settings.recent_vaults` that `RecentPicked` looks
+up.
 
 The server step also no longer asks for an address, an email or a password: the
 address is a setting and the sign-in happens in a browser (see invariant 4), so

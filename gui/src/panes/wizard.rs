@@ -607,7 +607,17 @@ fn source_card<'a>(
 }
 
 fn file_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
-    let recent = &session.settings.recent_vaults;
+    // The MRU mixes both kinds of home, but this is the *local file* step —
+    // a server vault listed here would open over a backend the step does not
+    // offer. The enumeration runs before the filter, so each row keeps the
+    // index into `recent_vaults` that `Msg::RecentPicked` looks up.
+    let recent: Vec<(usize, &VaultLocation)> = session
+        .settings
+        .recent_vaults
+        .iter()
+        .enumerate()
+        .filter(|(_, location)| matches!(location, VaultLocation::LocalFile(_)))
+        .collect();
     let mut column = column![].spacing(10);
 
     if recent.is_empty() {
@@ -618,8 +628,8 @@ fn file_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message>
         );
     } else {
         let mut rows = iced::widget::column![].width(Length::Fill);
-        for (index, location) in recent.iter().enumerate() {
-            if index > 0 {
+        for (position, (index, location)) in recent.into_iter().enumerate() {
+            if position > 0 {
                 rows = rows.push(rule::horizontal(1).style(theme::pane_divider));
             }
             rows = rows.push(picker_row(
