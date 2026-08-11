@@ -323,7 +323,9 @@ only case `confirm()` acts on.
 7. **Pane state that holds secrets wipes on drop.** → `Drop` impls on
    `unlock::State` (answers), `questions::State` (answers), `passgen::State`
    (the generated password) and `session::SaveRequest`; the editor's draft is
-   wiped by `SecretEntry`'s own `ZeroizeOnDrop`. `wizard::State` needs none —
+   wiped by `SecretEntry`'s own `ZeroizeOnDrop` — **except the notes**, which
+   are a multi-line `text_editor` and live in cosmic-text's own buffer until
+   `entry_editor::save` folds them back into the entry. `wizard::State` needs none —
    it has held no password since sign-in moved to the browser. Any new pane
    holding a typed answer or password needs the same.
 8. **The idle timeout must not destroy work.** An automatic Smart Lock wipes the

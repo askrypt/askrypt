@@ -11,7 +11,7 @@
 
 use askrypt::SecretEntry;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
+    button, checkbox, column, container, pick_list, row, scrollable, text, text_editor, text_input,
 };
 use iced::{Element, Length, alignment::Vertical};
 
@@ -21,13 +21,26 @@ use crate::{Message, Pane, data, icon, theme};
 
 const NAME_INPUT_ID: &str = "GUI_EDITOR_NAME";
 
+/// Notes get a fixed box — the editor sits inside a `scrollable`, so a growing
+/// one would fight the outer scroll; it scrolls within itself instead.
+const NOTES_HEIGHT: f32 = 120.0;
+
 pub struct State {
     /// `None` for a new item; otherwise the index in `session.entries` this
     /// draft came from.
     index: Option<usize>,
     /// The draft. `SecretEntry` is `ZeroizeOnDrop`, so the typed secret is wiped
     /// when the editor closes.
+    ///
+    /// `entry.notes` is *not* live while the editor is open — the notes are a
+    /// multi-line `text_editor`, which owns its own buffer; `save` folds it
+    /// back in.
     entry: SecretEntry,
+    /// Notes as the user types them. A `text_editor` rather than a
+    /// `text_input`, so a note can be several lines. Its buffer is
+    /// cosmic-text's and cannot be zeroized the way `entry.notes` is — a note
+    /// typed here outlives the editor in freed memory.
+    notes: text_editor::Content,
     /// Tags as the user types them, comma-separated. Split on save.
     tags: String,
     revealed: bool,
@@ -39,6 +52,7 @@ impl State {
         State {
             index: None,
             entry: data::new_entry(),
+            notes: text_editor::Content::new(),
             tags: String::new(),
             revealed: false,
             error: None,
@@ -48,6 +62,7 @@ impl State {
     pub fn edit(entry: SecretEntry, index: usize) -> Self {
         State {
             tags: entry.tags.join(", "),
+            notes: text_editor::Content::with_text(&entry.notes),
             index: Some(index),
             entry,
             revealed: false,
@@ -81,7 +96,7 @@ pub enum Msg {
     UserNameEdited(String),
     SecretEdited(String),
     UrlEdited(String),
-    NotesEdited(String),
+    NotesAction(text_editor::Action),
     TagsEdited(String),
     TypeSelected(String),
     HiddenToggled(bool),
@@ -110,8 +125,10 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
             state.entry.url = value;
             (Action::None, false)
         }
-        Msg::NotesEdited(value) => {
-            state.entry.notes = value;
+        // Selections, clicks and scrolling are actions too, so the whole enum
+        // goes to the content; `save` is what reads the text back out.
+        Msg::NotesAction(action) => {
+            state.notes.perform(action);
             (Action::None, false)
         }
         Msg::TagsEdited(value) => {
@@ -142,6 +159,7 @@ fn save(state: &mut State, session: &mut Session) -> (Action, bool) {
     }
 
     let mut entry = state.entry.clone();
+    entry.notes = state.notes.text();
     entry.tags = state
         .tags
         .split(',')
@@ -255,8 +273,10 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         ),
         field(
             "Notes",
-            text_input("", &state.entry.notes)
-                .on_input(|value| Message::Editor(Msg::NotesEdited(value)))
+            text_editor(&state.notes)
+                .placeholder("Anything else worth keeping with this item")
+                .on_action(|action| Message::Editor(Msg::NotesAction(action)))
+                .height(NOTES_HEIGHT)
                 .padding(8)
                 .size(14)
                 .into(),
