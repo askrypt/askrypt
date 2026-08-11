@@ -75,6 +75,13 @@ impl Status {
         true
     }
 
+    /// Closing needs something to close: every state but [`Status::NoVault`],
+    /// including a vault that has never been written anywhere (the questions
+    /// editor's output) — the unsaved-changes gate is what protects that one.
+    pub fn can_close(self) -> bool {
+        self.is_open()
+    }
+
     pub fn can_unlock(self) -> bool {
         matches!(
             self,
@@ -129,18 +136,27 @@ mod tests {
     /// The whole point of the rail's action block: which buttons a state shows.
     #[test]
     fn button_visibility_per_state() {
-        // (status, new/open, unlock, smart_lock, lock, save)
+        // (status, new/open, close, unlock, smart_lock, lock, save)
         let table = [
-            (Status::NoVault, true, false, false, false, false),
-            (Status::Locked, true, true, false, false, false),
-            (Status::PartiallyUnlocked, true, true, false, false, false),
-            (Status::Unlocked, true, false, true, true, true),
-            (Status::SmartLocked, true, true, false, true, false),
+            (Status::NoVault, true, false, false, false, false, false),
+            (Status::Locked, true, true, true, false, false, false),
+            (
+                Status::PartiallyUnlocked,
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            ),
+            (Status::Unlocked, true, true, false, true, true, true),
+            (Status::SmartLocked, true, true, true, false, true, false),
         ];
 
-        for (status, open, unlock, smart_lock, lock, save) in table {
+        for (status, open, close, unlock, smart_lock, lock, save) in table {
             assert_eq!(status.can_create(), open, "new in {status:?}");
             assert_eq!(status.can_open(), open, "open in {status:?}");
+            assert_eq!(status.can_close(), close, "close in {status:?}");
             assert_eq!(status.can_unlock(), unlock, "unlock in {status:?}");
             assert_eq!(
                 status.can_smart_lock(),

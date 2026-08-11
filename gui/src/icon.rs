@@ -143,6 +143,10 @@ pub fn folder2_open(size: u16) -> Text<'static> {
     glyph('\u{F3D8}', size)
 }
 
+pub fn close(size: u16) -> Text<'static> {
+    glyph('\u{F623}', size)
+}
+
 pub fn lock(size: u16) -> Text<'static> {
     glyph('\u{F47B}', size)
 }

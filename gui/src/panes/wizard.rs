@@ -871,7 +871,11 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
                 );
             }
             NameStatus::Checking => {
-                fields = fields.push(text("Checking your vaults…").size(12).style(text::secondary));
+                fields = fields.push(
+                    text("Checking your vaults…")
+                        .size(12)
+                        .style(text::secondary),
+                );
             }
             NameStatus::Unknown => {
                 fields = fields.push(

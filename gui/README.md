@@ -130,7 +130,7 @@ same thing, for comparison.
 | `Unlocked` → `SmartLocked` | `guard(SmartLock)` → `start_smart_lock` → `apply_smart_lock()` | `app.rs:339-354` |
 | `SmartLocked` → `Unlocked` | `panes::unlock::start_smart_unlock` → `apply_smart_unlock()` | `smart_lock.rs` |
 | `SmartLocked` → `Locked` ("Full Lock") | `guard(Lock)` → `lock()` (clears `smart_lock_data`) | `app.rs:211-221` |
-| anything → `NoVault` ("Close Vault") | `close_vault()` | `app.rs:183-196` |
+| anything → `NoVault` ("Close Vault") | `guard(CloseVault)` → `close_vault()` → the wizard | `app.rs:183-196` |
 | idle → `SmartLocked`; 8 h → `Locked` | `auto_smart_lock` / `smart_lock_timed_out`, from `InactivityTick` | `session.rs:27-29`, `app.rs:222-230` |
 | save | `save_now()` → `write_vault` on a worker → `apply_saved()` | `session.rs:294-333` (**blocking**) |
 | save as / save to server | wizard → `Message::SaveTo(VaultLocation)` → same worker | `session.rs:336-456` (**blocking**) |
@@ -162,6 +162,7 @@ only asks.
 |---|---|---|
 | New Vault | every state | `can_create()` |
 | Open Vault… | every state | `can_open()` |
+| Close Vault | every state but `NoVault` | `can_close()` |
 | Unlock | `Locked`, `PartiallyUnlocked`, `SmartLocked` | `can_unlock()` |
 | Smart Lock | `Unlocked` | `can_smart_lock()` |
 | Lock / **Full Lock** | `Unlocked` / `SmartLocked` | `can_lock()` + `lock_label()` |

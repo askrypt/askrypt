@@ -114,6 +114,7 @@ pub enum Pane {
 pub enum VaultMsg {
     New,
     Open,
+    Close,
     Unlock,
     Lock,
     SmartLock,
@@ -128,6 +129,7 @@ pub enum VaultMsg {
 pub enum PendingAction {
     NewVault,
     OpenVault,
+    CloseVault,
     Lock,
     SmartLock,
     Exit,
@@ -722,6 +724,7 @@ impl App {
         match message {
             VaultMsg::New => self.guard(PendingAction::NewVault),
             VaultMsg::Open => self.guard(PendingAction::OpenVault),
+            VaultMsg::Close => self.guard(PendingAction::CloseVault),
             VaultMsg::Lock => self.guard(PendingAction::Lock),
             VaultMsg::SmartLock => self.guard(PendingAction::SmartLock),
             VaultMsg::Unlock => {
@@ -833,6 +836,15 @@ impl App {
                 Action::pane_run(Pane::Questions, operation::focus_next())
             }
             PendingAction::OpenVault => self.start_wizard(Purpose::Open),
+            PendingAction::CloseVault => {
+                // The deepest of the three lock depths: the bytes go too, so
+                // coming back means re-opening the file.
+                self.session.close_vault();
+                self.clear_secret_panes();
+                self.session.status_message =
+                    Some("Vault closed — secrets wiped from memory".into());
+                self.start_wizard(Purpose::Open)
+            }
             PendingAction::Lock => {
                 let label = self.status().lock_label();
                 self.session.lock();

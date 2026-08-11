@@ -109,6 +109,13 @@ fn pinned(app: &App) -> Element<'_, Message> {
             Message::Vault(VaultMsg::Open),
         ));
     }
+    if vault.can_close() {
+        actions = actions.push(action_row(
+            icon::close(14),
+            "Close Vault",
+            Message::Vault(VaultMsg::Close),
+        ));
+    }
     if vault.can_unlock() {
         actions = actions.push(action_row(
             icon::unlock(14),
