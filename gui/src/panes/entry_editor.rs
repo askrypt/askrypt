@@ -309,7 +309,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
 
     body = body.push(
         row![
-            button(text("Save item").size(14))
+            button(text("Add item").size(14))
                 .padding([8, 16])
                 .on_press(Message::Editor(Msg::Save)),
             button(text("Cancel").size(14))
