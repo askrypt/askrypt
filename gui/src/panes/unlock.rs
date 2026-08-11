@@ -19,7 +19,7 @@ use zeroize::Zeroize;
 use crate::panes::Action;
 use crate::session::{SMART_LOCK_TIMEOUT, Session, SmartUnlockResult};
 use crate::vault::Status;
-use crate::{App, Message, Pane, SEARCH_INPUT_ID, data, icon, theme};
+use crate::{App, Message, Pane, SEARCH_INPUT_ID, VaultMsg, data, icon, theme};
 
 const ANSWER_INPUT_ID: &str = "GUI_UNLOCK_ANSWER";
 
@@ -121,11 +121,11 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
         // renders them in order, so "next focusable" is the next question.
         Msg::FocusNextAnswer => Action::Run(iced::widget::operation::focus_next()),
         Msg::Submit => submit(state, session),
-        Msg::CloseVault => {
-            session.close_vault();
-            state.reset_for(session);
-            Action::Pane(Pane::Wizard)
-        }
+        // Closing is the shell's, not this pane's: besides wiping the vault it
+        // has to arm the wizard for a fresh Open, which this pane cannot reach.
+        // Closing here directly left the wizard on whatever step it was last
+        // used at — a server listing, or the recent-files step.
+        Msg::CloseVault => Action::Run(Task::done(Message::Vault(VaultMsg::Close))),
         Msg::Answer0Loaded(result) => {
             session.finish_work();
             match result {

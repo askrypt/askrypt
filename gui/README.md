@@ -130,7 +130,7 @@ same thing, for comparison.
 | `Unlocked` → `SmartLocked` | `guard(SmartLock)` → `start_smart_lock` → `apply_smart_lock()` | `app.rs:339-354` |
 | `SmartLocked` → `Unlocked` | `panes::unlock::start_smart_unlock` → `apply_smart_unlock()` | `smart_lock.rs` |
 | `SmartLocked` → `Locked` ("Full Lock") | `guard(Lock)` → `lock()` (clears `smart_lock_data`) | `app.rs:211-221` |
-| anything → `NoVault` ("Close Vault") | `guard(CloseVault)` → `close_vault()` → the wizard | `app.rs:183-196` |
+| anything → `NoVault` ("Close Vault") | `guard(CloseVault)` → `close_vault()` → the wizard, armed | `app.rs:183-196` |
 | idle → `SmartLocked`; 8 h → `Locked` | `auto_smart_lock` / `smart_lock_timed_out`, from `InactivityTick` | `session.rs:27-29`, `app.rs:222-230` |
 | save | `save_now()` → `write_vault` on a worker → `apply_saved()` | `session.rs:294-333` (**blocking**) |
 | save as / save to server | wizard → `Message::SaveTo(VaultLocation)` → same worker | `session.rs:336-456` (**blocking**) |
@@ -212,6 +212,16 @@ kinds of home, and a server vault offered by the local-file step would open over
 a backend that step does not offer. It is filtered after `enumerate`, so a row
 still carries the index into `settings.recent_vaults` that `RecentPicked` looks
 up.
+
+**The wizard is a pane that outlives its own runs, so it must be armed, never
+merely navigated to.** `State::begin` is what resets the step, the picks and the
+prefilled names for a `Purpose`; landing on `Pane::Wizard` without it shows
+whatever the last run was left on — a server listing, or the recent-files step.
+That is why closing a vault is the *shell's* job (`PendingAction::CloseVault`,
+which closes and then calls `start_wizard`) and the "Close Vault" button on the
+unlock pane delegates to it rather than closing the vault itself: a pane cannot
+reach `App.wizard`. `App::return_to_default` and `Message::PaneSelected` arm it
+for the same reason.
 
 The server step also no longer asks for an address, an email or a password: the
 address is a setting and the sign-in happens in a browser (see invariant 4), so
