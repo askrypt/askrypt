@@ -98,6 +98,7 @@ pub enum Msg {
     QuestionEdited(usize, String),
     AnswerEdited(usize, String),
     ShowAnswer(usize),
+    FocusNext,
     Add,
     Delete(usize),
     ToggleTranslit(bool),
@@ -131,6 +132,10 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
             };
             Action::None
         }
+        // The question and answer fields are the only focusable widgets in this
+        // pane — buttons and the checkbox are not — and the view renders them in
+        // order, so "next focusable" is the next field down.
+        Msg::FocusNext => Action::Run(iced::widget::operation::focus_next()),
         Msg::Add => {
             state.questions.push(String::new());
             state.answers.push(String::new());
@@ -297,6 +302,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             state.answers.get(index).map(String::as_str).unwrap_or(""),
             state.shown == Some(index),
             state.questions.len() > 2,
+            index + 1 == state.questions.len(),
         ));
     }
     body = body.push(theme::card(container(rows).padding(14)));
@@ -354,12 +360,15 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
+/// `last` marks the bottom row, whose answer field is the pane's final input:
+/// Enter there applies the changes, everywhere else it walks to the next field.
 fn question_row<'a>(
     index: usize,
     question: &'a str,
     answer: &'a str,
     revealed: bool,
     can_delete: bool,
+    last: bool,
 ) -> Element<'a, Message> {
     let mut header = row![
         text(format!("Question {}", index + 1))
@@ -380,12 +389,17 @@ fn question_row<'a>(
         header,
         text_input("Enter your security question", question)
             .on_input(move |value| Message::Questions(Msg::QuestionEdited(index, value)))
+            .on_submit(Message::Questions(Msg::FocusNext))
             .padding(8)
             .size(14),
         row![
             text_input("Enter the answer", answer)
                 .on_input(move |value| Message::Questions(Msg::AnswerEdited(index, value)))
-                .on_submit(Message::Questions(Msg::Save))
+                .on_submit(Message::Questions(if last {
+                    Msg::Save
+                } else {
+                    Msg::FocusNext
+                }))
                 .secure(!revealed)
                 .padding(8)
                 .size(14)
