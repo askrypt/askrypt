@@ -212,6 +212,15 @@ address is a setting and the sign-in happens in a browser (see invariant 4), so
 that step is either one button, the shared waiting card, or the account's vault
 list.
 
+**Entering the server step always refetches that list.** Caching it per sign-in
+(which is what `src/screens/server.rs` does, and what this pane used to do)
+hides every vault saved since — by this app or another device — from the open
+direction as a missing row, and from the save direction as a missing or false
+"will be replaced" warning. The previous rows stay up while the request runs, so
+there is no flicker; `Refresh` is now an explicit re-fetch rather than the only
+one. `State::listing` is what keeps a first, still-running listing from
+rendering as "No vaults on this account yet."
+
 **Opening never has a confirm button.** A vault row — a recent file or one of
 the account's server vaults — is a destination, not a setting, so clicking it
 starts the open right there; that is why every such row ends in a chevron and

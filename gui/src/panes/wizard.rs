@@ -64,8 +64,9 @@ pub enum Step {
     Cloud,
 }
 
-/// The account's vaults, fetched once per sign-in and refreshed on demand.
-/// `None` means "not listed yet", which is what shows the empty server step.
+/// The account's vaults, refetched every time the server step is entered (and
+/// on demand from `Refresh`). `None` means "not listed yet" — paired with
+/// `State::listing` it tells a fetch in flight from a genuinely empty account.
 type Listing = Option<Vec<RemoteVault>>;
 
 pub struct State {
@@ -81,6 +82,9 @@ pub struct State {
     // signing in happens in the browser ([`crate::link`]), and the resulting
     // session lives on the `Session`, outlasting any one run of the wizard.
     vaults: Listing,
+    /// A listing is in flight. Only the body needs this — the footer reads
+    /// `Session::busy` — so that "Loading…" does not read "No vaults".
+    listing: bool,
     vault_name: String,
     picked_vault: Option<usize>,
 }
@@ -94,6 +98,7 @@ impl Default for State {
             file_name: String::new(),
             picked_recent: None,
             vaults: None,
+            listing: false,
             vault_name: String::new(),
             picked_vault: None,
         }
@@ -190,11 +195,16 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                 if elsewhere {
                     session.sign_out();
                     state.vaults = None;
-                    state.picked_vault = None;
                 }
-                // Entering while already signed in should show the account's
-                // vaults, not an empty list.
-                if session.is_signed_in() && state.vaults.is_none() {
+                // Every entry refetches, rather than only the first one: this
+                // app saves to the account, other devices do too, and a cached
+                // listing would hide both — from the open direction as a
+                // missing row, and from the save direction as a missing (or
+                // false) "will be replaced" warning. The previous rows stay on
+                // screen while the request runs, so there is no flicker, and
+                // the index they were picked by may not survive it.
+                state.picked_vault = None;
+                if session.is_signed_in() {
                     return list_vaults(state, session);
                 }
             }
@@ -255,6 +265,7 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
         }
         Msg::Refresh => list_vaults(state, session),
         Msg::Listed(result) => {
+            state.listing = false;
             session.finish_work();
             match result {
                 Ok(vaults) => {
@@ -447,6 +458,7 @@ fn list_vaults(state: &mut State, session: &mut Session) -> Action {
         return Action::None;
     };
 
+    state.listing = true;
     session.begin_work("Loading…");
     Action::Run(Task::perform(
         async move {
@@ -758,14 +770,16 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
 
     let listed = state.vaults.as_deref().unwrap_or_default();
     if listed.is_empty() {
-        return column![
-            account,
-            text("No vaults on this account yet.")
-                .size(12)
-                .style(text::secondary),
-        ]
-        .spacing(10)
-        .into();
+        // Entering the step always starts a listing, so an account with no
+        // listing *yet* must not be reported as an account with no vaults.
+        let caption = if state.vaults.is_none() && state.listing {
+            "Loading your vaults…"
+        } else {
+            "No vaults on this account yet."
+        };
+        return column![account, text(caption).size(12).style(text::secondary)]
+            .spacing(10)
+            .into();
     }
 
     let mut rows = iced::widget::column![].width(Length::Fill);
