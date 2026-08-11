@@ -43,7 +43,11 @@ pub struct State {
     notes: text_editor::Content,
     /// Tags as the user types them, comma-separated. Split on save.
     tags: String,
+    /// The password, or — on a card — the number and the PIN.
     revealed: bool,
+    /// The card's CVV, revealed on its own: it is the one card field you
+    /// routinely need to read while the number stays covered.
+    cvv_revealed: bool,
     error: Option<String>,
 }
 
@@ -55,6 +59,7 @@ impl State {
             notes: text_editor::Content::new(),
             tags: String::new(),
             revealed: false,
+            cvv_revealed: false,
             error: None,
         }
     }
@@ -66,6 +71,7 @@ impl State {
             index: Some(index),
             entry,
             revealed: false,
+            cvv_revealed: false,
             error: None,
         }
     }
@@ -76,6 +82,7 @@ impl State {
         copy.index = None;
         copy.entry.name = format!("{} (copy)", copy.entry.name);
         copy.revealed = false;
+        copy.cvv_revealed = false;
         copy
     }
 
@@ -90,6 +97,14 @@ impl State {
     }
 }
 
+/// Longest card number in circulation (UnionPay); Visa/Mastercard are 16 and
+/// Amex 15.
+const MAX_CARD_DIGITS: usize = 19;
+/// `MM/YY`.
+const MAX_EXPIRY_CHARS: usize = 5;
+const MAX_CVV_DIGITS: usize = 4;
+const MAX_PIN_DIGITS: usize = 12;
+
 #[derive(Debug, Clone)]
 pub enum Msg {
     NameEdited(String),
@@ -100,7 +115,14 @@ pub enum Msg {
     TagsEdited(String),
     TypeSelected(String),
     HiddenToggled(bool),
+    CardHolderEdited(String),
+    CardBrandSelected(String),
+    CardNumberEdited(String),
+    CardExpiryEdited(String),
+    CardCvvEdited(String),
+    CardPinEdited(String),
     ToggleReveal,
+    ToggleCvvReveal,
     Save,
     Cancel,
 }
@@ -135,6 +157,9 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
             state.tags = value;
             (Action::None, false)
         }
+        // Only the *form* changes. Whatever was typed into the fields the new
+        // type does not show stays on the draft and is written by `save`, so
+        // Login → Card → Login gives back the password rather than eating it.
         Msg::TypeSelected(value) => {
             state.entry.entry_type = value;
             (Action::None, false)
@@ -143,13 +168,80 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
             state.entry.hidden = value;
             (Action::None, false)
         }
+        Msg::CardHolderEdited(value) => {
+            state.entry.card.holder = value;
+            (Action::None, false)
+        }
+        Msg::CardBrandSelected(value) => {
+            state.entry.card.brand = value;
+            (Action::None, false)
+        }
+        // The four below filter what they accept here rather than in the view,
+        // so a paste is cleaned up exactly like a keystroke.
+        Msg::CardNumberEdited(value) => {
+            state.entry.card.number = keep_number(&value);
+            (Action::None, false)
+        }
+        Msg::CardExpiryEdited(value) => {
+            state.entry.card.expiry = keep_expiry(&value);
+            (Action::None, false)
+        }
+        Msg::CardCvvEdited(value) => {
+            state.entry.card.cvv = keep_digits(&value, MAX_CVV_DIGITS);
+            (Action::None, false)
+        }
+        Msg::CardPinEdited(value) => {
+            state.entry.card.pin = keep_digits(&value, MAX_PIN_DIGITS);
+            (Action::None, false)
+        }
         Msg::ToggleReveal => {
             state.revealed = !state.revealed;
+            (Action::None, false)
+        }
+        Msg::ToggleCvvReveal => {
+            state.cvv_revealed = !state.cvv_revealed;
             (Action::None, false)
         }
         Msg::Save => save(state, session),
         Msg::Cancel => (Action::Pane(Pane::Items), true),
     }
+}
+
+/// Digits only, capped.
+fn keep_digits(value: &str, max: usize) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_digit)
+        .take(max)
+        .collect()
+}
+
+/// Digits and the spaces a card number is usually typed with. The cap counts
+/// *digits*, so grouping spaces never cost the user a digit.
+fn keep_number(value: &str) -> String {
+    let mut digits = 0;
+    value
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == ' ')
+        .take_while(|c| {
+            if c.is_ascii_digit() {
+                digits += 1;
+            }
+            digits <= MAX_CARD_DIGITS
+        })
+        .collect()
+}
+
+/// Digits and the `MM/YY` separator.
+///
+/// The `/` is deliberately not inserted automatically: an auto-inserted
+/// separator fights backspace, and the placeholder carries the format anyway.
+fn keep_expiry(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '/')
+        .take(MAX_EXPIRY_CHARS)
+        .collect()
 }
 
 fn save(state: &mut State, session: &mut Session) -> (Action, bool) {
@@ -196,33 +288,6 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         "EDIT ITEM"
     };
 
-    let secret_row = row![
-        text_input("", &state.entry.secret)
-            .id("GUI_EDITOR_SECRET")
-            .on_input(|value| Message::Editor(Msg::SecretEdited(value)))
-            .secure(!state.revealed)
-            .padding(8)
-            .size(14)
-            .width(Length::Fill),
-        theme::text_button_icon(
-            if state.revealed {
-                icon::eye_slash(14)
-            } else {
-                icon::eye(14)
-            },
-            if state.revealed {
-                "Hide password"
-            } else {
-                "Show password"
-            },
-        )
-        .on_press(Message::Editor(Msg::ToggleReveal)),
-        theme::text_button_icon(icon::key(14), "Generate a password")
-            .on_press(Message::Vault(crate::VaultMsg::PassGen)),
-    ]
-    .spacing(6)
-    .align_y(Vertical::Center);
-
     let mut body = column![
         text(heading).size(11).style(text::secondary),
         field(
@@ -246,50 +311,50 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
             .padding([4, 8])
             .into(),
         ),
-        field(
-            "Username",
-            text_input("", &state.entry.user_name)
-                .on_input(|value| Message::Editor(Msg::UserNameEdited(value)))
-                .padding(8)
-                .size(14)
-                .into(),
-        ),
-        field("Password", secret_row.into()),
-        field(
-            "Website",
-            text_input("https://example.com", &state.entry.url)
-                .on_input(|value| Message::Editor(Msg::UrlEdited(value)))
-                .padding(8)
-                .size(14)
-                .into(),
-        ),
-        field(
-            "Tags",
-            text_input("work, personal", &state.tags)
-                .on_input(|value| Message::Editor(Msg::TagsEdited(value)))
-                .padding(8)
-                .size(14)
-                .into(),
-        ),
-        field(
-            "Notes",
-            text_editor(&state.notes)
-                .placeholder("Anything else worth keeping with this item")
-                .on_action(|action| Message::Editor(Msg::NotesAction(action)))
-                .height(NOTES_HEIGHT)
-                .padding(8)
-                .size(14)
-                .into(),
-        ),
-        checkbox(state.entry.hidden)
-            .label("Hidden item")
-            .size(16)
-            .text_size(13)
-            .on_toggle(|value| Message::Editor(Msg::HiddenToggled(value))),
     ]
     .spacing(12)
     .padding(20)
     .max_width(560);
+
+    // The Type picker chooses the middle of the form. Nothing typed into the
+    // other set is cleared — `save` writes the whole draft — so switching back
+    // brings it all with it.
+    for control in if data::is_card(&state.entry) {
+        card_fields(state)
+    } else {
+        login_fields(state)
+    } {
+        body = body.push(control);
+    }
+
+    body = body.push(
+        column![
+            field(
+                "Tags",
+                text_input("work, personal", &state.tags)
+                    .on_input(|value| Message::Editor(Msg::TagsEdited(value)))
+                    .padding(8)
+                    .size(14)
+                    .into(),
+            ),
+            field(
+                "Notes",
+                text_editor(&state.notes)
+                    .placeholder("Anything else worth keeping with this item")
+                    .on_action(|action| Message::Editor(Msg::NotesAction(action)))
+                    .height(NOTES_HEIGHT)
+                    .padding(8)
+                    .size(14)
+                    .into(),
+            ),
+            checkbox(state.entry.hidden)
+                .label("Hidden item")
+                .size(16)
+                .text_size(13)
+                .on_toggle(|value| Message::Editor(Msg::HiddenToggled(value))),
+        ]
+        .spacing(12),
+    );
 
     if let Some(error) = &state.error {
         body = body.push(text(error.clone()).size(12).style(text::danger));
@@ -309,7 +374,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
 
     body = body.push(
         row![
-            button(text("Add item").size(14))
+            button(text("Apply item").size(14))
                 .padding([8, 16])
                 .on_press(Message::Editor(Msg::Save)),
             button(text("Cancel").size(14))
@@ -334,6 +399,159 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         .width(Length::Fill)
         .height(Length::Fill)
         .style(theme::detail_background)
+        .into()
+}
+
+/// The Username / Password / Website middle of the form.
+fn login_fields(state: &State) -> Vec<Element<'_, Message>> {
+    let secret_row = row![
+        text_input("", &state.entry.secret)
+            .id("GUI_EDITOR_SECRET")
+            .on_input(|value| Message::Editor(Msg::SecretEdited(value)))
+            .secure(!state.revealed)
+            .padding(8)
+            .size(14)
+            .width(Length::Fill),
+        reveal_button(state.revealed, "Hide password", "Show password"),
+        theme::text_button_icon(icon::key(14), "Generate a password")
+            .on_press(Message::Vault(crate::VaultMsg::PassGen)),
+    ]
+    .spacing(6)
+    .align_y(Vertical::Center);
+
+    vec![
+        field(
+            "Username",
+            text_input("", &state.entry.user_name)
+                .on_input(|value| Message::Editor(Msg::UserNameEdited(value)))
+                .padding(8)
+                .size(14)
+                .into(),
+        ),
+        field("Password", secret_row.into()),
+        field(
+            "Website",
+            text_input("https://example.com", &state.entry.url)
+                .on_input(|value| Message::Editor(Msg::UrlEdited(value)))
+                .padding(8)
+                .size(14)
+                .into(),
+        ),
+    ]
+}
+
+/// The middle of the form for a `Card` entry.
+///
+/// One reveal toggle covers the number and the PIN together; the CVV has an eye
+/// of its own, because it is the field you routinely need to read while the
+/// number stays covered.
+fn card_fields(state: &State) -> Vec<Element<'_, Message>> {
+    let number_row = row![
+        text_input("", &state.entry.card.number)
+            .on_input(|value| Message::Editor(Msg::CardNumberEdited(value)))
+            .secure(!state.revealed)
+            .padding(8)
+            .size(14)
+            .width(Length::Fill),
+        reveal_button(state.revealed, "Hide card details", "Show card details"),
+    ]
+    .spacing(6)
+    .align_y(Vertical::Center);
+
+    // Expiry and CVV are five and four characters wide; full-width inputs for
+    // them read as a mistake, so they share a row at their real size.
+    let expiry_and_cvv = row![
+        field(
+            "Expiry",
+            text_input("MM/YY", &state.entry.card.expiry)
+                .on_input(|value| Message::Editor(Msg::CardExpiryEdited(value)))
+                .padding(8)
+                .size(14)
+                .width(Length::Fixed(90.0))
+                .into(),
+        ),
+        field(
+            "CVV",
+            row![
+                text_input("123", &state.entry.card.cvv)
+                    .on_input(|value| Message::Editor(Msg::CardCvvEdited(value)))
+                    .secure(!state.cvv_revealed)
+                    .padding(8)
+                    .size(14)
+                    .width(Length::Fixed(80.0)),
+                cvv_reveal_button(state.cvv_revealed),
+            ]
+            .spacing(4)
+            .align_y(Vertical::Center)
+            .into(),
+        ),
+        field(
+            "PIN",
+            text_input("", &state.entry.card.pin)
+                .on_input(|value| Message::Editor(Msg::CardPinEdited(value)))
+                .secure(!state.revealed)
+                .padding(8)
+                .size(14)
+                .width(Length::Fixed(100.0))
+                .into(),
+        ),
+    ]
+    .spacing(12);
+
+    vec![
+        field(
+            "Cardholder",
+            text_input("Name on the card", &state.entry.card.holder)
+                .on_input(|value| Message::Editor(Msg::CardHolderEdited(value)))
+                .padding(8)
+                .size(14)
+                .into(),
+        ),
+        field(
+            "Brand",
+            // `card_brand` is free-form in the format: a brand written by
+            // another client is not in this list, and `pick_list` shows it
+            // anyway because it renders whatever selection it is handed.
+            pick_list(
+                data::CARD_BRANDS.map(str::to_string).to_vec(),
+                Some(state.entry.card.brand.clone()).filter(|brand| !brand.is_empty()),
+                |choice| Message::Editor(Msg::CardBrandSelected(choice)),
+            )
+            .placeholder("Card network")
+            .text_size(13)
+            .padding([4, 8])
+            .into(),
+        ),
+        field("Card number", number_row.into()),
+        expiry_and_cvv.into(),
+    ]
+}
+
+fn cvv_reveal_button<'a>(revealed: bool) -> Element<'a, Message> {
+    let (glyph, tip) = if revealed {
+        (icon::eye_slash(14), "Hide CVV")
+    } else {
+        (icon::eye(14), "Show CVV")
+    };
+
+    theme::text_button_icon(glyph, tip)
+        .on_press(Message::Editor(Msg::ToggleCvvReveal))
+        .into()
+}
+
+fn reveal_button<'a>(
+    revealed: bool,
+    hide: &'static str,
+    show: &'static str,
+) -> Element<'a, Message> {
+    let (glyph, tip) = if revealed {
+        (icon::eye_slash(14), hide)
+    } else {
+        (icon::eye(14), show)
+    };
+
+    theme::text_button_icon(glyph, tip)
+        .on_press(Message::Editor(Msg::ToggleReveal))
         .into()
 }
 

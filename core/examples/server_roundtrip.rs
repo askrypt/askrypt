@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             created: 1_704_067_200,
             modified: 1_704_067_200,
             hidden: false,
+            card: Default::default(),
         }],
         Some(6_000),
         false,

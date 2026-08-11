@@ -37,6 +37,18 @@ An Askrypt file is a JSON with the following fields:
   * `created` - creation timestamp (**integer**, Unix time in seconds)
   * `modified` - last modified timestamp (**integer**, Unix time in seconds)
   * `hidden` - whether the entry is hidden in the UI (boolean, default: `false`)
+  * The six `card_*` keys below carry meaning only for entries whose `type` is
+    `"Card"` (compared case-insensitively). Each is **omitted when empty**, so an
+    entry that is not a card serializes exactly as it did before these existed,
+    and a file written by an older build parses with all six blank:
+    * `card_holder` - name embossed on the card (string, optional)
+    * `card_brand` - card network, e.g. `"Visa"` (string, optional; free-form,
+      clients offer a list but the format does not constrain it)
+    * `card_number` - card number as typed, spaces and all (string, optional)
+    * `card_expiry` - expiry as `MM/YY`, stored as typed and never parsed
+      (string, optional)
+    * `card_cvv` - card security code (string, optional)
+    * `card_pin` - card PIN (string, optional)
 
 ```json
 {

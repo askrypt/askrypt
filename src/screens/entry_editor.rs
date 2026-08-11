@@ -37,6 +37,9 @@ impl State {
                 created: now,
                 modified: now,
                 hidden: false,
+                // This screen has no card UI, but it edits the draft in place,
+                // so a card entry opened here keeps its card fields.
+                card: Default::default(),
             },
             editing_tags: String::new(),
             show_secret_in_edit: false,

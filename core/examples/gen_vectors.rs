@@ -8,7 +8,7 @@
 //!
 //! Run: `cargo run -p askrypt-core --example gen_vectors`
 
-use askrypt::types::SecretEntry;
+use askrypt::types::{CardFields, SecretEntry};
 use askrypt::{
     AskryptFile, calc_pbkdf2, encode_base64, encrypt_with_aes, normalize_answer, sha256,
     translit::transliterate,
@@ -126,6 +126,7 @@ fn main() {
             created: 1_704_067_200,
             modified: 1_704_153_600,
             hidden: false,
+            card: Default::default(),
         },
         SecretEntry {
             name: "Secret note".to_string(),
@@ -138,6 +139,30 @@ fn main() {
             created: 1_704_067_200,
             modified: 1_704_067_200,
             hidden: true,
+            card: Default::default(),
+        },
+        // A card, so the Dart port is pinned to carrying the six `card_*` keys.
+        // Without a vector holding them, a Dart model that silently dropped
+        // them would still pass every parity test.
+        SecretEntry {
+            name: "Personal Visa".to_string(),
+            user_name: String::new(),
+            secret: String::new(),
+            url: String::new(),
+            notes: String::new(),
+            entry_type: "Card".to_string(),
+            tags: vec!["finance".to_string()],
+            created: 1_704_067_200,
+            modified: 1_704_153_600,
+            hidden: false,
+            card: CardFields {
+                holder: "Ruslan A.".to_string(),
+                brand: "Visa".to_string(),
+                number: "4242 4242 4242 4242".to_string(),
+                expiry: "04/29".to_string(),
+                cvv: "123".to_string(),
+                pin: "9876".to_string(),
+            },
         },
     ];
     let iterations = 1000u32; // keep tests fast; production default is 600_000

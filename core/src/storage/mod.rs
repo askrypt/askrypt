@@ -171,6 +171,7 @@ pub(crate) mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            card: Default::default(),
         }];
         let file = AskryptFile::create(questions, answers, secrets.clone(), Some(6000), false)
             .expect("failed to create vault");

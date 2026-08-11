@@ -5,7 +5,7 @@ use iced::{Element, Length, Theme, alignment::Vertical};
 
 use askrypt::SecretEntry;
 
-use crate::{App, Message, icon, theme};
+use crate::{App, Message, data, icon, theme};
 
 pub fn view(app: &App) -> Element<'_, Message> {
     let rows = app.visible();
@@ -68,15 +68,25 @@ fn row_widget(index: usize, entry: &SecretEntry, selected: bool) -> Element<'_, 
         title = title.push(text("hidden").size(11).style(text::secondary));
     }
 
-    let labels = column![
-        title,
-        text(&entry.user_name).size(12).style(text::secondary),
-    ]
-    .spacing(1);
+    // A card leaves `user_name` empty, so the second line would be blank; it
+    // gets `Visa •••• 4242` instead.
+    let subtitle = if data::is_card(entry) {
+        data::card_subtitle(entry)
+    } else {
+        entry.user_name.clone()
+    };
 
-    // A placeholder for the favicon or issuer logo a real item would carry;
-    // keyed by name so it stays put across renders.
-    let glyph = container(icon::placeholder(&entry.name, 16))
+    let labels = column![title, text(subtitle).size(12).style(text::secondary)].spacing(1);
+
+    // A placeholder for the favicon a real item would carry; keyed by name so
+    // it stays put across renders. A card has a real glyph already — the issuer
+    // logo is what would replace it.
+    let icon = if data::is_card(entry) {
+        icon::credit_card(16)
+    } else {
+        icon::placeholder(&entry.name, 16)
+    };
+    let glyph = container(icon)
         .width(Length::Fixed(theme::ITEM_ICON_WIDTH))
         .center_y(Length::Fill);
 

@@ -167,4 +167,49 @@ void main() {
     final out = await reopened.decrypt(qd, answers.sublist(1));
     expect(out.single.toJson(), entries.single.toJson());
   });
+
+  test('carries the card fields it has no UI for', () {
+    // This app shows and edits none of the `card_*` fields, so the only thing
+    // that can go wrong is losing them: `toJson` writes a fixed key list, and
+    // a key it forgets is deleted from the vault on the next save.
+    final json = {
+      'name': 'Personal Visa',
+      'user_name': '',
+      'secret': '',
+      'url': '',
+      'notes': '',
+      'type': 'Card',
+      'tags': <String>[],
+      'created': 1704067200,
+      'modified': 1704153600,
+      'hidden': false,
+      'card_holder': 'Ruslan A.',
+      'card_brand': 'Visa',
+      'card_number': '4242 4242 4242 4242',
+      'card_expiry': '04/29',
+      'card_cvv': '123',
+      'card_pin': '9876',
+    };
+
+    expect(SecretEntry.fromJson(json).toJson(), json);
+  });
+
+  test('omits the card keys on an entry that is not a card', () {
+    // Rust marks all six `skip_serializing_if = "String::is_empty"`; writing
+    // them as empty strings here would make every login entry bigger than the
+    // desktop app writes it.
+    final login = SecretEntry(
+      name: 'site',
+      userName: 'bob',
+      secret: 's3cr3t',
+      url: '',
+      notes: '',
+      entryType: 'password',
+      tags: const [],
+      created: 1,
+      modified: 2,
+    );
+
+    expect(login.toJson().keys.where((k) => k.startsWith('card_')), isEmpty);
+  });
 }

@@ -36,6 +36,12 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
   bool _hidden = false;
   bool _obscure = true;
 
+  /// The entry as it was loaded, kept only so [_save] can copy forward the
+  /// fields this screen has no controller for — today the six `card_*` ones.
+  /// Rebuilding a `SecretEntry` from the controllers alone would delete the
+  /// card off an entry written by the desktop app.
+  SecretEntry? _original;
+
   bool get _isNew => widget.index == null;
 
   @override
@@ -54,6 +60,7 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
     _tags = TextEditingController(text: e?.tags.join(', ') ?? '');
     _entryType = e?.entryType ?? 'login';
     _hidden = e?.hidden ?? false;
+    _original = e;
   }
 
   @override
@@ -85,6 +92,13 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
       created: 0,
       modified: 0,
       hidden: _hidden,
+      // Carried through untouched — see [_original].
+      cardHolder: _original?.cardHolder ?? '',
+      cardBrand: _original?.cardBrand ?? '',
+      cardNumber: _original?.cardNumber ?? '',
+      cardExpiry: _original?.cardExpiry ?? '',
+      cardCvv: _original?.cardCvv ?? '',
+      cardPin: _original?.cardPin ?? '',
     );
     if (_isNew) {
       notifier.addEntry(entry);

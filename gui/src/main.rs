@@ -143,6 +143,7 @@ pub enum Message {
     PaneSelected(Pane),
     EntrySelected(usize),
     ToggleReveal,
+    ToggleCvvReveal,
     Copy {
         what: &'static str,
         value: String,
@@ -208,9 +209,14 @@ pub struct App {
     /// Index into `session.entries` — *not* into the filtered view, so filtering
     /// can never invalidate it.
     selected: Option<usize>,
-    /// Whether the selected entry's password is revealed. Reset on every
-    /// selection change, so a reveal never leaks across entries.
+    /// Whether the selected entry's password — or, on a card, its number and
+    /// PIN — is revealed. Reset on every selection change, so a reveal never
+    /// leaks across entries.
     revealed: bool,
+    /// The card's CVV, revealed on its own. Separate from [`Self::revealed`]
+    /// because it is the one card field you routinely need to read while the
+    /// number stays covered; reset alongside it.
+    cvv_revealed: bool,
     /// The row whose Delete button is armed, so deleting takes two presses.
     pending_delete: Option<usize>,
     /// When set, the editor replaces the detail pane and the list stays visible.
@@ -244,6 +250,7 @@ impl App {
             pane: Pane::Wizard,
             selected: None,
             revealed: false,
+            cvv_revealed: false,
             pending_delete: None,
             editor: None,
             after_save: None,
@@ -391,6 +398,7 @@ impl App {
 
         self.selected = visible.first().copied();
         self.revealed = false;
+        self.cvv_revealed = false;
     }
 
     /// Distinct entry types, derived from *all* entries (hidden included) so
@@ -513,6 +521,7 @@ impl App {
         self.query.clear();
         self.selected = None;
         self.revealed = false;
+        self.cvv_revealed = false;
         self.pending_delete = None;
     }
 
@@ -575,11 +584,16 @@ impl App {
                 }
                 self.selected = Some(index);
                 self.revealed = false;
+                self.cvv_revealed = false;
                 self.pending_delete = None;
                 Action::None
             }
             Message::ToggleReveal => {
                 self.revealed = !self.revealed;
+                Action::None
+            }
+            Message::ToggleCvvReveal => {
+                self.cvv_revealed = !self.cvv_revealed;
                 Action::None
             }
             Message::Copy { what, value } => {

@@ -799,6 +799,7 @@ mod tests {
             created: 1_581_428_873,
             modified: 1_581_428_873,
             hidden: false,
+            card: Default::default(),
         }
     }
 

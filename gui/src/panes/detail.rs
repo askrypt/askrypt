@@ -1,7 +1,9 @@
 //! The right pane: read-only detail view of the selected item, with a pinned
 //! action toolbar.
 
-use iced::widget::{Row, Text, button, column, container, row, rule, scrollable, space, text};
+use iced::widget::{
+    Column, Row, Text, button, column, container, row, rule, scrollable, space, text,
+};
 use iced::{Element, Length, alignment::Vertical};
 
 use askrypt::SecretEntry;
@@ -22,7 +24,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     let mut content = column![
         text("ITEM INFORMATION").size(11).style(text::secondary),
-        main_card(entry, app.revealed),
+        if data::is_card(entry) {
+            card_main_card(entry, app.revealed, app.cvv_revealed)
+        } else {
+            main_card(entry, app.revealed)
+        },
     ]
     .spacing(14)
     .padding(20)
@@ -181,6 +187,124 @@ fn main_card(entry: &SecretEntry, revealed: bool) -> Element<'_, Message> {
     ));
 
     theme::card(fields).into()
+}
+
+/// Name / Cardholder / Brand / Number / Expiry / CVV / PIN, in place of
+/// [`main_card`] for a `Card` entry.
+///
+/// `revealed` covers the number and the PIN together; the CVV has an eye of its
+/// own, because it is the field you routinely need to read while the number
+/// stays covered. Both mirror the editor.
+fn card_main_card(entry: &SecretEntry, revealed: bool, cvv_revealed: bool) -> Element<'_, Message> {
+    let number = if revealed {
+        data::group_card_number(&entry.card.number)
+    } else {
+        data::mask_card_number(&entry.card.number)
+    };
+
+    let mut fields = column![field_row("Name", text(&entry.name).size(14).into(), row![])];
+
+    fields = card_row(
+        fields,
+        "Cardholder",
+        entry.card.holder.clone(),
+        row![copy_action(
+            "Copy cardholder",
+            "cardholder",
+            entry.card.holder.clone()
+        )],
+    );
+    fields = card_row(fields, "Brand", entry.card.brand.clone(), row![]);
+    fields = card_row(
+        fields,
+        "Card number",
+        number,
+        row![
+            icon_action(
+                if revealed {
+                    icon::eye_slash(14)
+                } else {
+                    icon::eye(14)
+                },
+                if revealed {
+                    "Hide card details"
+                } else {
+                    "Show card details"
+                },
+                Message::ToggleReveal,
+            ),
+            // The digits alone, without the grouping spaces: a form that
+            // rejects them is the common case, and widening a paste is easier
+            // than cleaning one.
+            copy_action(
+                "Copy card number",
+                "card number",
+                data::card_digits(&entry.card.number),
+            ),
+        ]
+        .spacing(4),
+    );
+    fields = card_row(fields, "Expiry", entry.card.expiry.clone(), row![]);
+    fields = card_row(
+        fields,
+        "CVV",
+        secret_or_dots(&entry.card.cvv, cvv_revealed),
+        row![
+            icon_action(
+                if cvv_revealed {
+                    icon::eye_slash(14)
+                } else {
+                    icon::eye(14)
+                },
+                if cvv_revealed { "Hide CVV" } else { "Show CVV" },
+                Message::ToggleCvvReveal,
+            ),
+            copy_action("Copy CVV", "CVV", entry.card.cvv.clone()),
+        ]
+        .spacing(4),
+    );
+    fields = card_row(
+        fields,
+        "PIN",
+        secret_or_dots(&entry.card.pin, revealed),
+        row![copy_action("Copy PIN", "PIN", entry.card.pin.clone())],
+    );
+
+    theme::card(fields).into()
+}
+
+/// One hairline-separated row of the card, dropped entirely when its field is
+/// empty — the rule [`main_card`] already follows for an empty username.
+fn card_row<'a>(
+    fields: Column<'a, Message>,
+    label: &'static str,
+    value: String,
+    actions: Row<'a, Message>,
+) -> Column<'a, Message> {
+    if value.is_empty() {
+        return fields;
+    }
+
+    fields
+        .push(hairline())
+        .push(field_row(label, text(value).size(14).into(), actions))
+}
+
+/// `what` names the copied thing in the status line, `tip` in the tooltip.
+fn copy_action<'a>(tip: &'static str, what: &'static str, value: String) -> Element<'a, Message> {
+    icon_action(icon::copy(14), tip, Message::Copy { what, value })
+}
+
+/// A short card secret: itself when revealed, a fixed run of dots otherwise.
+///
+/// Fixed rather than one dot per character, so the masked form does not leak
+/// the length — [`DOTS`] is what the password row already shows.
+fn secret_or_dots(value: &str, revealed: bool) -> String {
+    match (value.is_empty(), revealed) {
+        (true, _) => String::new(),
+        (false, true) => value.to_string(),
+        (false, false) => DOTS.to_string(),
+    }
 }
 
 /// The Website card — absent entirely when the entry has no URL, mirroring

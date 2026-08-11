@@ -1,11 +1,71 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+/// The card fields of an entry, written into the entry's own JSON object as
+/// `card_holder`, `card_brand`, `card_number`, `card_expiry`, `card_cvv` and
+/// `card_pin` — see `SPEC.md`. There is no `card` object on the wire; the
+/// `#[serde(flatten)]` on [`SecretEntry::card`] is what spreads them out.
+///
+/// They are grouped into a struct on the Rust side for one reason: `SecretEntry`
+/// zeroizes on drop, and Rust forbids `..Default::default()` on a type that
+/// implements `Drop` (E0509). Six loose fields would therefore have to be
+/// spelled out in all fifteen-odd places that build an entry by literal; one
+/// grouped field costs each of them a single `card: Default::default()`.
+///
+/// Every field is omitted from the JSON when empty, so an entry that is not a
+/// card serializes exactly as it did before these existed, and a vault written
+/// by an older build parses with all six blank. They carry meaning only for
+/// entries whose `type` is `"Card"`.
+///
+/// Derives `Zeroize` but deliberately **not** `ZeroizeOnDrop`: `SecretEntry`'s
+/// own `ZeroizeOnDrop` reaches in and wipes these three secrets (`number`,
+/// `cvv`, `pin`) with the rest, and staying free of a `Drop` impl is what keeps
+/// `..Default::default()` usable on *this* struct.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Zeroize)]
+pub struct CardFields {
+    /// Name embossed on the card.
+    #[serde(
+        rename = "card_holder",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub holder: String,
+    /// Card network, e.g. `Visa`. Free-form: clients offer a list, the format
+    /// does not constrain it.
+    #[serde(
+        rename = "card_brand",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub brand: String,
+    /// Card number as typed, spaces and all. Secret.
+    #[serde(
+        rename = "card_number",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub number: String,
+    /// Expiry as `MM/YY`. Stored as typed and never parsed.
+    #[serde(
+        rename = "card_expiry",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub expiry: String,
+    /// Card security code (CVV/CVC). Secret.
+    #[serde(rename = "card_cvv", default, skip_serializing_if = "String::is_empty")]
+    pub cvv: String,
+    /// Card PIN. Secret.
+    #[serde(rename = "card_pin", default, skip_serializing_if = "String::is_empty")]
+    pub pin: String,
+}
+
 /// Represents a user's secret entry (password, note, etc.)
 ///
 /// `ZeroizeOnDrop` wipes the secret-bearing fields from memory when an entry is
-/// dropped instead of leaving them in freed allocations.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+/// dropped instead of leaving them in freed allocations. That reaches into
+/// [`CardFields`] too, three of whose members are as sensitive as `secret`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct SecretEntry {
     pub name: String,
     pub user_name: String,
@@ -19,6 +79,10 @@ pub struct SecretEntry {
     pub modified: i64,
     #[serde(default)]
     pub hidden: bool,
+    /// The card fields, spread across the entry's own JSON object rather than
+    /// nested under a `card` key. Empty on everything that is not a card.
+    #[serde(flatten)]
+    pub card: CardFields,
 }
 
 /// Represents open parameters for [AskryptFile]

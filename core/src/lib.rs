@@ -42,6 +42,7 @@
 //!         created: 1704067200,
 //!         modified: 1704067200,
 //!         hidden: false,
+//!         card: Default::default(),
 //!     }
 //! ];
 //!
@@ -153,6 +154,7 @@ impl AskryptFile {
     ///         created: 1704067200,
     ///         modified: 1704067200,
     ///         hidden: false,
+    ///         card: Default::default(),
     ///     }
     /// ];
     ///
@@ -301,6 +303,7 @@ impl AskryptFile {
     ///         created: 1704067200,
     ///         modified: 1704067200,
     ///         hidden: false,
+    ///         card: Default::default(),
     ///     }
     /// ];
     ///
@@ -1025,6 +1028,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            card: Default::default(),
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -1094,6 +1098,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            card: Default::default(),
         }];
 
         let askrypt_file = AskryptFile::create(
@@ -1302,6 +1307,7 @@ mod tests {
                 created: 1704067200,
                 modified: 1704067200,
                 hidden: false,
+                card: Default::default(),
             },
             SecretEntry {
                 name: "example2".to_string(),
@@ -1314,6 +1320,7 @@ mod tests {
                 created: 1704153600,
                 modified: 1704153600,
                 hidden: false,
+                card: Default::default(),
             },
         ];
 
@@ -1358,6 +1365,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            card: Default::default(),
         }];
 
         let askrypt_file = AskryptFile::create(
@@ -1385,6 +1393,81 @@ mod tests {
     }
 
     #[test]
+    fn test_card_entry_round_trips_through_the_vault() {
+        let questions = vec!["Q0".to_string(), "Q1".to_string()];
+        let answers = vec!["A0".to_string(), "A1".to_string()];
+        let data = vec![SecretEntry {
+            name: "Personal Visa".to_string(),
+            user_name: String::new(),
+            secret: String::new(),
+            url: String::new(),
+            notes: String::new(),
+            entry_type: "Card".to_string(),
+            tags: vec![],
+            created: 1704067200,
+            modified: 1704067200,
+            hidden: false,
+            card: CardFields {
+                holder: "Ruslan A.".to_string(),
+                brand: "Visa".to_string(),
+                number: "4242 4242 4242 4242".to_string(),
+                expiry: "04/29".to_string(),
+                cvv: "123".to_string(),
+                pin: "9876".to_string(),
+            },
+        }];
+
+        let file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), false)
+            .unwrap();
+        let questions_data = file.get_questions_data(answers[0].clone()).unwrap();
+        let decrypted = file.decrypt(&questions_data, answers[1..].into()).unwrap();
+
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_an_entry_without_card_fields_writes_no_card_keys() {
+        // The `skip_serializing_if` guarantee: adding the card fields must not
+        // change one byte of what a login entry serializes to.
+        let entry = SecretEntry {
+            name: "example".to_string(),
+            user_name: "user5".to_string(),
+            secret: "password123".to_string(),
+            url: String::new(),
+            notes: String::new(),
+            entry_type: "password".to_string(),
+            tags: vec![],
+            created: 1704067200,
+            modified: 1704067200,
+            hidden: false,
+            card: Default::default(),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("card_"), "unexpected card keys in {json}");
+    }
+
+    #[test]
+    fn test_entry_json_written_before_cards_parses_with_them_empty() {
+        let legacy = r#"{
+            "name": "example",
+            "user_name": "user5",
+            "secret": "password123",
+            "url": "https://example.com",
+            "notes": "My account",
+            "type": "password",
+            "tags": [],
+            "created": 1704067200,
+            "modified": 1704067200
+        }"#;
+
+        let entry: SecretEntry = serde_json::from_str(legacy).unwrap();
+
+        assert_eq!(entry.name, "example");
+        assert_eq!(entry.card, CardFields::default());
+    }
+
+    #[test]
     fn test_askrypt_file_save_and_load() {
         use std::fs;
 
@@ -1409,6 +1492,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            card: Default::default(),
         }];
 
         let askrypt_file = AskryptFile::create(
@@ -1465,6 +1549,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            card: Default::default(),
         }];
 
         let askrypt_file =
@@ -1511,6 +1596,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            card: Default::default(),
         }];
 
         let askrypt_file = AskryptFile::create(

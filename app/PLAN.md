@@ -138,6 +138,16 @@ clipboard.
   - Dart parity tests `app/test/crypto_parity_test.dart` assert byte/value
     equality per stage, open the Rust-produced vault, and round-trip a
     Dart-created vault.
+  - **Card entries are carried, not shown.** `SecretEntry` gained six optional
+    `card_*` fields (holder, brand, number, expiry `MM/YY`, CVV, PIN), and the
+    Dart model reads and writes them, omitting each when empty exactly as
+    Rust's `skip_serializing_if` does. This app has **no card UI** — the
+    desktop `gui/` does — so the only thing that could go wrong here is losing
+    them: `toJson` writes a fixed key list, and `entry_edit_screen` rebuilds
+    the entry from its controllers, so it keeps the loaded entry in
+    `_original` and copies the six forward. A `"Card"` entry in
+    `vectors.json` plus two tests in `crypto_parity_test.dart` pin both halves.
+    A card-aware mobile editor is not done.
   - **Interop verified both directions** via `core/examples/open_vault.rs` +
     `app/tool/make_vault.dart`: Rust opens a Dart-created vault and vice-versa.
   - Gate met: `cd app && flutter test` → 7/7 green; `flutter analyze` clean.

@@ -54,7 +54,7 @@ wrapped in a centering container — the panes are full-bleed.
 | `vault.rs` | `Status` — derived from `Session`, **and** the button-visibility rules |
 | `theme.rs` | helpers copied from `src/ui.rs` plus pane styles, the spinner and layout constants |
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf` |
-| `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, the write stamp, and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
+| `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, the write stamp, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
 | `panes/mod.rs` | `Action` — the pane → shell navigation contract |
 | `panes/sidebar.rs` | the nav rail: filters, the vault actions, Quit, Settings |
 | `panes/list.rs`, `panes/detail.rs` | the item split |
@@ -79,6 +79,15 @@ Rules that are easy to undo by accident:
 - **Panes never switch the working area themselves.** They return a
   `panes::Action`, and `App::apply` does the switching — the same contract
   `src/screens/mod.rs::Action` has.
+- **The editor's form is chosen by the Type picker, and switching it clears
+  nothing.** `Card` draws Cardholder / Brand / Number / Expiry / CVV / PIN where
+  `Login` draws Username / Password / Website; Name, Type, Tags, Notes and
+  Hidden are common to both. The draft is a whole `SecretEntry` and `save`
+  writes all of it, so what was typed into the *other* set survives a round trip
+  through the picker — tidying the hidden fields on a type change would be a
+  silent data loss. `detail.rs` and `list.rs` branch on the same
+  `data::is_card`, and one `revealed` flag covers the number, the CVV and the
+  PIN together: they are three halves of one secret.
 
 ---
 
@@ -362,7 +371,7 @@ only case `confirm()` acts on.
 
 | Here | Would be |
 |---|---|
-| each item's icon is `icon::placeholder(name)` — one of 16 glyphs picked by hashing the name | a real per-item icon: a site favicon, a card issuer's logo. Nothing derives one yet; replace the whole function, not the pool |
+| each item's icon is `icon::placeholder(name)` — one of 16 glyphs picked by hashing the name, except a `Card`, which gets `icon::credit_card` | a real per-item icon: a site favicon, a card issuer's logo. Nothing derives one yet; replace the whole function, not the pool |
 | the cloud-folder card | nothing at all — a reserved slot for Dropbox/Drive sync |
 
 Everything else — unlock, Smart Lock, save, Save As, the server, settings, the
