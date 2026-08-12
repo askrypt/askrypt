@@ -50,7 +50,8 @@ pub struct SmartUnlockResult {
 #[derive(Debug, Clone)]
 pub struct SmartLockData {
     /// The index of the answer used as the smart lock key (not first answer).
-    /// Retained for diagnostics; decryption keys off the stored salt/iv, not this.
+    /// Retained for diagnostics; decryption keys off the stored salt and IVs,
+    /// not this.
     #[allow(dead_code)]
     pub key_answer_index: usize,
     /// The question text for the selected answer (stored for display)
@@ -61,8 +62,13 @@ pub struct SmartLockData {
     pub encrypted_answers: Vec<u8>,
     /// Salt used for key derivation
     pub salt: Vec<u8>,
-    /// IV used for encryption
-    pub iv: Vec<u8>,
+    /// IV for `encrypted_answer0`. The two ciphertexts get an IV each because
+    /// they share a key, and CBC under one key *and* one IV makes equal
+    /// leading blocks encrypt to equal ciphertext — it would tell a reader of
+    /// this blob how far the two plaintexts agree.
+    pub iv_answer0: Vec<u8>,
+    /// IV for `encrypted_answers`, distinct from `iv_answer0` for that reason.
+    pub iv_answers: Vec<u8>,
     /// Timestamp of last activity (for 8-hour timeout)
     pub last_activity: Instant,
 }
@@ -739,7 +745,9 @@ impl Session {
             .unwrap_or_else(|| format!("Question {}", key_answer_index + 1));
 
         let salt = generate_bytes(16);
-        let iv = generate_bytes(16);
+        // One IV per ciphertext — see `SmartLockData::iv_answer0`.
+        let iv_answer0 = generate_bytes(16);
+        let iv_answers = generate_bytes(16);
 
         // Derive encryption key from the selected answer using PBKDF2
         let normalized_answer = Zeroizing::new(normalize_answer(&key_answer, translit));
@@ -753,15 +761,22 @@ impl Session {
         }
         let mut key_array = Zeroizing::new([0u8; 32]);
         key_array.copy_from_slice(&key);
-        let iv_array: [u8; 16] = iv.clone().try_into().map_err(|_| "Invalid IV length")?;
+        let iv0_array: [u8; 16] = iv_answer0
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Invalid IV length")?;
+        let iv1_array: [u8; 16] = iv_answers
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Invalid IV length")?;
 
         // Serialize answer0 and encrypt
-        let encrypted_answer0 = encrypt_with_aes(answer0.as_bytes(), &key_array, &iv_array)?;
+        let encrypted_answer0 = encrypt_with_aes(answer0.as_bytes(), &key_array, &iv0_array)?;
 
         // Serialize all other answers (excluding the key answer) and encrypt
         // We store all answers but the decryption will know which one was the key
         let answers_json = Zeroizing::new(serde_json::to_string(answers)?);
-        let encrypted_answers = encrypt_with_aes(answers_json.as_bytes(), &key_array, &iv_array)?;
+        let encrypted_answers = encrypt_with_aes(answers_json.as_bytes(), &key_array, &iv1_array)?;
 
         Ok(SmartLockData {
             key_answer_index,
@@ -769,7 +784,8 @@ impl Session {
             encrypted_answer0,
             encrypted_answers,
             salt,
-            iv,
+            iv_answer0,
+            iv_answers,
             last_activity: Instant::now(),
         })
     }
@@ -797,20 +813,25 @@ impl Session {
         }
         let mut key_array = Zeroizing::new([0u8; 32]);
         key_array.copy_from_slice(&key);
-        let iv_array: [u8; 16] = smart_lock_data
-            .iv
-            .clone()
+        let iv0_array: [u8; 16] = smart_lock_data
+            .iv_answer0
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Invalid IV length")?;
+        let iv1_array: [u8; 16] = smart_lock_data
+            .iv_answers
+            .as_slice()
             .try_into()
             .map_err(|_| "Invalid IV length")?;
 
         // Decrypt answer0 (returned to the caller, which wipes it on lock)
         let answer0_bytes =
-            decrypt_with_aes(&smart_lock_data.encrypted_answer0, &key_array, &iv_array)?;
+            decrypt_with_aes(&smart_lock_data.encrypted_answer0, &key_array, &iv0_array)?;
         let answer0 = String::from_utf8(answer0_bytes)?;
 
         // Decrypt answers
         let answers_bytes =
-            decrypt_with_aes(&smart_lock_data.encrypted_answers, &key_array, &iv_array)?;
+            decrypt_with_aes(&smart_lock_data.encrypted_answers, &key_array, &iv1_array)?;
         // `from_utf8` reuses the decrypted buffer (no copy); wipe the plaintext JSON on drop.
         let answers_json = Zeroizing::new(String::from_utf8(answers_bytes)?);
         let answers: Vec<String> = serde_json::from_str(&answers_json)?;
