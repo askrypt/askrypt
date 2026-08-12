@@ -25,6 +25,7 @@ use crate::session::{
     Session, VaultError, VaultHandle, describe_open_error, describe_sign_in_error,
 };
 use crate::settings::VaultLocation;
+use crate::vault;
 use crate::{App, Message, icon, theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,7 +594,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
         body = body.push(text(error.clone()).size(12).style(text::danger));
     }
 
-    body = body.push(footer(state, session));
+    if let Some(footer) = footer(state, session) {
+        body = body.push(footer);
+    }
 
     container(scrollable(body).width(Length::Fill).height(Length::Fill))
         .width(Length::Fill)
@@ -1023,16 +1026,31 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
     .into()
 }
 
-fn footer<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
+/// The wizard's controls, or `None` when there are none to draw — the first
+/// step of an Open with no vault behind it has neither Back nor Cancel, and an
+/// empty row would still cost the column's spacing.
+fn footer<'a>(state: &'a State, session: &'a Session) -> Option<Element<'a, Message>> {
     // While a sign-in, listing or download is running the controls give way to
     // the spinner, so the same request cannot be fired twice.
     if session.busy {
-        return theme::spinner_row(session.spinner_frame, session.spinner_label).into();
+        return Some(theme::spinner_row(session.spinner_frame, session.spinner_label).into());
+    }
+
+    let back = state.step != Step::PickSource;
+    // Cancel is only offered when there is somewhere to cancel *to*; Back
+    // already covers stepping out of a source.
+    let cancel = vault::Status::of(session).can_cancel_wizard();
+    // Naming a server vault to save to is the only thing left to confirm;
+    // every open acts on the click (a recent vault, a listed vault, or the
+    // native dialog).
+    let confirm = state.step == Step::Server && state.purpose.is_save();
+    if !back && !cancel && !confirm {
+        return None;
     }
 
     let mut buttons = row![].spacing(10);
 
-    if state.step != Step::PickSource {
+    if back {
         buttons = buttons.push(
             button(
                 row![icon::arrow_left(12), text("Back").size(14)]
@@ -1045,17 +1063,16 @@ fn footer<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
         );
     }
 
-    buttons = buttons.push(
-        button(text("Cancel").size(14))
-            .padding([8, 16])
-            .style(button::secondary)
-            .on_press(Message::Wizard(Msg::Cancel)),
-    );
+    if cancel {
+        buttons = buttons.push(
+            button(text("Cancel").size(14))
+                .padding([8, 16])
+                .style(button::secondary)
+                .on_press(Message::Wizard(Msg::Cancel)),
+        );
+    }
 
-    // Naming a server vault to save to is the only thing left to confirm;
-    // every open acts on the click (a recent vault, a listed vault, or the
-    // native dialog).
-    if state.step == Step::Server && state.purpose.is_save() {
+    if confirm {
         buttons = buttons.push(
             button(text("Save").size(14))
                 .padding([8, 16])
@@ -1063,7 +1080,7 @@ fn footer<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
         );
     }
 
-    buttons.into()
+    Some(buttons.into())
 }
 
 #[cfg(test)]

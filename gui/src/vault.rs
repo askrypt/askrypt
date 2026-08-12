@@ -120,6 +120,14 @@ impl Status {
         self == Status::Unlocked
     }
 
+    /// Whether the source wizard's Cancel button leads anywhere. With no vault
+    /// open the shell's default pane *is* the wizard (`App::default_pane`), so
+    /// cancelling would dismiss the pane onto itself; the button is hidden
+    /// there rather than left to do nothing.
+    pub fn can_cancel_wizard(self) -> bool {
+        self.is_open()
+    }
+
     pub fn is_unlocked(self) -> bool {
         self == Status::Unlocked
     }
@@ -166,6 +174,20 @@ mod tests {
             assert_eq!(status.can_lock(), lock, "lock in {status:?}");
             assert_eq!(status.can_save(), save, "save in {status:?}");
             assert_eq!(status.can_save_as(), save, "save as in {status:?}");
+        }
+    }
+
+    /// Cancelling the wizard with nothing open would land back on the wizard.
+    #[test]
+    fn the_wizard_offers_cancel_only_when_it_has_somewhere_to_go() {
+        assert!(!Status::NoVault.can_cancel_wizard());
+        for status in [
+            Status::Locked,
+            Status::PartiallyUnlocked,
+            Status::Unlocked,
+            Status::SmartLocked,
+        ] {
+            assert!(status.can_cancel_wizard(), "cancel in {status:?}");
         }
     }
 

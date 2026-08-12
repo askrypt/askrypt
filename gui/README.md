@@ -180,6 +180,7 @@ only asks.
 | Edit Questions | `Unlocked` | `can_edit_questions()` |
 | Password Generator | every state | — (needs no vault) |
 | Quit | every state | — (confirmed, then guarded by the unsaved-changes gate) |
+| Cancel (the wizard's footer, not the rail) | every state but `NoVault` | `can_cancel_wizard()` |
 
 The item filters (All Items, Hidden, TYPES, TAGS) and the search strip only
 exist while the vault is unlocked. `effective_pane()` additionally refuses to
@@ -221,6 +222,14 @@ kinds of home, and a server vault offered by the local-file step would open over
 a backend that step does not offer. It is filtered after `enumerate`, so a row
 still carries the index into `settings.recent_vaults` that `RecentPicked` looks
 up.
+
+Its footer follows the same hide-rather-than-disable rule as the rail: **Cancel
+appears only when there is somewhere to cancel to.** It dismisses the pane to
+`App::default_pane`, which *is* the wizard while the status is `NoVault`, so
+with no vault open the button would re-arm the pane already on screen. The test
+is `vault::Status::can_cancel_wizard`, next to the rail's predicates; Back
+already covers stepping out of a source, and when neither applies the footer
+renders nothing at all rather than an empty row.
 
 **The wizard is a pane that outlives its own runs, so it must be armed, never
 merely navigated to.** `State::begin` is what resets the step, the picks and the
