@@ -85,10 +85,12 @@ impl State {
         copy
     }
 
-    /// Called when the password generator hands one back.
+    /// Called when the password generator hands one back. The field stays
+    /// masked: the password is already on the clipboard, so showing it only
+    /// puts a fresh secret on screen for whoever is behind the user.
     pub fn set_secret(&mut self, secret: String) {
         self.entry.secret = secret;
-        self.revealed = true;
+        self.revealed = false;
     }
 
     fn is_new(&self) -> bool {
