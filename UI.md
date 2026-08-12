@@ -1,19 +1,18 @@
-# `askrypt-gui` — the new desktop UI
+# `src/` — the desktop UI
 
-The three-pane, Bitwarden-like layout (`uisample.jpg`) that will replace the
-screen-per-step Iced app in `src/`. It is a **working Askrypt client**: real
-crypto, real local and server vaults, real persistence, all over `askrypt-core`.
+The three-pane layout the `askrypt` binary draws: real crypto,
+real local and server vaults, real persistence, all over `askrypt-core`.
 
 ```
-cargo run -p askrypt-gui            # optionally: … -- /path/to/MyVault.askrypt
+cargo run -p askrypt                # optionally: … -- /path/to/MyVault.askrypt
 ```
 
-`src/` still builds and still ships (`cargo build -p askrypt`); swapping the
-`askrypt` binary over and deleting `src/screens/` is the last checklist item
-below.
+It replaced a screen-per-step Iced app — one screen per stage of the vault
+lifecycle, with Open reachable only from a Welcome screen — which was deleted
+once this one shipped.
 
-This file is the **port notes**: what the shipping app in `src/` does, where,
-and which of its invariants a redesign can quietly break. Keep it current.
+This file is the **design notes**: what the UI does, where, and which of its
+invariants a redesign can quietly break. Keep it current.
 
 ---
 
@@ -40,8 +39,8 @@ and which of its invariants a redesign can quietly break. Keep it current.
 ```
 
 The outer `column![search, row![panes].height(Fill), status_bar]` is what keeps
-the status bar on the bottom edge. Unlike `src/app.rs::view`, the root is *not*
-wrapped in a centering container — the panes are full-bleed.
+the status bar on the bottom edge. The root is *not* wrapped in a centering
+container — the panes are full-bleed.
 
 ### Module map
 
@@ -52,7 +51,7 @@ wrapped in a centering container — the panes are full-bleed.
 | `settings.rs` | `VaultLocation`, `ServerSession`, `AppSettings`, `ThemeChoice`, `LockTimeout`, `WindowState` — the on-disk shapes |
 | `tray.rs` | `AppTray`/`TrayEvent`, polled from the subscription |
 | `vault.rs` | `Status` — derived from `Session`, **and** the button-visibility rules |
-| `theme.rs` | helpers copied from `src/ui.rs` plus pane styles, the spinner and layout constants |
+| `theme.rs` | the styled-widget helpers plus pane styles, the spinner and layout constants |
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf` |
 | `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, the write stamp, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
 | `panes/mod.rs` | `Action` — the pane → shell navigation contract |
@@ -77,8 +76,7 @@ Rules that are easy to undo by accident:
   the list row's icon is *derived* from the entry name (`icon::placeholder`)
   rather than actually randomized — a real random pick would flicker.
 - **Panes never switch the working area themselves.** They return a
-  `panes::Action`, and `App::apply` does the switching — the same contract
-  `src/screens/mod.rs::Action` has.
+  `panes::Action`, and `App::apply` does the switching.
 - **The editor's form is chosen by the Type picker, and switching it clears
   nothing.** `Card` draws Cardholder / Brand / Number / Expiry / CVV / PIN where
   `Login` draws Username / Password / Website; Name, Type, Tags, Notes and
@@ -122,27 +120,26 @@ and that failure is the signal.
 
 ### Transitions
 
-Every one is a `Session` method (`gui/src/session.rs`), started from
-`App::perform` or a pane. The `src/` column is where the shipping app does the
-same thing, for comparison.
+Every one is a `Session` method (`src/session.rs`), started from `App::perform`
+or a pane.
 
-| Transition | Here | In `src/` |
-|---|---|---|
-| create a new vault → `Unlocked`, no location | `close_vault()` → `panes::questions` → `Built` | `welcome.rs:67` → `questions.rs` → Save |
-| open a local file → `Locked` | wizard `Browse…`/recent → `open_location` → `open_vault()` | `welcome.rs:26-54` (blocking dialog) |
-| open from the server → `Locked` | wizard server step → `download` → `open_vault()` | `server.rs`, `Mode::Open` |
-| sign in to a server | `link::Msg::Start` → browser → poll → `session.sign_in` | `server.rs` email + password form |
-| auto-open at startup | `App::boot` (argv, else `settings.last_opened_file`) | `app.rs:30-68` |
-| answer 0 → `PartiallyUnlocked` | `panes::unlock::start_first_answer` | `unlock.rs:69` |
-| all answers → `Unlocked` | `panes::unlock::start_full_unlock` → `apply_unlock()` | `unlock.rs:186` |
-| `Unlocked` → `Locked` ("Lock") | `guard(Lock)` → `lock()` | `entries.rs:126-139` |
-| `Unlocked` → `SmartLocked` | `guard(SmartLock)` → `start_smart_lock` → `apply_smart_lock()` | `app.rs:339-354` |
-| `SmartLocked` → `Unlocked` | `panes::unlock::start_smart_unlock` → `apply_smart_unlock()` | `smart_lock.rs` |
-| `SmartLocked` → `Locked` ("Full Lock") | `guard(Lock)` → `lock()` (clears `smart_lock_data`) | `app.rs:211-221` |
-| anything → `NoVault` ("Close Vault") | `guard(CloseVault)` → `close_vault()` → the wizard, armed | `app.rs:183-196` |
-| idle → `SmartLocked`; 8 h → `Locked` | `auto_smart_lock` / `smart_lock_timed_out`, from `InactivityTick` | `session.rs:27-29`, `app.rs:222-230` |
-| save | `save_now()` → `write_vault` on a worker → `apply_saved()` | `session.rs:294-333` (**blocking**) |
-| save as / save to server | wizard → `Message::SaveTo(VaultLocation)` → same worker | `session.rs:336-456` (**blocking**) |
+| Transition | Path |
+|---|---|
+| create a new vault → `Unlocked`, no location | `close_vault()` → `panes::questions` → `Built` |
+| open a local file → `Locked` | wizard `Browse…`/recent → `open_location` → `open_vault()` |
+| open from the server → `Locked` | wizard server step → `download` → `open_vault()` |
+| sign in to a server | `link::Msg::Start` → browser → poll → `session.sign_in` |
+| auto-open at startup | `App::boot` (argv, else `settings.last_opened_file`) |
+| answer 0 → `PartiallyUnlocked` | `panes::unlock::start_first_answer` |
+| all answers → `Unlocked` | `panes::unlock::start_full_unlock` → `apply_unlock()` |
+| `Unlocked` → `Locked` ("Lock") | `guard(Lock)` → `lock()` |
+| `Unlocked` → `SmartLocked` | `guard(SmartLock)` → `start_smart_lock` → `apply_smart_lock()` |
+| `SmartLocked` → `Unlocked` | `panes::unlock::start_smart_unlock` → `apply_smart_unlock()` |
+| `SmartLocked` → `Locked` ("Full Lock") | `guard(Lock)` → `lock()` (clears `smart_lock_data`) |
+| anything → `NoVault` ("Close Vault") | `guard(CloseVault)` → `close_vault()` → the wizard, armed |
+| idle → `SmartLocked`; 8 h → `Locked` | `auto_smart_lock` / `smart_lock_timed_out`, from `InactivityTick` |
+| save | `save_now()` → `write_vault` on a worker → `apply_saved()` |
+| save as / save to server | wizard → `Message::SaveTo(VaultLocation)` → same worker |
 
 Three lock *depths*, all kept: **Smart Lock** (one answer to return), **Lock**
 (all answers), **Close** (must re-open the file first).
@@ -194,17 +191,16 @@ falls back to Save As, and the only way to reach the "Untitled vault\*" status
 line and the list pane's empty state.
 
 **Delete takes two presses.** The first arms the button (`App.pending_delete`),
-the second commits. The shipping app deletes with no confirmation at all
-(`src/screens/entries.rs:65-80`).
+the second commits.
 
-### What the wizard replaces
+### The wizard
 
-The shipping app splits this work by *screen*, not by intent: Open lives only on
-Welcome, Save/Save As/Save to Server only on the entries screen, and "Save As"
-means two different UIs depending on the destination — a native file dialog for
-a path, a whole screen with a text field for a server name. You cannot Open
-while a vault is already open without going back to Welcome, and you cannot pick
-a file path from inside the server screen.
+Splitting this work by *screen* is what the old app did, and it put Open only on
+its Welcome screen, Save/Save As/Save to Server only on its entries screen, and
+gave "Save As" two different UIs depending on the destination — a native file
+dialog for a path, a whole screen with a text field for a server name. You could
+not Open while a vault was already open without going back to Welcome, and could
+not pick a file path from inside the server screen.
 
 `panes/wizard.rs` collapses that into **pick a source, then fill it in**, driven
 by a `Purpose` (`Open` / `SaveAs`) rather than by which screen you came from.
@@ -257,8 +253,7 @@ check at the top of the step can leave the two divergent for a frame — and the
 link is absent while signed out, where `/vaults` would only bounce to `/login`.
 
 **Entering the server step always refetches that list.** Caching it per sign-in
-(which is what `src/screens/server.rs` does, and what this pane used to do)
-hides every vault saved since — by this app or another device — from the open
+(which is what this pane used to do) hides every vault saved since — by this app or another device — from the open
 direction as a missing row, and from the save direction as a missing or false
 "will be replaced" warning. The previous rows stay up while the request runs, so
 there is no flicker; `Refresh` is now an explicit re-fetch rather than the only
@@ -349,15 +344,14 @@ only case `confirm()` acts on.
    task in the crate without a spinner.
 5. **Every PBKDF2 path and every vault read or write runs off the main thread**
    — `Task::perform` + `tokio::task::spawn_blocking`, behind
-   `theme::spinner_row`, with `Session::busy` guarding re-entry. → the two paths
-   the shipping app still runs inline (`save_vault_as`, `save_vault_to_server`)
-   are async here: `save_request()` collects on the main thread, `write_vault`
-   works, `apply_saved()` mutates.
+   `theme::spinner_row`, with `Session::busy` guarding re-entry. → saving is
+   split across the seam: `save_request()` collects on the main thread,
+   `write_vault` works, `apply_saved()` mutates.
 6. **Lock, Smart Lock, New, Open and Exit must prompt about unsaved changes**,
    and Cancel aborts. → `App::guard`, which routes "Yes" through an async save
-   and replays the queued `PendingAction` from `after_save` once it lands. The
-   shipping app does not gate Smart Lock, which silently loses unsaved edits
-   because `apply_smart_lock` zeroizes the entries.
+   and replays the queued `PendingAction` from `after_save` once it lands.
+   Smart Lock belongs on that list because `apply_smart_lock` zeroizes the
+   entries — an ungated one loses unsaved edits silently.
 7. **Pane state that holds secrets wipes on drop.** → `Drop` impls on
    `unlock::State` (answers), `questions::State` (answers), `passgen::State`
    (the generated password) and `session::SaveRequest`; the editor's draft is
@@ -412,33 +406,15 @@ tray, the timeouts — is wired to `askrypt-core` and the platform.
 
 ---
 
-## 6. Port checklist
+## 6. Still open
 
-1. ~~Add `askrypt-core` (with `server-storage`) and replace `data::Entry` with
-   `SecretEntry`; delete the fake sample data.~~ **done**
-2. ~~Introduce a real `Session` and make `vault.rs` a *view* over it rather than
-   the source of truth.~~ **done** — `Status::of(&Session)`; the predicates
-   moved onto `Status` and the table test came with them.
-3. ~~Wire the unlock pane to `AskryptFile::get_questions_data` / `decrypt`
-   through `spawn_blocking`, with the spinner and the re-entry guard.~~ **done**
-4. ~~Wire the wizard's file step to `rfd` and its server step to
-   `ServerClient`, keeping invariant 1.~~ **done** — `rfd::AsyncFileDialog`, so
-   the dialog does not block the runtime either.
-5. ~~Wire Save / Save As through `VaultStorage`, and make the two synchronous
-   paths async.~~ **done**
-6. ~~Add the missing screens: entry editor, questions editor, password
-   generator.~~ **done**
-7. ~~Persist Settings, and add the tray, the timeouts and the keyboard
-   shortcuts.~~ **done** — `lock_timeout` now really drives the idle check and
-   `clear_clipboard` really wipes the clipboard.
-8. Swap `src/main.rs` over, and delete the old `src/screens/`. **not started** —
-   `src/` is untouched and still ships.
-
-Things worth doing before step 8:
+The port is finished: this UI *is* the `askrypt` binary, and the screen-per-step
+app it grew out of (`src/app.rs`, `src/message.rs`, `src/ui.rs` and
+`src/screens/`) is deleted. What it did not bring along:
 
 - A real per-item icon (see §5).
 - Reload-on-conflict: `VaultError::Conflict` currently only reports; there is no
   "reload and merge" path.
 - `Session::new()` builds the tray and reads `server_session.json` inline, and
-  `App::boot` opens the last vault inline — a server location makes that a
-  network call before the window appears, exactly as `src/app.rs` does today.
+  `App::boot` opens the last vault inline — a server location therefore makes a
+  network call before the window appears, which the app it replaced did too.

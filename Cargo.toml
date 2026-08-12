@@ -4,7 +4,7 @@ description = "Password manager without master password"
 authors = [
     "Ruslan Absaliamov <ruslan.absalyamov@gmail.com>",
 ]
-version = "0.6.2-dev"
+version = "0.7.0-dev"
 edition = "2024"
 license = "Apache-2.0"
 homepage = "https://github.com/askrypt/askrypt"
@@ -16,7 +16,7 @@ categories = [
 ]
 
 [workspace]
-members = ["core", "server", "gui"]
+members = ["core", "server"]
 
 [[bin]]
 name = "askrypt"
@@ -34,11 +34,11 @@ rfd = "0.17.2"
 chrono = { version = "0.4", features = ["serde"] }
 open = "5.3.5"
 image = "0.25.10"
-png = "0.18"
 tray-item = "0.10.0"
 zeroize = "1"
-# `spawn_blocking` for off-main-thread vault decryption (matches iced's tokio).
-tokio = { version = "1", features = ["rt"] }
+# `spawn_blocking` for off-main-thread key derivation and vault I/O (matches
+# iced's tokio); `time` is the delay behind the clipboard auto-clear.
+tokio = { version = "1", features = ["rt", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-item = { version = "0.10.0", features = ["ksni"] }

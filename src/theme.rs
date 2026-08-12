@@ -1,8 +1,8 @@
-//! Styling for the prototype.
+//! Styling for the app.
 //!
-//! The helpers in the first half are copied from `src/ui.rs` so the prototype
-//! keeps the shipping app's look without the two crates sharing code; the
-//! second half is new, pane-specific styling. The two are expected to diverge.
+//! The helpers in the first half are the general styled-widget vocabulary,
+//! carried over from the UI this one replaced; the second half is
+//! pane-specific styling built for the three-pane layout.
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{
@@ -31,7 +31,7 @@ pub fn bold() -> Font {
 }
 
 // ---------------------------------------------------------------------------
-// Copied from `src/ui.rs`
+// General styled widgets
 // ---------------------------------------------------------------------------
 
 pub fn text_button_icon<'a, T: 'a>(icon: Text<'a>, tooltip: &'static str) -> Button<'a, T> {
@@ -124,9 +124,8 @@ pub fn spinner_row<'a, T: 'a>(frame: usize, label: &'a str) -> Row<'a, T> {
 
 /// Wrap content in a full-width, rounded, bordered container.
 ///
-/// `src/ui.rs::container_with_border` takes a `Column` specifically, which
-/// blocks reuse; this variant takes anything element-shaped and leaves padding
-/// to the caller so hairline rules can run edge to edge.
+/// Takes anything element-shaped rather than a `Column`, and leaves padding to
+/// the caller so hairline rules can run edge to edge.
 pub fn card<'a, M: 'a>(item: impl Into<Element<'a, M>>) -> Container<'a, M> {
     container(item)
         .width(Length::Fill)
@@ -162,8 +161,7 @@ pub fn pane_divider(theme: &Theme) -> rule::Style {
     rule::weak(theme)
 }
 
-/// The always-visible bottom status bar — visually identical to
-/// `src/screens/mod.rs::status_bar`.
+/// The always-visible bottom status bar.
 pub fn status_bar_style(theme: &Theme) -> container::Style {
     container::Style {
         border: iced::Border {

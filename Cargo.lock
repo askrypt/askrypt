@@ -259,14 +259,13 @@ dependencies = [
 
 [[package]]
 name = "askrypt"
-version = "0.6.2-dev"
+version = "0.7.0-dev"
 dependencies = [
  "askrypt-core",
  "chrono",
  "iced",
  "image",
  "open",
- "png",
  "rand 0.10.1",
  "rfd",
  "serde",
@@ -296,24 +295,6 @@ dependencies = [
  "ureq",
  "zeroize",
  "zip",
-]
-
-[[package]]
-name = "askrypt-gui"
-version = "0.7.0-dev"
-dependencies = [
- "askrypt-core",
- "chrono",
- "iced",
- "image",
- "open",
- "rand 0.10.1",
- "rfd",
- "serde",
- "serde_json",
- "tokio",
- "tray-item",
- "zeroize",
 ]
 
 [[package]]

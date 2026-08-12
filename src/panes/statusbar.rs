@@ -1,7 +1,6 @@
 //! The always-visible bottom status bar.
 //!
-//! Visually identical to `src/screens/mod.rs::status_bar`, and follows the same
-//! precedence — error, then success, then status — which
+//! Follows the precedence — error, then success, then status — which
 //! [`Session::status_line`](crate::session::Session::status_line) resolves. It
 //! also carries the spinner, so background work is visible from any pane.
 

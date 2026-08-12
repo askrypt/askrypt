@@ -7,9 +7,8 @@
 //!
 //! Because the answers are the key, saving runs `AskryptFile::create` (two
 //! 600,000-iteration derivations) plus one `get_questions_data` to read back the
-//! authoritative question list — all on a worker thread. Unlike
-//! `src/screens/questions.rs`, a failure there leaves the session untouched
-//! rather than proceeding as though it had worked.
+//! authoritative question list — all on a worker thread. A failure there leaves
+//! the session untouched rather than proceeding as though it had worked.
 
 use askrypt::{AskryptFile, MasterSecret, QuestionsData, SecretEntry};
 use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
@@ -184,8 +183,8 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                     Action::Pane(Pane::Items)
                 }
                 Err(e) => {
-                    // Unlike the shipping app, a failure here does *not* move on
-                    // as though it had worked.
+                    // A failure here does *not* move on as though it had
+                    // worked.
                     eprintln!("ERROR: Failed to build vault: {}", e);
                     state.error = Some("Could not build the vault from these answers".to_string());
                     Action::None

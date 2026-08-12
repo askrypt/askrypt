@@ -1,7 +1,7 @@
 //! The password generator, over `askrypt::passgen`.
 //!
-//! Every control regenerates immediately, the way `src/screens/passgen.rs` does
-//! — the length slider clamps in core, so the pane never has to. "Copy and use"
+//! Every control regenerates immediately — the length slider clamps in core, so
+//! the pane never has to. "Copy and use"
 //! hands the password back through [`Message::UseGeneratedPassword`], which the
 //! shell writes into the open entry editor's draft; with no editor open it is
 //! just a copy.

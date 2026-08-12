@@ -1,10 +1,9 @@
 //! The entry editor: a draft item, edited in place of the detail pane.
 //!
 //! It replaces the right-hand pane rather than the whole working area, so the
-//! list stays visible while an item is being written — the one place this UI
-//! differs from `src/screens/entry_editor.rs`, which is a full screen.
+//! list stays visible while an item is being written.
 //!
-//! The rules are the shipping app's: the name is required, tags are a
+//! The rules are the long-standing ones: the name is required, tags are a
 //! comma-separated string split on save, `modified` is stamped and `created` is
 //! preserved. Nothing here touches storage; saving edits `session.entries` and
 //! marks the vault dirty, and the vault is written only by an explicit Save.

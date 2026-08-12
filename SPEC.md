@@ -286,7 +286,7 @@ Requirements, in rough order of how easy each is to get wrong:
    corrupted file both surface as "wrong answer". With a MAC the two become
    distinguishable, and they deserve different words: one is "try again", the
    other is "this file has been altered — do not trust it". This is a UI change
-   in `src/`, `gui/` and `app/`, not just a crypto change.
+   in `src/` and `app/`, not just a crypto change.
 5. **Keep the three implementations in lock-step.** Rust core, the Dart port, and
    new golden vectors: regenerate `app/test/fixtures/vectors.json` via
    `cargo run -p askrypt-core --example gen_vectors`, and keep a v0.9 fixture

@@ -162,7 +162,7 @@ fn main_card(entry: &SecretEntry, revealed: bool) -> Element<'_, Message> {
     let mut fields = column![field_row("Name", text(&entry.name).size(14).into(), row![])];
 
     // An empty username would render as a labelled blank line; drop the whole
-    // row instead, the way `src/screens/entries.rs` drops empty fields.
+    // row instead.
     if !entry.user_name.is_empty() {
         fields = fields.push(hairline());
         fields = fields.push(field_row(
@@ -307,8 +307,7 @@ fn secret_or_dots(value: &str, revealed: bool) -> String {
     }
 }
 
-/// The Website card — absent entirely when the entry has no URL, mirroring
-/// `src/screens/entries.rs`.
+/// The Website card — absent entirely when the entry has no URL.
 fn website_card(entry: &SecretEntry) -> Option<Element<'_, Message>> {
     if entry.url.is_empty() {
         return None;

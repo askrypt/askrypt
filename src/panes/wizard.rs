@@ -1,11 +1,10 @@
 //! The vault source wizard: one pane serving Open, Save and Save As.
 //!
-//! The shipping app splits this work across a native `rfd` dialog (local files,
-//! `src/screens/welcome.rs` and `src/session.rs::save_vault_as`) and a whole
-//! screen of its own (the server, `src/screens/server.rs`), so Open is reachable
-//! only from Welcome and Save only from the entries screen. Here both directions
-//! run through the same two steps — pick a source, then fill it in — which is
-//! the point of the redesign.
+//! The UI this replaced split the work across a native `rfd` dialog for local
+//! files and a screen of its own for the server, which put Open only on its
+//! Welcome screen and Save only on its entries screen. Here both directions run
+//! through the same two steps — pick a source, then fill it in — which is the
+//! point of the redesign.
 //!
 //! Opening hands the shell the [`VaultHandle`] carrying the storage instance
 //! that performed the read, never a rebuilt one: a `ServerStorage` records the

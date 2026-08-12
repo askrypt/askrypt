@@ -64,8 +64,8 @@ impl Status {
     // -----------------------------------------------------------------------
 
     /// Always, like [`Self::can_open`]: starting over is offered in every
-    /// state, unlike the shipping app where both live on the Welcome screen
-    /// only.
+    /// state, rather than only from a dedicated Welcome screen the way the
+    /// previous UI did it.
     pub fn can_create(self) -> bool {
         true
     }

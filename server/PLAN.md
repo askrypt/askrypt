@@ -702,13 +702,13 @@ askrypt/
 - ~~Client-side sync UX for **desktop**~~ — decided and built: manual
   open/save, not background sync. `core/src/storage/server.rs` implements
   `VaultStorage` over `/api/v1/vaults` behind core's default-off
-  `server-storage` feature, and `src/screens/server.rs` is the sign-in +
-  vault-picker screen ("Open from Server" on Welcome, "Save to Server" on the
-  entries screen). Conflicts are *detected*, not merged: the `If-Match` ETag
+  `server-storage` feature, and the desktop's `src/panes/wizard.rs` server step
+  is the sign-in + vault-picker (the same pane serves Open and Save As).
+  Conflicts are *detected*, not merged: the `If-Match` ETag
   round trip surfaces a stale write as `StorageError::Conflict`, and the app
-  tells the user to reload. Still open there: making saves asynchronous
-  (`Session::save_vault` is `&mut self` and blocks the UI thread), and a real
-  reload/merge affordance.
+  tells the user to reload. Saves are now asynchronous (`Session::save_request`
+  → `write_vault` on a worker → `Session::apply_saved`); still open there is a
+  real reload/merge affordance.
 - Client-side sync UX for **mobile** (`app/`): the Dart client for the same
   endpoints, plus how it interacts with SAF/`recent_vault_store`.
 - Which email service to point `ASKRYPT_SMTP_*` at in production (any SMTP

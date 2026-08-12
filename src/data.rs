@@ -1,8 +1,8 @@
 //! Item helpers over [`SecretEntry`], the vault's own entry type.
 //!
-//! Ported from `src/screens/entries.rs`, which keeps these as private functions
-//! next to the view that uses them. They are pure, so they live on their own
-//! here and the panes share them.
+//! These were private functions next to the view that used them in the UI this
+//! replaced. They are pure, so they live on their own here and the panes share
+//! them.
 
 use askrypt::SecretEntry;
 use chrono::{DateTime, Local, Utc};

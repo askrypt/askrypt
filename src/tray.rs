@@ -1,5 +1,12 @@
+//! System-tray integration.
+//!
+//! The menu items push onto an `mpsc` channel rather than driving the app
+//! directly; `App::subscription` polls `receiver` so tray clicks arrive as
+//! ordinary messages.
+
 use std::sync::mpsc::{self, Receiver};
 use tray_item::{IconSource, TrayItem};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
     Open,

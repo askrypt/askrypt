@@ -4,7 +4,6 @@
 //! mutates the shared [`Session`](crate::session::Session) and returns an
 //! [`Action`]. Navigation is *data*: a pane never switches the working area
 //! itself, it says where it wants to go and `App::apply` does the switching.
-//! Same shape as `src/screens/mod.rs::Action`, which this replaces.
 
 use iced::Task;
 

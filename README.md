@@ -74,8 +74,9 @@ The repository is a Cargo workspace with a shared crypto core plus a desktop and
 
 - **`core/` — `askrypt-core`** — the crypto/format engine and the **source of truth** for the vault
   format: encryption, key derivation, ZIP handling, the password generator, and transliteration.
-- **Desktop (`src/`)** — a GUI built with the [Iced](https://github.com/iced-rs/iced) framework for
-  **Linux, macOS, and Windows**. Depends on `askrypt-core`.
+- **Desktop (`src/`)** — a three-pane GUI (navigation rail, item list, detail pane) built with the
+  [Iced](https://github.com/iced-rs/iced) framework for **Linux, macOS, and Windows**. Depends on
+  `askrypt-core`; the design notes are in [`UI.md`](UI.md).
 - **Mobile (`app/`)** — a **pure-Dart Flutter** app for **Android and iOS** (no Rust on device).
   It re-implements the vault format in Dart and stays byte-compatible with `core/`, verified by
   golden test vectors. *In progress* — see [`app/PLAN.md`](app/PLAN.md).

@@ -142,7 +142,7 @@ clipboard.
     `card_*` fields (holder, brand, number, expiry `MM/YY`, CVV, PIN), and the
     Dart model reads and writes them, omitting each when empty exactly as
     Rust's `skip_serializing_if` does. This app has **no card UI** — the
-    desktop `gui/` does — so the only thing that could go wrong here is losing
+    desktop app (`src/`) does — so the only thing that could go wrong here is losing
     them: `toJson` writes a fixed key list, and `entry_edit_screen` rebuilds
     the entry from its controllers, so it keeps the loaded entry in
     `_original` and copies the six forward. A `"Card"` entry in
