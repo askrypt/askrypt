@@ -4,7 +4,7 @@
 //! The item filters exist only while the vault is unlocked — there is nothing
 //! to filter otherwise — and each vault action is *hidden*, not disabled, when
 //! the current state does not allow it. The rules live in
-//! [`crate::vault::Status`]; this module only asks.
+//! [`crate::manager::VaultState`]; this module only asks.
 
 use iced::widget::{Text, button, column, container, row, rule, scrollable, text};
 use iced::{Element, Length, alignment::Vertical};
@@ -13,12 +13,12 @@ use crate::data::{TYPE_CARD, TYPE_NOTE, make_hash_tag};
 use crate::{App, GlobalMsg, Message, Pane, Section, VaultMsg, icon, theme};
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let status = app.status();
+    let vault = &app.session.vault;
 
-    let items = if status.is_unlocked() {
+    let items = if vault.is_unlocked() {
         filters(app)
     } else {
-        let caption = if status.is_open() {
+        let caption = if vault.is_open() {
             "Vault locked — unlock it to browse."
         } else {
             "No vault open."
@@ -91,7 +91,7 @@ fn filters(app: &App) -> iced::widget::Column<'_, Message> {
 /// The vault actions, then Settings, then Quit. Which actions appear is the
 /// whole readout of the vault's state.
 fn pinned(app: &App) -> Element<'_, Message> {
-    let vault = app.status();
+    let vault = &app.session.vault;
 
     let mut actions = column![].spacing(2).width(Length::Fill);
 

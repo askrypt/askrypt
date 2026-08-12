@@ -6,7 +6,7 @@
 //! through the same two steps — pick a source, then fill it in — which is the
 //! point of the redesign.
 //!
-//! Opening hands the shell the [`VaultHandle`] carrying the storage instance
+//! Opening hands the shell an [`OpenedVault`] carrying the storage instance
 //! that performed the read, never a rebuilt one: a `ServerStorage` records the
 //! ETag it saw and sends it back as `If-Match`, so a fresh instance would
 //! silently overwrite another device's edit.
@@ -19,12 +19,10 @@ use iced::widget::{button, column, container, row, rule, scrollable, text, text_
 use iced::{Element, Length, Task, alignment::Vertical};
 
 use crate::data;
+use crate::manager::{OpenedVault, VaultHome};
 use crate::panes::Action;
-use crate::session::{
-    Session, VaultError, VaultHandle, describe_open_error, describe_sign_in_error,
-};
+use crate::session::{Session, VaultError, describe_open_error, describe_sign_in_error};
 use crate::settings::VaultLocation;
-use crate::vault;
 use crate::{App, Message, icon, theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +112,7 @@ impl State {
     /// so signing in is not part of any one flow.
     pub fn begin(&mut self, purpose: Purpose, session: &Session) {
         // A vault with no home yet has no name to suggest either.
-        let name = match &session.location {
+        let name = match session.vault.location() {
             Some(location) => location.display_name(),
             None => "MyVault.askrypt".to_string(),
         };
@@ -168,7 +166,7 @@ pub enum Msg {
     ServerVaultPicked(usize),
     VaultNameChanged(String),
     /// A vault finished downloading (or failed to).
-    Opened(Box<Result<VaultHandle, VaultError>>),
+    Opened(Box<Result<OpenedVault, VaultError>>),
 }
 
 pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action {
@@ -306,9 +304,9 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
         Msg::Opened(result) => {
             session.finish_work();
             match *result {
-                Ok(handle) => {
-                    let name = handle.location.display_name();
-                    session.open_vault(handle.location, handle.storage, handle.file);
+                Ok(opened) => {
+                    let name = opened.home.location().display_name();
+                    session.vault.open(opened);
                     session.status_message = Some(format!("Opened {name}"));
                     Action::Run(Task::done(Message::Vault(crate::VaultMsg::Unlock)))
                 }
@@ -433,15 +431,13 @@ fn load_task(location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Task<Me
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
+                // An `OpenedVault`, never a `SavedVault`: these bytes are still
+                // locked, so there is no master key here — the type says so,
+                // rather than an `Option` that happens to be `None`.
+                let home = VaultHome::new(location, Arc::clone(&storage));
                 storage
                     .load_vault()
-                    .map(|file| VaultHandle {
-                        file,
-                        location,
-                        storage: Arc::clone(&storage),
-                        // Still locked: the master key only appears at unlock.
-                        master: None,
-                    })
+                    .map(|file| OpenedVault { file, home })
                     .map_err(|e| VaultError::log("Failed to open vault", &e))
             })
             .await
@@ -1040,7 +1036,7 @@ fn footer<'a>(state: &'a State, session: &'a Session) -> Option<Element<'a, Mess
     let back = state.step != Step::PickSource;
     // Cancel is only offered when there is somewhere to cancel *to*; Back
     // already covers stepping out of a source.
-    let cancel = vault::Status::of(session).can_cancel_wizard();
+    let cancel = session.vault.can_cancel_wizard();
     // Naming a server vault to save to is the only thing left to confirm;
     // every open acts on the click (a recent vault, a listed vault, or the
     // native dialog).

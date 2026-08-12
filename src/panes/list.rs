@@ -13,7 +13,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let body: Element<'_, Message> = if rows.is_empty() {
         // A brand-new vault has nothing in it yet, which is a different empty
         // state from a filter that matched nothing.
-        theme::caption_block(if app.session.entries.is_empty() {
+        theme::caption_block(if app.session.entries().is_empty() {
             "This vault is empty — add the first item."
         } else {
             "No items match the filter criteria."

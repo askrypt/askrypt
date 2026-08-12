@@ -3,7 +3,7 @@
 //! It renders the vault format's **layered** unlock, which is a property of the
 //! format rather than a UI choice: the first answer decrypts only the *question
 //! list*, and all the answers together decrypt the entries. That is why
-//! `Status::Locked` shows one field and `Status::PartiallyUnlocked` shows the
+//! `VaultState::Locked` shows one field and `VaultState::Partial` shows the
 //! rest.
 //!
 //! Every derivation here is 600,000 PBKDF2 iterations (2,000,000 for Smart
@@ -11,14 +11,14 @@
 //! completion messages below. A wrong answer is not detected by a check — it is
 //! a decryption that fails.
 
-use askrypt::{MasterSecret, QuestionsData, SecretEntry};
+use askrypt::QuestionsData;
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Task, alignment::Vertical};
 use zeroize::Zeroize;
 
+use crate::manager::{Decrypted, SmartUnlockResult, VaultState};
 use crate::panes::Action;
-use crate::session::{SMART_LOCK_TIMEOUT, Session, SmartUnlockResult};
-use crate::vault::Status;
+use crate::session::Session;
 use crate::{App, Message, Pane, SEARCH_INPUT_ID, VaultMsg, data, icon, theme};
 
 const ANSWER_INPUT_ID: &str = "GUI_UNLOCK_ANSWER";
@@ -56,29 +56,26 @@ impl State {
     /// The count is `1 + questions_data.questions.len()` once the first answer
     /// has been accepted, and 1 before that — the remaining questions are still
     /// encrypted, so there is nothing to size against.
-    pub fn reset_for(&mut self, session: &Session) {
-        let wanted = 1 + session
-            .questions_data
-            .as_ref()
-            .map(|data| data.questions.len())
-            .unwrap_or(0);
-
+    pub fn reset_for(&mut self, vault: &VaultState) {
         self.answers.zeroize();
-        self.answers = vec![String::new(); wanted];
+        self.answers = vec![String::new(); slots_for(vault)];
         self.shown = None;
         self.error = None;
     }
 
     /// Grow to fit a question list that has just been decrypted, keeping the
     /// first answer (it is still needed to re-derive on save).
-    fn fit_to(&mut self, session: &Session) {
-        let wanted = 1 + session
-            .questions_data
-            .as_ref()
-            .map(|data| data.questions.len())
-            .unwrap_or(0);
-        self.answers.resize(wanted, String::new());
+    fn fit_to(&mut self, vault: &VaultState) {
+        self.answers.resize(slots_for(vault), String::new());
     }
+}
+
+/// How many answer fields this vault's state can ask for.
+fn slots_for(vault: &VaultState) -> usize {
+    1 + vault
+        .questions_data()
+        .map(|data| data.questions.len())
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone)]
@@ -94,9 +91,9 @@ pub enum Msg {
     /// The first answer decrypted (or failed to decrypt) the question list.
     Answer0Loaded(Result<QuestionsData, String>),
     /// All the answers together decrypted (or failed to decrypt) the entries,
-    /// and with them the vault's master key — which the session keeps so the
+    /// and with them the vault's master key — which the vault keeps so the
     /// next save re-wraps it rather than rotating it.
-    VaultDecrypted(Result<(Vec<SecretEntry>, MasterSecret), String>),
+    VaultDecrypted(Result<Decrypted, String>),
     /// One answer recovered the Smart Lock bundle and reopened the vault.
     SmartUnlockDone(Result<SmartUnlockResult, String>),
 }
@@ -128,12 +125,22 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
         // Closing here directly left the wizard on whatever step it was last
         // used at — a server listing, or the recent-files step.
         Msg::CloseVault => Action::Run(Task::done(Message::Vault(VaultMsg::Close))),
+        // The three completion arms below share a shape: the answers are taken
+        // from this pane's own fields rather than carried back by the worker,
+        // and the transition is applied only from the `Ok` arm. A wrong answer
+        // therefore leaves the vault exactly where it was, holding nothing the
+        // user typed.
         Msg::Answer0Loaded(result) => {
             session.finish_work();
             match result {
                 Ok(questions_data) => {
-                    session.questions_data = Some(questions_data);
-                    state.fit_to(session);
+                    let answer0 = state.answers.first().cloned().unwrap_or_default();
+                    if !session.vault.apply_reveal(answer0, questions_data) {
+                        // The vault moved on while the worker ran — closed, or
+                        // locked. The stale question list is dropped, and wiped.
+                        return Action::None;
+                    }
+                    state.fit_to(&session.vault);
                     state.error = None;
                     Action::Run(iced::widget::operation::focus_next())
                 }
@@ -147,12 +154,23 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
         Msg::VaultDecrypted(result) => {
             session.finish_work();
             match result {
-                Ok((entries, master)) => {
+                Ok(decrypted) => {
+                    // The answers go into the unlocked state now that they are
+                    // known to be right: a save re-derives the answer-side keys
+                    // from them, and re-wraps the master key.
+                    let rest: Vec<String> = state.answers.iter().skip(1).cloned().collect();
                     let millis = session.elapsed_millis();
-                    // Keep `session.answer0`/`answers`: a save re-derives the
-                    // answer-side keys from them, and re-wraps `master`.
-                    session.apply_unlock(entries, master);
-                    state.reset_for(session);
+                    if !session
+                        .vault
+                        .apply_unlock(rest, decrypted.entries, decrypted.master)
+                    {
+                        return Action::None;
+                    }
+                    // Remembered only on a *successful* unlock, so a vault that
+                    // cannot be opened never becomes the one reopened at startup.
+                    session.remember_vault();
+                    session.update_user_activity();
+                    state.reset_for(&session.vault);
                     session.status_message = Some(format!("The vault unlocked in {} ms", millis));
                     Action::pane_run(Pane::Items, iced::widget::operation::focus(SEARCH_INPUT_ID))
                 }
@@ -166,10 +184,13 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
         Msg::SmartUnlockDone(result) => {
             session.finish_work();
             match result {
-                Ok(unlocked) => {
+                Ok(recovered) => {
                     let millis = session.elapsed_millis();
-                    session.apply_smart_unlock(unlocked);
-                    state.reset_for(session);
+                    if !session.vault.apply_smart_unlock(recovered) {
+                        return Action::None;
+                    }
+                    session.update_user_activity();
+                    state.reset_for(&session.vault);
                     session.status_message =
                         Some(format!("Vault unlocked from Smart Lock in {} ms", millis));
                     Action::pane_run(Pane::Items, iced::widget::operation::focus(SEARCH_INPUT_ID))
@@ -189,11 +210,16 @@ fn submit(state: &mut State, session: &mut Session) -> Action {
         return Action::None;
     }
 
-    match Status::of(session) {
-        Status::Locked => start_first_answer(state, session),
-        Status::PartiallyUnlocked => start_full_unlock(state, session),
-        Status::SmartLocked => start_smart_unlock(state, session),
-        Status::NoVault | Status::Unlocked => Action::None,
+    // `matches!` rather than a `match` on `&session.vault`: the arms need
+    // `&mut session`, which a borrow held across the match would forbid.
+    if matches!(session.vault, VaultState::Locked(_)) {
+        start_first_answer(state, session)
+    } else if matches!(session.vault, VaultState::Partial(_)) {
+        start_full_unlock(state, session)
+    } else if matches!(session.vault, VaultState::Smart(_)) {
+        start_smart_unlock(state, session)
+    } else {
+        Action::None
     }
 }
 
@@ -204,21 +230,23 @@ fn start_first_answer(state: &mut State, session: &mut Session) -> Action {
         state.error = Some("Enter an answer to continue.".to_string());
         return Action::None;
     };
-    let Some(file) = session.file.clone() else {
+    // Only a locked vault has a first answer left to try — the typestate says
+    // so, rather than a comment.
+    let Some(inputs) = session
+        .vault
+        .locked()
+        .map(|vault| vault.reveal_inputs(answer0.clone()))
+    else {
         return Action::None;
     };
 
-    session.answer0 = answer0.clone();
-    let answer0 = answer0.clone();
     session.begin_work("Decrypting…");
 
     Action::Run(Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || {
-                file.get_questions_data(answer0).map_err(|e| e.to_string())
-            })
-            .await
-            .expect("get_questions_data task panicked")
+            tokio::task::spawn_blocking(move || inputs.run())
+                .await
+                .expect("get_questions_data task panicked")
         },
         |result| Message::Unlock(Msg::Answer0Loaded(result)),
     ))
@@ -231,22 +259,23 @@ fn start_full_unlock(state: &mut State, session: &mut Session) -> Action {
         return Action::None;
     }
 
-    let (Some(file), Some(questions_data)) = (session.file.clone(), session.questions_data.clone())
+    // `rest` is answers 1.., which is what `decrypt_with_master` wants —
+    // `unlock_inputs` is the only place that off-by-one is written down.
+    let Some(inputs) = session
+        .vault
+        .partial()
+        .map(|vault| vault.unlock_inputs(rest))
     else {
         return Action::None;
     };
 
-    session.answers = rest.clone();
     session.begin_work("Decrypting…");
 
     Action::Run(Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || {
-                file.decrypt_with_master(&questions_data, rest)
-                    .map_err(|e| e.to_string())
-            })
-            .await
-            .expect("decrypt task panicked")
+            tokio::task::spawn_blocking(move || inputs.run())
+                .await
+                .expect("decrypt task panicked")
         },
         |result| Message::Unlock(Msg::VaultDecrypted(result)),
     ))
@@ -260,38 +289,21 @@ fn start_smart_unlock(state: &mut State, session: &mut Session) -> Action {
         state.error = Some("Enter an answer to continue.".to_string());
         return Action::None;
     };
-    let (Some(file), Some(smart_lock_data)) =
-        (session.file.clone(), session.smart_lock_data.clone())
+    let Some(inputs) = session
+        .vault
+        .smart()
+        .map(|vault| vault.smart_unlock_inputs(answer.clone()))
     else {
         return Action::None;
     };
 
-    let answer = answer.clone();
-    let translit = session.file.as_ref().is_some_and(|f| f.params.translit);
     session.begin_work("Decrypting…");
 
     Action::Run(Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || {
-                let (answer0, answers) =
-                    Session::decrypt_smart_lock_data(&smart_lock_data, &answer, translit)
-                        .map_err(|e| e.to_string())?;
-                let questions_data = file
-                    .get_questions_data(answer0.clone())
-                    .map_err(|e| e.to_string())?;
-                let (entries, master) = file
-                    .decrypt_with_master(&questions_data, answers.clone())
-                    .map_err(|e| e.to_string())?;
-                Ok::<_, String>(SmartUnlockResult {
-                    answer0,
-                    answers,
-                    questions_data,
-                    entries,
-                    master,
-                })
-            })
-            .await
-            .expect("smart unlock task panicked")
+            tokio::task::spawn_blocking(move || inputs.run())
+                .await
+                .expect("smart unlock task panicked")
         },
         |result| Message::Unlock(Msg::SmartUnlockDone(result)),
     ))
@@ -304,45 +316,34 @@ fn start_smart_unlock(state: &mut State, session: &mut Session) -> Action {
 pub fn view(app: &App) -> Element<'_, Message> {
     let state = &app.unlock;
     let session = &app.session;
-    let status = Status::of(session);
-
     // Which questions are on screen, and their text. Question 0 is stored in the
-    // clear; the rest only exist once the first answer decrypted them.
-    let (heading, note, asked): (&str, Option<&str>, Vec<(usize, String)>) = match status {
-        Status::PartiallyUnlocked => (
+    // clear; the rest only exist once the first answer decrypted them. Each arm
+    // reads through the handle for its own state, so a question list can only be
+    // shown by the state that actually has one.
+    let (heading, note, asked): (&str, Option<&str>, Vec<(usize, String)>) = match &session.vault {
+        VaultState::Partial(vault) => (
             "Answer the remaining questions",
             Some(
                 "The first answer decrypted the question list. All of them together decrypt the entries.",
             ),
-            session
-                .questions_data
-                .as_ref()
-                .map(|data| {
-                    data.questions
-                        .iter()
-                        .enumerate()
-                        .map(|(offset, question)| (offset + 1, question.clone()))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            vault
+                .questions_data()
+                .questions
+                .iter()
+                .enumerate()
+                .map(|(offset, question)| (offset + 1, question.clone()))
+                .collect(),
         ),
-        Status::SmartLocked => (
+        VaultState::Smart(vault) => (
             "Smart Lock is armed",
             Some("The answers are held encrypted in memory — one of them re-opens the vault."),
-            vec![(
-                0,
-                session
-                    .smart_lock_data
-                    .as_ref()
-                    .map(|data| data.key_question.clone())
-                    .unwrap_or_else(|| "Security question".to_string()),
-            )],
+            vec![(0, vault.key_question().to_string())],
         ),
         // `Locked`, and defensively anything else that routes here.
         _ => (
             "Answer the first security question",
             None,
-            vec![(0, session.question0.clone())],
+            vec![(0, session.vault.question0().unwrap_or_default().to_string())],
         ),
     };
 
@@ -376,7 +377,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     // The write stamp is unencrypted, so it is readable before a single answer
     // is given — it says which machine last saved this vault, and when.
-    if let Some(stamp) = session.file.as_ref().and_then(|file| {
+    if let Some(stamp) = session.vault.file().and_then(|file| {
         data::format_stamp(
             file.params.host.as_deref(),
             file.params.updated_at.as_deref(),
@@ -436,13 +437,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
 }
 
 /// How long the armed Smart Lock has left before it drops to a full lock.
+///
+/// Only the Smart Locked state has a bundle to count down, so there is no
+/// longer an "unless it is also unlocked" check to remember.
 fn smart_lock_countdown(session: &Session) -> Option<String> {
-    let data = session.smart_lock_data.as_ref()?;
-    if session.unlocked {
-        return None;
-    }
-
-    let remaining = SMART_LOCK_TIMEOUT.saturating_sub(data.last_activity.elapsed());
+    let remaining = session.vault.smart()?.remaining();
     let minutes = remaining.as_secs() / 60;
     Some(format!(
         "Time until full lock: {}h {}m",

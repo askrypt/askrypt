@@ -1,76 +1,33 @@
-//! Shared application state and the vault lifecycle.
+//! Shared application state around the vault.
 //!
-//! [`Session`] holds everything that is *not* specific to a single pane: the
-//! loaded vault, the decrypted secrets, persistent settings, the system tray,
-//! the status/error messages, and the background-work spinner. Panes borrow
-//! `&mut Session` to read or mutate this shared state while keeping their own UI
-//! fields in a per-pane `State` struct.
+//! [`Session`] holds everything that is *not* specific to a single pane. The
+//! vault itself lives in one field, `vault: VaultState` — the typestate in
+//! [`crate::manager`], which owns the bytes, where they live, the answers, the
+//! entries and the master key, and which of those exist in which state. What is
+//! left here is the shell's own business: persistent settings, the system tray,
+//! the status/error messages, the background-work spinner, and the signed-in
+//! server.
 //!
-//! One structural rule governs the whole file: **saving is not synchronous**. `AskryptFile::create` runs a
-//! 600,000-iteration PBKDF2 twice, so every save is worker-thread work like
-//! unlocking is. [`Session::save_request`] collects the inputs, [`write_vault`]
-//! does the work off the main thread, and [`Session::apply_saved`] performs the
-//! mutation when the result comes back.
+//! Panes borrow `&mut Session` to read or mutate this shared state while keeping
+//! their own UI fields in a per-pane `State` struct. Anything to do with the
+//! vault goes through `session.vault`, which hands out a handle carrying only
+//! the operations the current state allows.
+//!
+//! One structural rule governs the vault side: **no derivation runs on the main
+//! thread**. `AskryptFile::create` runs a 600,000-iteration PBKDF2 twice, so
+//! every save is worker-thread work exactly as unlocking is; see the module
+//! documentation of [`crate::manager`] for the shape every transition takes.
 
+use crate::manager::{Vault, VaultState};
 use crate::settings::{AppSettings, ServerSession, VaultLocation};
 use crate::tray::AppTray;
-use askrypt::{
-    AskryptFile, MasterSecret, QuestionsData, SecretEntry, ServerClient, StorageError,
-    VaultStorage, calc_pbkdf2, decrypt_with_aes, encode_base64, encrypt_with_aes, generate_bytes,
-    normalize_answer, sha256,
-};
-use rand::RngExt;
+use askrypt::{SecretEntry, ServerClient, StorageError, VaultStorage};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use zeroize::{Zeroize, Zeroizing};
+use std::time::Instant;
 
 /// Default number of iterations for key derivation (OWASP recommendation for 2025)
 pub const DEFAULT_ITERATIONS: u32 = 600_000;
 pub const APP_TITLE: &str = concat!("Askrypt ", env!("CARGO_PKG_VERSION"));
-/// Iterations for Smart Lock encryption (2,000,000 as specified)
-pub const SMART_LOCK_ITERATIONS: u32 = 2_000_000;
-/// Smart Lock timeout duration (8 hours)
-pub const SMART_LOCK_TIMEOUT: Duration = Duration::from_hours(8);
-
-/// Result of a background Smart Lock unlock: the recovered answers (restored
-/// into app state) plus the fully decrypted vault.
-#[derive(Debug, Clone)]
-pub struct SmartUnlockResult {
-    pub answer0: String,
-    pub answers: Vec<String>,
-    pub questions_data: QuestionsData,
-    pub entries: Vec<SecretEntry>,
-    /// The vault's master key, so the next save re-wraps it rather than
-    /// rotating it — see [`Session::master`].
-    pub master: MasterSecret,
-}
-
-/// Data for Smart Lock mode - stores encrypted answers in RAM
-#[derive(Debug, Clone)]
-pub struct SmartLockData {
-    /// The index of the answer used as the smart lock key (not first answer).
-    /// Retained for diagnostics; decryption keys off the stored salt and IVs,
-    /// not this.
-    #[allow(dead_code)]
-    pub key_answer_index: usize,
-    /// The question text for the selected answer (stored for display)
-    pub key_question: String,
-    /// Encrypted first answer (answer0) using the key answer
-    pub encrypted_answer0: Vec<u8>,
-    /// Encrypted remaining answers using the key answer
-    pub encrypted_answers: Vec<u8>,
-    /// Salt used for key derivation
-    pub salt: Vec<u8>,
-    /// IV for `encrypted_answer0`. The two ciphertexts get an IV each because
-    /// they share a key, and CBC under one key *and* one IV makes equal
-    /// leading blocks encrypt to equal ciphertext — it would tell a reader of
-    /// this blob how far the two plaintexts agree.
-    pub iv_answer0: Vec<u8>,
-    /// IV for `encrypted_answers`, distinct from `iv_answer0` for that reason.
-    pub iv_answers: Vec<u8>,
-    /// Timestamp of last activity (for 8-hour timeout)
-    pub last_activity: Instant,
-}
 
 /// A storage or encryption failure, classified so it can travel in a `Message`.
 ///
@@ -152,125 +109,12 @@ pub fn describe_open_error(error: &VaultError) -> String {
     }
 }
 
-/// Everything needed to rebuild and re-encrypt the vault, collected on the main
-/// thread so the worker owns its inputs.
-///
-/// Holds every answer and every decrypted entry, so it is secret material:
-/// it wipes on drop.
-pub struct SaveRequest {
-    pub questions: Vec<String>,
-    pub answers: Vec<String>,
-    pub entries: Vec<SecretEntry>,
-    pub iterations: u32,
-    pub translit: bool,
-    /// The vault's existing master key, or `None` for a vault that has never
-    /// had one (a brand-new vault, which mints its key on this first write).
-    pub master: Option<MasterSecret>,
-}
-
-impl Drop for SaveRequest {
-    fn drop(&mut self) {
-        self.answers.zeroize();
-        // `entries` are `SecretEntry` and `master` is a `MasterSecret`, both of
-        // which wipe themselves on drop.
-    }
-}
-
-/// A vault that has been re-encrypted and written.
-///
-/// Carries the backend that did the writing, not a description of it: the
-/// session must adopt that instance, ETag and all.
-#[derive(Clone)]
-pub struct VaultHandle {
-    pub file: AskryptFile,
-    pub location: VaultLocation,
-    pub storage: Arc<dyn VaultStorage>,
-    /// The master key the write used — the session's own when it had one, and
-    /// otherwise the freshly minted one, which the session must adopt so the
-    /// *next* save of a brand-new vault does not mint a second key.
-    ///
-    /// `None` when the handle came from *opening* a vault rather than writing
-    /// one: those bytes are still locked, and the key only appears at unlock.
-    pub master: Option<MasterSecret>,
-}
-
-// `VaultStorage` is not `Debug` (it is an object-safe trait over backends), but
-// every payload in a `Message` has to be. Name the location instead.
-impl std::fmt::Debug for VaultHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VaultHandle")
-            .field("location", &self.location)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Re-encrypt the vault and write it. **Worker-thread only** — this runs two
-/// 600k-iteration key derivations plus (for a server vault) an HTTP round trip.
-pub fn write_vault(
-    request: SaveRequest,
-    location: VaultLocation,
-    storage: Arc<dyn VaultStorage>,
-) -> Result<VaultHandle, VaultError> {
-    // A vault that has never been written has no key yet; mint it here rather
-    // than inside `create` so the session can adopt the very key this file was
-    // built with.
-    let master = request
-        .master
-        .clone()
-        .unwrap_or_else(MasterSecret::generate);
-
-    let file = AskryptFile::create(
-        request.questions.clone(),
-        request.answers.clone(),
-        request.entries.clone(),
-        Some(request.iterations),
-        request.translit,
-        Some(&master),
-    )
-    .map_err(|e| VaultError::log_crypto("Failed to build vault", e.as_ref()))?;
-
-    storage
-        .save_vault(&file)
-        .map_err(|e| VaultError::log("Failed to save vault", &e))?;
-
-    Ok(VaultHandle {
-        file,
-        location,
-        storage,
-        master: Some(master),
-    })
-}
-
 /// Shared, screen-independent application state.
 pub struct Session {
-    pub location: Option<VaultLocation>,
-    /// The live backend for `location`, created when the vault is opened and
-    /// kept for the lifetime of that vault rather than rebuilt per save.
-    ///
-    /// This matters for server vaults: `ServerStorage` learns the vault's ETag
-    /// when it reads, and sends it back as `If-Match` when it writes. Rebuilding
-    /// the backend before each save would fetch whatever ETag the server holds
-    /// *now* and happily overwrite another device's edit — the conflict check
-    /// only works if the same instance does the read and the write.
-    pub storage: Option<Arc<dyn VaultStorage>>,
-    pub file: Option<AskryptFile>,
-    pub questions_data: Option<QuestionsData>,
-    pub question0: String,
-    pub answer0: String,
-    pub answers: Vec<String>,
-    pub entries: Vec<SecretEntry>,
-    /// The open vault's master key, recovered by the unlock that opened it (or
-    /// minted by the write that created it).
-    ///
-    /// Saving hands this back to `AskryptFile::create` instead of letting it
-    /// mint a new one, so everything encrypted under the master key — the
-    /// coming file attachments — survives the write. `None` means there is no
-    /// key to keep: no vault is open, or the one that is has never been
-    /// written.
-    pub master: Option<MasterSecret>,
-    pub unlocked: bool,
-    /// Track if vault data has been modified
-    pub is_modified: bool,
+    /// The vault, in whichever state it is in. Everything about it — the bytes,
+    /// its home, the answers, the entries, the master key — lives in here, and
+    /// only the state it is actually in can be reached.
+    pub vault: VaultState,
     /// Application settings
     pub settings: AppSettings,
     /// The signed-in Askrypt server, if any. Restored from the saved session
@@ -287,8 +131,6 @@ pub struct Session {
     /// older value belongs to a sign-in that was cancelled or restarted, and is
     /// dropped rather than acted on.
     pub link_generation: u64,
-    /// Smart Lock state - stores encrypted answers in RAM
-    pub smart_lock_data: Option<SmartLockData>,
     /// Last user activity timestamp for auto Smart Lock
     pub last_user_activity: Option<Instant>,
     /// System tray
@@ -325,23 +167,12 @@ impl Session {
             .map(|session| Arc::new(ServerClient::with_token(&session.base_url, &session.token)));
 
         Self {
-            location: None,
-            storage: None,
-            file: None,
-            questions_data: None,
-            question0: String::new(),
-            answer0: String::new(),
-            answers: Vec::new(),
-            entries: Vec::new(),
-            master: None,
-            unlocked: false,
-            is_modified: false,
+            vault: VaultState::None,
             settings,
             server_client,
             server_email,
             link: None,
             link_generation: 0,
-            smart_lock_data: None,
             last_user_activity: None,
             tray,
             error_message: None,
@@ -355,12 +186,12 @@ impl Session {
     }
 
     pub fn title(&self) -> String {
-        if let Some(location) = &self.location {
+        if let Some(location) = self.vault.location() {
             let mut title = location.title_name();
-            if self.is_modified {
+            if self.vault.is_modified() {
                 title.push('*');
             }
-            if !self.unlocked {
+            if !self.vault.is_unlocked() {
                 title.push_str(" [Locked]");
             }
             title.push_str(" - ");
@@ -389,30 +220,42 @@ impl Session {
             return message.clone();
         }
 
-        match &self.location {
+        let dirty = if self.vault.is_modified() { "*" } else { "" };
+        match self.vault.location() {
             Some(location) => format!(
                 "{}{} — {}",
                 location.display_name(),
-                if self.is_modified { "*" } else { "" },
-                crate::vault::Status::of(self).label()
+                dirty,
+                self.vault.label()
             ),
             // A vault composed in the questions editor has no location yet.
-            None if self.questions_data.is_some() => "Untitled vault* — Unlocked".to_string(),
+            None if self.vault.is_open() => {
+                format!("Untitled vault{} — {}", dirty, self.vault.label())
+            }
             None => "No vault open".to_string(),
         }
     }
 
+    /// The decrypted entries, or none at all when the vault is not unlocked.
+    ///
+    /// The read-only projection the list, the rail's filters and the detail
+    /// pane share. Every *write* goes through the unlocked handle, so the
+    /// unsaved-changes flag cannot drift out of step with the edits.
+    pub fn entries(&self) -> &[SecretEntry] {
+        self.vault.unlocked().map_or(&[], Vault::entries)
+    }
+
     /// The vault's short name, for headings.
     pub fn display_name(&self) -> String {
-        self.location
-            .as_ref()
+        self.vault
+            .location()
             .map(VaultLocation::display_name)
             .unwrap_or_else(|| "Untitled vault".to_string())
     }
 
     /// The full "where it lives" line, when the vault has a home.
     pub fn display_location(&self) -> Option<String> {
-        self.location.as_ref().map(|location| {
+        self.vault.location().map(|location| {
             let prefix = if location.is_server() {
                 "Server Vault"
             } else {
@@ -422,9 +265,29 @@ impl Session {
         })
     }
 
+    // -----------------------------------------------------------------------
+    // Vault lifecycle: the parts that are the *session's* rather than the
+    // vault's, because they touch the settings file.
+    // -----------------------------------------------------------------------
+
+    /// Record the open vault in the MRU. Called only after a *successful*
+    /// unlock or save, so a vault that cannot be opened never becomes the one
+    /// reopened at startup.
+    pub fn remember_vault(&mut self) {
+        if let Some(location) = self.vault.location().cloned() {
+            self.settings.remember_vault(&location);
+        }
+    }
+
+    /// The full close: forget the vault entirely, and stop reopening it.
+    pub fn close_vault(&mut self) {
+        self.vault.close();
+        self.settings.last_opened_file = None;
+    }
+
     /// Update user activity timestamp (for auto Smart Lock after inactivity)
     pub fn update_user_activity(&mut self) {
-        if self.unlocked {
+        if self.vault.is_unlocked() {
             self.last_user_activity = Some(Instant::now());
         }
     }
@@ -436,36 +299,29 @@ impl Session {
             return false;
         };
 
-        self.unlocked
-            && !self.answers.is_empty()
+        self.vault
+            .unlocked()
+            .is_some_and(|vault| vault.has_key_answer())
             && self
                 .last_user_activity
                 .is_some_and(|last| last.elapsed() >= timeout)
     }
 
-    /// Whether an active Smart Lock has exceeded its timeout and should fully lock.
+    /// Whether the 8-hour Smart Lock ceiling has run out and the vault should
+    /// drop to a full lock. It outlives the Smart Lock itself: a vault reopened
+    /// from one carries the same deadline, so being reachable from a single
+    /// answer stays time-limited.
     pub fn smart_lock_timed_out(&self) -> bool {
-        self.smart_lock_data
-            .as_ref()
-            .is_some_and(|data| data.last_activity.elapsed() >= SMART_LOCK_TIMEOUT)
+        match &self.vault {
+            VaultState::Smart(vault) => vault.expired(),
+            VaultState::Unlocked(vault) => vault.smart_lock_expired(),
+            _ => false,
+        }
     }
 
-    /// Point the session at a vault: remember where it lives and keep the live
-    /// backend that was used to open it.
-    ///
-    /// Always pair the two — a `location` without its `storage` would make the
-    /// next save rebuild the backend and lose a server vault's ETag.
-    pub fn set_vault_location(&mut self, location: VaultLocation, storage: Arc<dyn VaultStorage>) {
-        self.location = Some(location);
-        self.storage = Some(storage);
-    }
-
-    /// Forget where the current vault lives (on close, or when creating a new
-    /// one).
-    pub fn clear_vault_location(&mut self) {
-        self.location = None;
-        self.storage = None;
-    }
+    // -----------------------------------------------------------------------
+    // The server
+    // -----------------------------------------------------------------------
 
     /// Sign in to a server, replacing any previous sign-in and persisting the
     /// token for the next launch.
@@ -541,145 +397,8 @@ impl Session {
     }
 
     // -----------------------------------------------------------------------
-    // Saving
+    // The background-work spinner
     // -----------------------------------------------------------------------
-
-    /// Collect everything the worker needs to re-encrypt this vault.
-    ///
-    /// `None` when there is no vault to save — no questions have been set, so
-    /// there is no key to derive.
-    pub fn save_request(&self) -> Option<SaveRequest> {
-        let questions_data = self.questions_data.as_ref()?;
-
-        let mut questions = vec![self.question0.clone()];
-        questions.extend(questions_data.questions.clone());
-
-        let mut answers = vec![self.answer0.clone()];
-        answers.extend(self.answers.clone());
-
-        Some(SaveRequest {
-            questions,
-            answers,
-            entries: self.entries.clone(),
-            // Keep the vault's own work factor rather than resetting it to the
-            // current default, which would silently weaken (or re-cost) a vault
-            // saved somewhere new.
-            iterations: self
-                .file
-                .as_ref()
-                .map(|f| f.params.iterations)
-                .unwrap_or(DEFAULT_ITERATIONS),
-            translit: self.file.as_ref().is_some_and(|f| f.params.translit),
-            master: self.master.clone(),
-        })
-    }
-
-    /// Where a plain "Save" writes: the current vault's location paired with the
-    /// very backend instance that opened it. `None` means this vault has never
-    /// been persisted, so Save has to become Save As.
-    pub fn save_target(&self) -> Option<(VaultLocation, Arc<dyn VaultStorage>)> {
-        match (&self.location, &self.storage) {
-            (Some(location), Some(storage)) => Some((location.clone(), Arc::clone(storage))),
-            _ => None,
-        }
-    }
-
-    /// Adopt a written vault: it is now the session's vault, at its location,
-    /// behind the backend that wrote it.
-    pub fn apply_saved(&mut self, saved: VaultHandle) {
-        self.set_vault_location(saved.location.clone(), saved.storage);
-        self.file = Some(saved.file);
-        // Usually the key the session already held; on a brand-new vault's first
-        // write it is the one that write minted. Always `Some` here — only the
-        // *open* path builds a handle without a key, and that goes to
-        // `open_vault`.
-        self.master = saved.master;
-        self.is_modified = false;
-        self.settings.remember_vault(&saved.location);
-        self.success_message = Some("Vault saved successfully".into());
-    }
-
-    // -----------------------------------------------------------------------
-    // Lifecycle transitions
-    // -----------------------------------------------------------------------
-
-    /// Adopt a freshly downloaded/loaded vault. Takes the storage instance that
-    /// performed the read, not a rebuilt one — see [`Session::storage`].
-    pub fn open_vault(
-        &mut self,
-        location: VaultLocation,
-        storage: Arc<dyn VaultStorage>,
-        file: AskryptFile,
-    ) {
-        self.zeroize_secrets();
-        self.questions_data = None;
-        self.smart_lock_data = None;
-        self.unlocked = false;
-        self.question0 = file.question0.clone();
-        self.file = Some(file);
-        self.set_vault_location(location, storage);
-        self.is_modified = false;
-    }
-
-    /// The full close: forget the vault entirely.
-    pub fn close_vault(&mut self) {
-        self.clear_vault_location();
-        self.file = None;
-        self.questions_data = None;
-        self.smart_lock_data = None;
-        self.question0.clear();
-        self.zeroize_secrets();
-        self.unlocked = false;
-        self.is_modified = false;
-        self.settings.last_opened_file = None;
-    }
-
-    /// Lock: wipe the secrets and drop back to the first question. The vault
-    /// bytes, its location and its backend all stay, so unlocking is local.
-    pub fn lock(&mut self) {
-        self.zeroize_secrets();
-        self.questions_data = None;
-        self.smart_lock_data = None;
-        self.unlocked = false;
-        self.is_modified = false;
-    }
-
-    /// Arm Smart Lock: the answers stay in RAM, re-encrypted under one of them.
-    pub fn apply_smart_lock(&mut self, data: SmartLockData) {
-        self.smart_lock_data = Some(data);
-        self.zeroize_secrets();
-        self.unlocked = false;
-        self.questions_data = None;
-    }
-
-    /// Restore a session from Smart Lock. The Smart Lock data is deliberately
-    /// *kept* and its clock reset, so the 8-hour window slides with use.
-    pub fn apply_smart_unlock(&mut self, unlocked: SmartUnlockResult) {
-        self.answer0 = unlocked.answer0;
-        self.answers = unlocked.answers;
-        self.entries = unlocked.entries;
-        self.master = Some(unlocked.master);
-        self.questions_data = Some(unlocked.questions_data);
-        self.unlocked = true;
-        self.last_user_activity = Some(Instant::now());
-        if let Some(data) = self.smart_lock_data.as_mut() {
-            data.last_activity = Instant::now();
-        }
-    }
-
-    /// A normal unlock completed: adopt the decrypted entries and the master key
-    /// that decrypted them.
-    pub fn apply_unlock(&mut self, entries: Vec<SecretEntry>, master: MasterSecret) {
-        self.entries = entries;
-        self.master = Some(master);
-        self.unlocked = true;
-        self.last_user_activity = Some(Instant::now());
-        if let Some(location) = self.location.clone() {
-            // Remembered only on a *successful* unlock, so a vault that cannot
-            // be opened never becomes the one reopened at startup.
-            self.settings.remember_vault(&location);
-        }
-    }
 
     /// Milliseconds since the current background derivation started, consuming
     /// the mark so a later message cannot re-report it.
@@ -702,314 +421,5 @@ impl Session {
     pub fn finish_work(&mut self) {
         self.busy = false;
         self.spinner_label = "Decrypting…";
-    }
-
-    // -----------------------------------------------------------------------
-    // Smart Lock crypto. Associated functions, so they can run on a worker
-    // thread with owned inputs instead of borrowing `self`.
-    // -----------------------------------------------------------------------
-
-    /// Create Smart Lock data by encrypting all answers with a randomly selected
-    /// answer. Uses 2,000,000 iterations for key derivation as specified.
-    pub fn create_smart_lock_data(
-        answers: &[String],
-        answer0: &str,
-        questions: &[String],
-        translit: bool,
-    ) -> Result<SmartLockData, Box<dyn std::error::Error>> {
-        // Randomly select an answer index (not the first one)
-        // answers vector contains answers for questions 2, 3, etc.
-        // So we pick a random index from 1 to answers.len() (inclusive)
-        if answers.is_empty() {
-            return Err("Need at least 2 questions for Smart Lock".into());
-        }
-
-        let mut rng = rand::rng();
-        // index 1 corresponds to answers[0], index 2 to answers[1], etc.
-        let key_answer_index = rng.random_range(1..=answers.len());
-        let key_answer = Zeroizing::new(
-            answers
-                .get(key_answer_index - 1)
-                .cloned()
-                .unwrap_or_default(),
-        );
-
-        if key_answer.is_empty() {
-            return Err("Selected answer is empty".into());
-        }
-        // Get the question text for display on the Smart Lock screen
-        let key_question = questions
-            .get(key_answer_index - 1)
-            .cloned()
-            .unwrap_or_else(|| format!("Question {}", key_answer_index + 1));
-
-        let salt = generate_bytes(16);
-        // One IV per ciphertext — see `SmartLockData::iv_answer0`.
-        let iv_answer0 = generate_bytes(16);
-        let iv_answers = generate_bytes(16);
-
-        // Derive encryption key from the selected answer using PBKDF2
-        let normalized_answer = Zeroizing::new(normalize_answer(&key_answer, translit));
-        let salt_b64 = encode_base64(&salt);
-        let hashed_answer = Zeroizing::new(sha256(&normalized_answer, &salt_b64));
-        // Derive the key into a self-zeroizing array (a plain `try_into` would
-        // free the PBKDF2 `Vec` without wiping it).
-        let key = Zeroizing::new(calc_pbkdf2(&hashed_answer, &salt, SMART_LOCK_ITERATIONS)?);
-        if key.len() != 32 {
-            return Err("Invalid key length".into());
-        }
-        let mut key_array = Zeroizing::new([0u8; 32]);
-        key_array.copy_from_slice(&key);
-        let iv0_array: [u8; 16] = iv_answer0
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid IV length")?;
-        let iv1_array: [u8; 16] = iv_answers
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid IV length")?;
-
-        // Serialize answer0 and encrypt
-        let encrypted_answer0 = encrypt_with_aes(answer0.as_bytes(), &key_array, &iv0_array)?;
-
-        // Serialize all other answers (excluding the key answer) and encrypt
-        // We store all answers but the decryption will know which one was the key
-        let answers_json = Zeroizing::new(serde_json::to_string(answers)?);
-        let encrypted_answers = encrypt_with_aes(answers_json.as_bytes(), &key_array, &iv1_array)?;
-
-        Ok(SmartLockData {
-            key_answer_index,
-            key_question,
-            encrypted_answer0,
-            encrypted_answers,
-            salt,
-            iv_answer0,
-            iv_answers,
-            last_activity: Instant::now(),
-        })
-    }
-
-    /// Decrypt Smart Lock data using the provided answer (2M-iteration PBKDF2).
-    /// Returns the decrypted answer0 and answers vector.
-    pub fn decrypt_smart_lock_data(
-        smart_lock_data: &SmartLockData,
-        answer: &str,
-        translit: bool,
-    ) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
-        // Derive decryption key from the provided answer
-        let normalized_answer = Zeroizing::new(normalize_answer(answer, translit));
-        let salt_b64 = encode_base64(&smart_lock_data.salt);
-        let hashed_answer = Zeroizing::new(sha256(&normalized_answer, &salt_b64));
-        // Derive the key into a self-zeroizing array (a plain `try_into` would
-        // free the PBKDF2 `Vec` without wiping it).
-        let key = Zeroizing::new(calc_pbkdf2(
-            &hashed_answer,
-            &smart_lock_data.salt,
-            SMART_LOCK_ITERATIONS,
-        )?);
-        if key.len() != 32 {
-            return Err("Invalid key length".into());
-        }
-        let mut key_array = Zeroizing::new([0u8; 32]);
-        key_array.copy_from_slice(&key);
-        let iv0_array: [u8; 16] = smart_lock_data
-            .iv_answer0
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid IV length")?;
-        let iv1_array: [u8; 16] = smart_lock_data
-            .iv_answers
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid IV length")?;
-
-        // Decrypt answer0 (returned to the caller, which wipes it on lock)
-        let answer0_bytes =
-            decrypt_with_aes(&smart_lock_data.encrypted_answer0, &key_array, &iv0_array)?;
-        let answer0 = String::from_utf8(answer0_bytes)?;
-
-        // Decrypt answers
-        let answers_bytes =
-            decrypt_with_aes(&smart_lock_data.encrypted_answers, &key_array, &iv1_array)?;
-        // `from_utf8` reuses the decrypted buffer (no copy); wipe the plaintext JSON on drop.
-        let answers_json = Zeroizing::new(String::from_utf8(answers_bytes)?);
-        let answers: Vec<String> = serde_json::from_str(&answers_json)?;
-
-        Ok((answer0, answers))
-    }
-
-    /// Wipe all decrypted secret material from memory. Used by the lock paths.
-    pub fn zeroize_secrets(&mut self) {
-        self.answer0.zeroize();
-        self.answers.zeroize();
-        self.entries.zeroize();
-        // Dropping the `MasterSecret` wipes it. The next unlock recovers the
-        // same key from the file, so nothing is lost by not keeping it here —
-        // and a locked session must not hold the key to its own data.
-        self.master = None;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use askrypt::LocalFileStorage;
-
-    fn entry(name: &str) -> SecretEntry {
-        SecretEntry {
-            name: name.to_string(),
-            user_name: "testingaccount".to_string(),
-            secret: "hunter2".to_string(),
-            url: "https://example.com".to_string(),
-            notes: String::new(),
-            entry_type: "Login".to_string(),
-            tags: vec!["work".to_string()],
-            created: 1_581_428_873,
-            modified: 1_581_428_873,
-            hidden: false,
-            card: Default::default(),
-        }
-    }
-
-    /// The whole save path, end to end: what the UI collects, re-encrypted and
-    /// written, then read back through the layered unlock the way opening it
-    /// again would. A low iteration count keeps it fast; the KDF itself is
-    /// `core`'s to test.
-    #[test]
-    fn a_written_vault_reads_back_through_the_layered_unlock() {
-        let path = std::env::temp_dir().join(format!(
-            "askrypt-roundtrip-{}.askrypt",
-            std::process::id()
-        ));
-        let storage: Arc<dyn VaultStorage> = Arc::new(LocalFileStorage::new(path.clone()));
-        let location = VaultLocation::LocalFile(path.clone());
-
-        let request = SaveRequest {
-            questions: vec!["First pet?".to_string(), "First street?".to_string()],
-            answers: vec!["Rex".to_string(), "Baker Street".to_string()],
-            entries: vec![entry("GitHub")],
-            iterations: 1_000,
-            translit: false,
-            // A vault that has never been written: `write_vault` mints its key.
-            master: None,
-        };
-
-        let handle = write_vault(request, location.clone(), Arc::clone(&storage))
-            .expect("the vault should be written");
-        assert_eq!(handle.location, location);
-
-        // Saving stamps the vault unencrypted, which is what the locked screens
-        // read to say when it was last written and from where.
-        assert!(handle.file.params.updated_at.is_some());
-
-        let reopened = storage.load_vault().expect("the vault should load");
-        assert_eq!(reopened.question0, "First pet?");
-
-        let questions_data = reopened
-            .get_questions_data("Rex".to_string())
-            .expect("the first answer should decrypt the question list");
-        assert_eq!(questions_data.questions, vec!["First street?".to_string()]);
-
-        let entries = reopened
-            .decrypt(&questions_data, vec!["Baker Street".to_string()])
-            .expect("the remaining answers should decrypt the entries");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "GitHub");
-        assert_eq!(entries[0].secret, "hunter2");
-        // `created` is carried across a save; only `modified` is ever restamped.
-        assert_eq!(entries[0].created, 1_581_428_873);
-
-        // A wrong first answer is not reported — it simply fails to decrypt.
-        assert!(reopened.get_questions_data("Fido".to_string()).is_err());
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    /// The first write of a brand-new vault mints the master key and hands it
-    /// back, and every write after that re-wraps that same key. Without the
-    /// hand-back, a new vault would mint a second key on its second save and
-    /// orphan anything encrypted under the first.
-    #[test]
-    fn a_new_vault_keeps_the_key_its_first_write_minted() {
-        let path =
-            std::env::temp_dir().join(format!("askrypt-master-{}.askrypt", std::process::id()));
-        let storage: Arc<dyn VaultStorage> = Arc::new(LocalFileStorage::new(path.clone()));
-        let location = VaultLocation::LocalFile(path.clone());
-
-        let request = SaveRequest {
-            questions: vec!["First pet?".to_string(), "First street?".to_string()],
-            answers: vec!["Rex".to_string(), "Baker Street".to_string()],
-            entries: vec![entry("GitHub")],
-            iterations: 1_000,
-            translit: false,
-            master: None,
-        };
-        let first = write_vault(request, location.clone(), Arc::clone(&storage))
-            .expect("the vault should be written");
-        let minted = first.master.expect("a first write mints a key");
-
-        // What `Session::apply_saved` then `Session::save_request` would carry.
-        let request = SaveRequest {
-            questions: vec!["First pet?".to_string(), "First street?".to_string()],
-            answers: vec!["Rex".to_string(), "Baker Street".to_string()],
-            entries: vec![entry("GitHub"), entry("GitLab")],
-            iterations: 1_000,
-            translit: false,
-            master: Some(minted.clone()),
-        };
-        let second = write_vault(request, location, Arc::clone(&storage))
-            .expect("the vault should be written again");
-        assert_eq!(second.master.as_ref(), Some(&minted));
-
-        // And the key really is the one the file on disk is keyed on.
-        let reopened = storage.load_vault().expect("the vault should load");
-        let questions_data = reopened.get_questions_data("Rex".to_string()).unwrap();
-        let (entries, on_disk) = reopened
-            .decrypt_with_master(&questions_data, vec!["Baker Street".to_string()])
-            .expect("the remaining answers should decrypt the entries");
-        assert_eq!(on_disk, minted);
-        assert_eq!(entries.len(), 2);
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    /// Answers are normalized before they reach the KDF, so the same answer
-    /// typed differently still opens the vault.
-    #[test]
-    fn answers_are_normalized_the_same_way_on_both_sides() {
-        let path = std::env::temp_dir().join(format!(
-            "askrypt-normalize-{}.askrypt",
-            std::process::id()
-        ));
-        let storage: Arc<dyn VaultStorage> = Arc::new(LocalFileStorage::new(path.clone()));
-
-        let request = SaveRequest {
-            questions: vec!["First pet?".to_string(), "First street?".to_string()],
-            answers: vec!["Rex".to_string(), "Baker-Street".to_string()],
-            entries: vec![entry("GitHub")],
-            iterations: 1_000,
-            translit: false,
-            // A vault that has never been written: `write_vault` mints its key.
-            master: None,
-        };
-        write_vault(
-            request,
-            VaultLocation::LocalFile(path.clone()),
-            Arc::clone(&storage),
-        )
-        .expect("the vault should be written");
-
-        let reopened = storage.load_vault().expect("the vault should load");
-        let questions_data = reopened
-            .get_questions_data("  rEx ".to_string())
-            .expect("case and spacing should not matter");
-        assert!(
-            reopened
-                .decrypt(&questions_data, vec!["baker street".to_string()])
-                .is_ok(),
-            "dashes and case should not matter"
-        );
-
-        std::fs::remove_file(&path).ok();
     }
 }

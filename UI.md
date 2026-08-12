@@ -47,10 +47,11 @@ container — the panes are full-bleed.
 | File | Holds |
 |---|---|
 | `main.rs` | `App`, `Section`, `Pane`, `Message`/`VaultMsg`/`GlobalMsg`, `PendingAction`, the `visible()`/`reconcile_selection()` filter pair, `default_pane()`/`effective_pane()`, the subscription, the tray and keyboard handling, and the root layout |
-| `session.rs` | `Session` — all shared state and every lifecycle transition — plus `SmartLockData`, `VaultError`, `SaveRequest`/`VaultHandle` and `write_vault` |
+| `manager.rs` | `Vault<S>` — the vault as a typestate — its four states, the `VaultState` enum that holds one, the worker-input/result types, `SaveRequest`/`OpenedVault`/`SavedVault` and `write_vault` |
+| `smartlock.rs` | the 2M-iteration `create`/`recover` pair over `manager::SmartLocked` |
+| `session.rs` | `Session` — the shell's own shared state (settings, tray, messages, spinner, sign-in) around one `vault: VaultState` — plus `VaultError` |
 | `settings.rs` | `VaultLocation`, `ServerSession`, `AppSettings`, `ThemeChoice`, `LockTimeout`, `WindowState` — the on-disk shapes |
 | `tray.rs` | `AppTray`/`TrayEvent`, polled from the subscription |
-| `vault.rs` | `Status` — derived from `Session`, **and** the button-visibility rules |
 | `theme.rs` | the styled-widget helpers plus pane styles, the spinner and layout constants |
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf` |
 | `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, the write stamp, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
@@ -91,25 +92,35 @@ Rules that are easy to undo by accident:
 
 ## 2. The vault lifecycle
 
-There is no `VaultState` field. `vault::Status::of(&Session)` *derives* the
-state from four session fields, so the rail's buttons and the pane router can
-never disagree about which state the app is in.
+The vault is a **typestate**, `manager::Vault<S>`, and the state carries its own
+data — so a locked vault does not have a master key field that happens to be
+`None`, it has no master key field at all. `Session` holds one
+`vault: VaultState`, the enum that lets a typestate live in a struct field and
+that the rail's buttons and the pane router both ask about directly.
 
-| State | `file` / `questions_data` / `unlocked` / `smart_lock_data` | Pane |
-|---|---|---|
-| `NoVault` | none / none / false / none | `Wizard` |
-| `Locked` | **some** / none / false / none | `Unlock` |
-| `PartiallyUnlocked` | some / **some** / false / none | `Unlock` |
-| `Unlocked` | some / some / **true** / none | `Items` |
-| `SmartLocked` | some / none / false / **some** | `Unlock` |
+| `VaultState` | State struct | What it holds | Pane |
+|---|---|---|---|
+| `None` | — | — | `Wizard` |
+| `Locked` | `Locked` | — | `Unlock` |
+| `Partial` | `PartiallyUnlocked` | `answer0`, `questions_data` | `Unlock` |
+| `Unlocked` | `Unlocked` | `answer0`, `answers`, `questions_data`, `entries`, `master`, `modified`, `smart_lock_deadline` | `Items` |
+| `Smart` | `SmartLocked` | `key_answer_index`, `key_question`, `encrypted_answer0`, `encrypted_answers`, `salt`, `iv_answer0`, `iv_answers`, `armed_at` | `Unlock` |
 
-`unlocked` is checked first, so a session restored from Smart Lock — which keeps
-`smart_lock_data` and slides its 8-hour clock — reads as `Unlocked`.
+Every state also carries `file` (the ciphertext, never absent while a vault is
+open) and `home: Option<VaultHome>` — the location **and** the live backend as
+one value, so the pair cannot be half-set and a `ServerStorage`'s ETag cannot be
+lost. `home: None` is exactly "never written anywhere", which is what makes a
+vault composed in the questions editor land in `Unlocked` with its first Save
+becoming a Save As.
 
-There is a sixth, transient shape the model folds away: *composing* a new vault
-in the questions editor, where `file` is still `None`. It collapses into
-`Unlocked` with `location: None`, which is exactly what makes its first Save a
-Save As.
+There used to be a second enum, `vault::Status`, re-derived from the session's
+loose fields and carrying exactly these five values — a copy of this enum's
+discriminant kept in step by hand. Its rules moved onto `VaultState` and it is
+gone, so "which state are we in" is one `match` the compiler checks rather than
+an ordered ladder of `Option` tests. There is no longer an
+`unlocked && smart_lock_data.is_some()` overlap to disambiguate either:
+reopening from Smart Lock consumes the bundle and carries only its 8-hour
+deadline into `Unlocked`.
 
 `PartiallyUnlocked` is **not a UI step** — it is a property of the vault format.
 The first answer decrypts only the *question list*
@@ -120,22 +131,27 @@ and that failure is the signal.
 
 ### Transitions
 
-Every one is a `Session` method (`src/session.rs`), started from `App::perform`
-or a pane.
+Every derivation is 600,000 PBKDF2 iterations (2,000,000 for Smart Lock), so
+none of them runs on the main thread. Each transition is a **triple**: a method
+on the current state producing owned, `Send` inputs; that struct's `run` on a
+worker, which converts core's non-`Send` `Box<dyn Error>` into a `String` or a
+`VaultError`; and a `self`-consuming apply on `Vault`, called from the
+completion message. The answers never ride in a message — the pane already holds
+what the user typed and hands it to the apply.
 
 | Transition | Path |
 |---|---|
-| create a new vault → `Unlocked`, no location | `close_vault()` → `panes::questions` → `Built` |
-| open a local file → `Locked` | wizard `Browse…`/recent → `open_location` → `open_vault()` |
-| open from the server → `Locked` | wizard server step → `download` → `open_vault()` |
+| create a new vault → `Unlocked`, no home | `close_vault()` → `panes::questions` → `RekeyInputs::run` → `adopt_built()` |
+| open a local file → `Locked` | wizard `Browse…`/recent → `open_location` → `OpenedVault` → `vault.open()` |
+| open from the server → `Locked` | wizard server step → `download` → `OpenedVault` → `vault.open()` |
 | sign in to a server | `link::Msg::Start` → browser → poll → `session.sign_in` |
 | auto-open at startup | `App::boot` (argv, else `settings.last_opened_file`) |
-| answer 0 → `PartiallyUnlocked` | `panes::unlock::start_first_answer` |
-| all answers → `Unlocked` | `panes::unlock::start_full_unlock` → `apply_unlock()` |
-| `Unlocked` → `Locked` ("Lock") | `guard(Lock)` → `lock()` |
-| `Unlocked` → `SmartLocked` | `guard(SmartLock)` → `start_smart_lock` → `apply_smart_lock()` |
-| `SmartLocked` → `Unlocked` | `panes::unlock::start_smart_unlock` → `apply_smart_unlock()` |
-| `SmartLocked` → `Locked` ("Full Lock") | `guard(Lock)` → `lock()` (clears `smart_lock_data`) |
+| answer 0 → `PartiallyUnlocked` | `start_first_answer` → `RevealInputs::run` → `apply_reveal()` |
+| all answers → `Unlocked` | `start_full_unlock` → `UnlockInputs::run` → `apply_unlock()` |
+| `Unlocked` → `Locked` ("Lock") | `guard(Lock)` → `vault.lock()` |
+| `Unlocked` → `SmartLocked` | `guard(SmartLock)` → `SmartLockInputs::run` → `apply_smart_lock()` |
+| `SmartLocked` → `Unlocked` | `start_smart_unlock` → `SmartUnlockInputs::run` → `apply_smart_unlock()` |
+| `SmartLocked` → `Locked` ("Full Lock") | `guard(Lock)` → `vault.lock()` (drops the bundle) |
 | anything → `NoVault` ("Close Vault") | `guard(CloseVault)` → `close_vault()` → the wizard, armed |
 | idle → `SmartLocked`; 8 h → `Locked` | `auto_smart_lock` / `smart_lock_timed_out`, from `InactivityTick` |
 | save | `save_now()` → `write_vault` on a worker → `apply_saved()` |
@@ -144,8 +160,10 @@ or a pane.
 Three lock *depths*, all kept: **Smart Lock** (one answer to return), **Lock**
 (all answers), **Close** (must re-open the file first).
 
-`zeroize_secrets` wipes exactly `answer0`, `answers` and `entries`. It
-deliberately **keeps** `file`, `location`, `storage` and `question0` — which is
+**Locking is dropping the state.** `Zeroizing` answers plus core's
+`ZeroizeOnDrop` on `QuestionsData`, `SecretEntry` and `MasterSecret` mean
+`pm.lock()` wipes everything the state held; there is no `zeroize_secrets` to
+call and nothing to forget. `file` and `home` cross to the new state, which is
 why a locked vault can still show its path, its first question and its write
 stamp without touching the disk.
 
@@ -161,7 +179,7 @@ Yes/No dialog) and then goes through `guard(PendingAction::Exit)` like the
 window close does. The tray's Quit takes the same confirmed path; a *modified*
 vault skips the extra question, because the unsaved-changes dialog it gets
 instead is already a confirmation. Each action is **hidden** rather than
-disabled when the state does not allow it. The predicates are on `vault::Status`; `panes/sidebar.rs`
+disabled when the state does not allow it. The predicates are on `VaultState`; `panes/sidebar.rs`
 only asks.
 
 | Button | Shown in | Predicate |
@@ -223,7 +241,7 @@ Its footer follows the same hide-rather-than-disable rule as the rail: **Cancel
 appears only when there is somewhere to cancel to.** It dismisses the pane to
 `App::default_pane`, which *is* the wizard while the status is `NoVault`, so
 with no vault open the button would re-arm the pane already on screen. The test
-is `vault::Status::can_cancel_wizard`, next to the rail's predicates; Back
+is `VaultState::can_cancel_wizard`, next to the rail's predicates; Back
 already covers stepping out of a source, and when neither applies the footer
 renders nothing at all rather than an empty row.
 
@@ -308,15 +326,23 @@ only case `confirm()` acts on.
 
 ## 4. Invariants, and where they are enforced
 
-1. **`location` and `storage` are set together, and the storage instance lives
-   as long as the open vault.** A `ServerStorage` records the ETag it saw when
+0. **A state's data lives in the state.** Most of the invariants below used to
+   be prose about which loose `Option`s had to agree; they are now the shape of
+   `manager::Vault<S>`. A method exists only where it is legal —
+   `save_request` is on `Vault<Unlocked>` and nowhere else — and
+   dropping a state wipes it. The states and the worker-result types must
+   **not** derive `ZeroizeOnDrop`: it implies `Drop`, and a type with `Drop`
+   cannot be destructured (E0509), which is exactly what `with_state` and every
+   transition do. Compose the wiping from the leaves instead, as `core` does
+   for `CardFields`.
+1. **A vault's location and its storage instance are one value, and it lives as
+   long as the open vault.** A `ServerStorage` records the ETag it saw when
    it *read*, and sends it as `If-Match` when it writes; rebuilding the backend
    before each save re-resolves whatever ETag the server holds *now* and
    silently overwrites another device's edit.
-   → `Session::set_vault_location` is the only way to set either;
-   `Session::save_target()` hands back the pair; `wizard::load_task` carries the
-   instance that performed the read inside a `VaultHandle`, never a description
-   of it.
+   → `manager::VaultHome` pairs them, so there is no half-set combination to
+   get wrong; `wizard::load_task` puts the instance that performed the read
+   inside an `OpenedVault`, never a description of it.
 2. **`VaultLocation::LocalFile` must stay the first variant** of the `untagged`
    enum or existing `settings.json` files — which store a plain path string —
    stop parsing. → `settings.rs`, guarded by
@@ -344,17 +370,23 @@ only case `confirm()` acts on.
    task in the crate without a spinner.
 5. **Every PBKDF2 path and every vault read or write runs off the main thread**
    — `Task::perform` + `tokio::task::spawn_blocking`, behind
-   `theme::spinner_row`, with `Session::busy` guarding re-entry. → saving is
-   split across the seam: `save_request()` collects on the main thread,
-   `write_vault` works, `apply_saved()` mutates.
+   `theme::spinner_row`, with `Session::busy` guarding re-entry. → every
+   transition is split across that seam as an inputs/`run`/apply triple; see
+   §2. **A transition is applied only from the success arm**, so a wrong answer
+   leaves the vault exactly where it was and never stores what was typed — and
+   an apply that arrives in the wrong state (the vault was closed or locked
+   while the worker ran) returns `false` and drops the stale result rather than
+   installing it.
 6. **Lock, Smart Lock, New, Open and Exit must prompt about unsaved changes**,
    and Cancel aborts. → `App::guard`, which routes "Yes" through an async save
    and replays the queued `PendingAction` from `after_save` once it lands.
-   Smart Lock belongs on that list because `apply_smart_lock` zeroizes the
-   entries — an ungated one loses unsaved edits silently.
+   Smart Lock belongs on that list because arming it drops the `Unlocked`
+   state, entries and all — an ungated one loses unsaved edits silently. The
+   dirty flag lives *in* that state (`VaultState::is_modified()` is false in every
+   other one), so it cannot survive the edits it describes.
 7. **Pane state that holds secrets wipes on drop.** → `Drop` impls on
    `unlock::State` (answers), `questions::State` (answers), `passgen::State`
-   (the generated password) and `session::SaveRequest`; the editor's draft is
+   (the generated password) and `manager::SaveRequest`; the editor's draft is
    wiped by `SecretEntry`'s own `ZeroizeOnDrop` — **except the notes**, which
    are a multi-line `text_editor` and live in cosmic-text's own buffer until
    `entry_editor::save` folds them back into the entry. `wizard::State` needs none —
@@ -368,16 +400,16 @@ only case `confirm()` acts on.
 9. **A vault's master key is minted once and never rotated.** It is a property
    of the *vault*, not of a write, and it is what the coming file attachments
    will be encrypted under — rotating it per save would mean re-encrypting all
-   of them each time. → `Session.master`, filled by `apply_unlock` /
-   `apply_smart_unlock` (from `AskryptFile::decrypt_with_master`) or by
-   `questions::build`, carried in `SaveRequest.master` and handed to
-   `AskryptFile::create`. `write_vault` mints one *only* when the request has
-   none — a vault that has never been written — and returns it on the
-   `VaultHandle` so `apply_saved` can adopt it; without that hand-back, a new
-   vault's second save would mint a second key. Cleared by `zeroize_secrets`,
-   which is what every lock and close path goes through. Guarded by
-   `a_new_vault_keeps_the_key_its_first_write_minted`. What is *not* preserved:
-   the salts and the `data` IV rotate on every write, and the IV must — see
+   of them each time. → `Unlocked.master`, which is **not** an `Option`: every
+   path into that state has a key, from `AskryptFile::decrypt_with_master` or
+   from the one place in the app that mints one, `RekeyInputs::run`. It is
+   carried in `SaveRequest.master` and handed to `AskryptFile::create`, so the
+   save path has no mint-on-write branch at all — and because a *write* returns
+   a `SavedVault` while an *open* returns an `OpenedVault`, there is no single
+   handle type whose `master: None` could be mistaken for "the key is gone".
+   Guarded by `saving_preserves_the_master_key` and
+   `changing_the_questions_keeps_the_master_key`. What is *not* preserved: the
+   salts and the `data` IV rotate on every write, and the IV must — see
    `SPEC.md`, "Master key lifetime".
 10. **`settings.window` holds the geometry the window *unmaximizes* back to**,
    never the maximized box, or a window maximized at exit would come back

@@ -10,11 +10,11 @@
 //! authoritative question list — all on a worker thread. A failure there leaves
 //! the session untouched rather than proceeding as though it had worked.
 
-use askrypt::{AskryptFile, MasterSecret, QuestionsData, SecretEntry};
 use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Task, alignment::Vertical};
 use zeroize::Zeroize;
 
+use crate::manager::{Built, RekeyInputs};
 use crate::panes::Action;
 use crate::session::{DEFAULT_ITERATIONS, Session};
 use crate::{App, Message, Pane, icon, theme};
@@ -48,16 +48,17 @@ impl State {
         self.answers = vec![String::new(), String::new()];
     }
 
-    /// Edit the questions of the vault that is currently open.
+    /// Edit the questions of the vault that is currently open. Only an unlocked
+    /// vault has the answers this pane prefills with, and only an unlocked one
+    /// can be re-keyed.
     pub fn begin_edit(&mut self, session: &Session) {
         self.reset();
 
-        let mut questions = vec![session.question0.clone()];
-        if let Some(data) = &session.questions_data {
-            questions.extend(data.questions.clone());
-        }
-        let mut answers = vec![session.answer0.clone()];
-        answers.extend(session.answers.clone());
+        let Some(vault) = session.vault.unlocked() else {
+            return;
+        };
+        let mut questions = vault.questions();
+        let mut answers = vault.answers();
 
         // Guarantee at least one row so the pane is never empty.
         if questions.is_empty() {
@@ -68,7 +69,7 @@ impl State {
 
         self.questions = questions;
         self.answers = answers;
-        self.translit = session.file.as_ref().is_some_and(|f| f.params.translit);
+        self.translit = vault.translit();
     }
 
     pub fn reset(&mut self) {
@@ -80,20 +81,6 @@ impl State {
         self.error = None;
         self.creating = false;
     }
-}
-
-/// Everything a successful build produced, applied to the session in one go.
-#[derive(Debug, Clone)]
-pub struct Built {
-    pub file: AskryptFile,
-    pub questions_data: QuestionsData,
-    pub question0: String,
-    pub answer0: String,
-    pub answers: Vec<String>,
-    /// The master key the built file is keyed on: the open vault's own when the
-    /// questions were merely changed, a fresh one when this call created the
-    /// vault.
-    pub master: MasterSecret,
 }
 
 #[derive(Debug, Clone)]
@@ -168,15 +155,12 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
             session.finish_work();
             match *result {
                 Ok(built) => {
-                    session.question0 = built.question0;
-                    session.answer0 = built.answer0;
-                    session.answers = built.answers;
-                    session.master = Some(built.master);
-                    session.questions_data = Some(built.questions_data);
-                    session.file = Some(built.file);
-                    session.unlocked = true;
-                    session.is_modified = true;
-                    session.smart_lock_data = None;
+                    // One call, rather than nine field writes that had to agree
+                    // with each other: the built vault lands unlocked, dirty,
+                    // and at the home of the vault it replaces (none, for a
+                    // vault this run brought into existence).
+                    session.vault.adopt_built(built);
+                    session.update_user_activity();
                     state.reset();
                     session.success_message =
                         Some("Questions set — save the vault to keep them".into());
@@ -212,74 +196,32 @@ fn save(state: &mut State, session: &mut Session) -> Action {
         return Action::None;
     }
 
-    let questions = state.questions.clone();
-    let answers = state.answers.clone();
-    let entries: Vec<SecretEntry> = session.entries.clone();
-    let translit = state.translit;
-    let iterations = session
-        .file
-        .as_ref()
-        .map(|f| f.params.iterations)
-        .unwrap_or(DEFAULT_ITERATIONS);
-    // Changing the answers re-wraps the *existing* master key rather than
-    // rotating it — that is what the master-key indirection is for, and it is
-    // what keeps blobs encrypted under it readable. `None` only when this run
-    // is bringing a vault into existence.
-    let master = session.master.clone();
+    // An open vault contributes its entries, its work factor and — crucially —
+    // its master key: changing the answers re-wraps the *existing* key rather
+    // than rotating it, which is what keeps everything stored under it
+    // readable. All three are absent when this run is bringing a vault into
+    // existence, which is the one place in the app a key is minted.
+    let open = session.vault.unlocked();
+    let inputs = RekeyInputs {
+        questions: state.questions.clone(),
+        answers: state.answers.clone(),
+        entries: open
+            .map(|vault| vault.entries().to_vec())
+            .unwrap_or_default(),
+        iterations: open.map_or(DEFAULT_ITERATIONS, |vault| vault.iterations()),
+        translit: state.translit,
+        master: open.map(|vault| vault.master().clone()),
+    };
 
     session.begin_work("Encrypting…");
     Action::Run(Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || {
-                build(questions, answers, entries, iterations, translit, master)
-            })
-            .await
-            .expect("build vault task panicked")
+            tokio::task::spawn_blocking(move || inputs.run())
+                .await
+                .expect("build vault task panicked")
         },
         |result| Message::Questions(Msg::Built(Box::new(result))),
     ))
-}
-
-/// Worker-thread only: three key derivations.
-///
-/// The question list is read back out of the freshly built file rather than
-/// assembled by hand, so the session's `QuestionsData` — salt included — is
-/// exactly the one the file carries.
-fn build(
-    questions: Vec<String>,
-    answers: Vec<String>,
-    entries: Vec<SecretEntry>,
-    iterations: u32,
-    translit: bool,
-    master: Option<MasterSecret>,
-) -> Result<Built, String> {
-    // Minted here rather than left to `create`, so the session can adopt the
-    // very key this file was built with.
-    let master = master.unwrap_or_else(MasterSecret::generate);
-
-    let file = AskryptFile::create(
-        questions.clone(),
-        answers.clone(),
-        entries,
-        Some(iterations),
-        translit,
-        Some(&master),
-    )
-    .map_err(|e| e.to_string())?;
-
-    let answer0 = answers.first().cloned().unwrap_or_default();
-    let questions_data = file
-        .get_questions_data(answer0.clone())
-        .map_err(|e| e.to_string())?;
-
-    Ok(Built {
-        question0: questions.first().cloned().unwrap_or_default(),
-        answer0,
-        answers: answers.into_iter().skip(1).collect(),
-        questions_data,
-        file,
-        master,
-    })
 }
 
 // ---------------------------------------------------------------------------

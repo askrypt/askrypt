@@ -16,12 +16,13 @@
 mod data;
 mod icon;
 mod link;
+mod manager;
 mod panes;
 mod session;
 mod settings;
+mod smartlock;
 mod theme;
 mod tray;
-mod vault;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -37,12 +38,12 @@ use iced::{
 };
 use iced::{time, window};
 
+use crate::manager::{OpenedVault, SavedVault, SmartLocked, VaultHome, VaultState};
 use crate::panes::Action;
 use crate::panes::wizard::Purpose;
-use crate::session::{Session, SmartLockData, VaultError, VaultHandle};
+use crate::session::{Session, VaultError};
 use crate::settings::{AppSettings, VaultLocation, WindowState};
 use crate::tray::TrayEvent;
-use crate::vault::Status;
 
 pub const SEARCH_INPUT_ID: &str = "GUI_SEARCH";
 
@@ -192,10 +193,10 @@ pub enum GlobalMsg {
     /// Confirms first, then falls through to [`GlobalMsg::ExitApp`].
     QuitRequested,
     ExitApp,
-    SmartLockCreated(Result<SmartLockData, String>),
-    /// Boxed: a `VaultHandle` carries the whole re-encrypted file and would
+    SmartLockCreated(Result<SmartLocked, String>),
+    /// Boxed: a `SavedVault` carries the whole re-encrypted file and would
     /// otherwise set the size of every `GlobalMsg` this app passes around.
-    Saved(Box<Result<VaultHandle, VaultError>>),
+    Saved(Box<Result<SavedVault, VaultError>>),
     /// The window moved or resized; ask whether it is maximized, since only
     /// then is the geometry the one worth remembering.
     ProbeWindow,
@@ -290,7 +291,10 @@ impl App {
                 .storage_for(&location)
                 .and_then(|storage| storage.load_vault().map(|file| (storage, file)))
             {
-                Ok((storage, file)) => app.session.open_vault(location, storage, file),
+                Ok((storage, file)) => app.session.vault.open(OpenedVault {
+                    file,
+                    home: VaultHome::new(location, storage),
+                }),
                 Err(e) => {
                     eprintln!("ERROR: Failed to open the last vault: {}", e);
                     app.session.error_message = Some("Failed to open vault".into());
@@ -302,7 +306,7 @@ impl App {
         if app.pane == Pane::Wizard {
             app.wizard.begin(Purpose::Open, &app.session);
         } else {
-            app.unlock.reset_for(&app.session);
+            app.unlock.reset_for(&app.session.vault);
         }
         let task = operation::focus(app.focus_for(app.pane));
 
@@ -321,7 +325,7 @@ impl App {
         let mut subs = vec![events, tray];
 
         // Watch for idleness only while there is something to lock.
-        if self.session.unlocked || self.session.smart_lock_data.is_some() {
+        if self.session.vault.can_lock() {
             subs.push(
                 time::every(Duration::from_secs(30))
                     .map(|_| Message::Global(GlobalMsg::InactivityTick)),
@@ -354,10 +358,6 @@ impl App {
         self.session.settings.theme.theme()
     }
 
-    fn status(&self) -> Status {
-        Status::of(&self.session)
-    }
-
     // -----------------------------------------------------------------------
     // The item list
     // -----------------------------------------------------------------------
@@ -370,7 +370,7 @@ impl App {
 
         let mut rows: Vec<(usize, &SecretEntry)> = self
             .session
-            .entries
+            .entries()
             .iter()
             .enumerate()
             .filter(|(_, entry)| match &self.section {
@@ -407,7 +407,7 @@ impl App {
     /// the Hidden section's types stay reachable from the rail.
     fn types(&self) -> Vec<String> {
         self.session
-            .entries
+            .entries()
             .iter()
             .map(|entry| entry.entry_type.clone())
             .filter(|t| !t.is_empty())
@@ -419,7 +419,7 @@ impl App {
     /// Union of all tags, likewise across hidden entries too.
     fn tags(&self) -> Vec<String> {
         self.session
-            .entries
+            .entries()
             .iter()
             .flat_map(|entry| entry.tags.iter().cloned())
             .filter(|t| !t.is_empty())
@@ -430,7 +430,7 @@ impl App {
 
     fn selected_entry(&self) -> Option<&SecretEntry> {
         self.selected
-            .and_then(|index| self.session.entries.get(index))
+            .and_then(|index| self.session.entries().get(index))
     }
 
     /// Whether the password generator has a draft to hand its result to.
@@ -444,9 +444,9 @@ impl App {
 
     /// Where the working area lands when nothing else is being done.
     fn default_pane(&self) -> Pane {
-        match self.status() {
-            Status::Unlocked => Pane::Items,
-            Status::NoVault => Pane::Wizard,
+        match self.session.vault {
+            VaultState::Unlocked(_) => Pane::Items,
+            VaultState::None => Pane::Wizard,
             _ => Pane::Unlock,
         }
     }
@@ -455,10 +455,10 @@ impl App {
     /// decrypted rows that should not exist, so a stale rail selection is
     /// corrected here rather than trusted.
     fn effective_pane(&self) -> Pane {
-        let status = self.status();
+        let vault = &self.session.vault;
         match self.pane {
-            Pane::Items if !status.is_unlocked() => self.default_pane(),
-            Pane::Unlock if !status.can_unlock() => self.default_pane(),
+            Pane::Items if !vault.is_unlocked() => self.default_pane(),
+            Pane::Unlock if !vault.can_unlock() => self.default_pane(),
             pane => pane,
         }
     }
@@ -507,7 +507,7 @@ impl App {
                 Action::Pane(pane)
             }
             Pane::Unlock => {
-                self.unlock.reset_for(&self.session);
+                self.unlock.reset_for(&self.session.vault);
                 Action::pane_run(pane, operation::focus(panes::unlock::focus_target()))
             }
             _ => Action::Pane(pane),
@@ -519,7 +519,7 @@ impl App {
         self.editor = None;
         self.questions.reset();
         self.passgen.forget();
-        self.unlock.reset_for(&self.session);
+        self.unlock.reset_for(&self.session.vault);
         self.query.clear();
         self.selected = None;
         self.revealed = false;
@@ -625,7 +625,7 @@ impl App {
                 self.editor = Some(panes::entry_editor::State::new());
                 Action::pane_run(Pane::Items, operation::focus_next())
             }
-            Message::EditEntry(index) => match self.session.entries.get(index) {
+            Message::EditEntry(index) => match self.session.entries().get(index) {
                 Some(entry) => {
                     self.editor = Some(panes::entry_editor::State::edit(entry.clone(), index));
                     self.selected = Some(index);
@@ -633,7 +633,7 @@ impl App {
                 }
                 None => Action::None,
             },
-            Message::DuplicateEntry(index) => match self.session.entries.get(index) {
+            Message::DuplicateEntry(index) => match self.session.entries().get(index) {
                 Some(entry) => {
                     self.editor = Some(panes::entry_editor::State::duplicate(entry.clone()));
                     Action::pane_run(Pane::Items, operation::focus_next())
@@ -708,9 +708,17 @@ impl App {
     }
 
     fn delete_entry(&mut self, index: usize) -> Action {
-        if index >= self.session.entries.len() {
+        // Only an unlocked vault has entries to delete — and the name is taken
+        // before the deletion, since the removed entry is dropped (and wiped)
+        // rather than handed back.
+        let Some(name) = self
+            .session
+            .entries()
+            .get(index)
+            .map(|entry| entry.name.clone())
+        else {
             return Action::None;
-        }
+        };
 
         // Deleting takes two presses: the first arms the button and the
         // second one commits.
@@ -721,14 +729,15 @@ impl App {
             return Action::None;
         }
 
-        let removed = self.session.entries.remove(index);
+        if let Some(vault) = self.session.vault.unlocked_mut() {
+            vault.remove_entry(index);
+        }
         self.pending_delete = None;
         self.editor = None;
-        self.session.is_modified = true;
         // Indices shift; the selection has to be re-derived, not adjusted.
         self.selected = None;
         self.reconcile_selection();
-        self.session.success_message = Some(format!("Deleted '{}'", removed.name));
+        self.session.success_message = Some(format!("Deleted '{}'", name));
         Action::None
     }
 
@@ -744,7 +753,7 @@ impl App {
             VaultMsg::Lock => self.guard(PendingAction::Lock),
             VaultMsg::SmartLock => self.guard(PendingAction::SmartLock),
             VaultMsg::Unlock => {
-                self.unlock.reset_for(&self.session);
+                self.unlock.reset_for(&self.session.vault);
                 Action::pane_run(
                     Pane::Unlock,
                     operation::focus(panes::unlock::focus_target()),
@@ -771,8 +780,13 @@ impl App {
     /// Save to the vault's existing home, or fall back to Save As when it has
     /// never been persisted.
     fn save_now(&mut self) -> Action {
-        match self.session.save_target() {
-            Some((location, storage)) => self.start_save(location, storage),
+        match self
+            .session
+            .vault
+            .unlocked()
+            .and_then(manager::Vault::save_target)
+        {
+            Some(home) => self.start_save_to(home),
             None => {
                 self.session.status_message =
                     Some("This vault has no home yet — choose where to save it".into());
@@ -784,22 +798,30 @@ impl App {
     /// Re-encrypt and write the vault on a worker thread. Two 600k-iteration key
     /// derivations plus (for a server vault) a round trip, so never inline.
     fn start_save(&mut self, location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Action {
+        self.start_save_to(VaultHome::new(location, storage))
+    }
+
+    fn start_save_to(&mut self, home: VaultHome) -> Action {
         if self.session.busy {
             return Action::None;
         }
-        let Some(request) = self.session.save_request() else {
-            self.session.error_message = Some("No vault loaded".into());
+        // Only an unlocked vault has the answers and the key a save needs, so
+        // there is no "nothing to save" case left to report.
+        let Some(request) = self
+            .session
+            .vault
+            .unlocked()
+            .map(manager::Vault::save_request)
+        else {
             return Action::None;
         };
 
         self.session.begin_work("Saving…");
         Action::Run(Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    session::write_vault(request, location, storage)
-                })
-                .await
-                .expect("save task panicked")
+                tokio::task::spawn_blocking(move || manager::write_vault(request, home))
+                    .await
+                    .expect("save task panicked")
             },
             |result| Message::Global(GlobalMsg::Saved(Box::new(result))),
         ))
@@ -822,7 +844,7 @@ impl App {
     /// Ask about unsaved changes before something that would discard them.
     /// Cancel aborts; Yes saves first and replays the action once the save lands.
     fn guard(&mut self, action: PendingAction) -> Action {
-        if !self.session.is_modified {
+        if !self.session.vault.is_modified() {
             return self.perform(action);
         }
 
@@ -862,8 +884,8 @@ impl App {
                 self.start_wizard(Purpose::Open)
             }
             PendingAction::Lock => {
-                let label = self.status().lock_label();
-                self.session.lock();
+                let label = self.session.vault.lock_label();
+                self.session.vault.lock();
                 self.clear_secret_panes();
                 self.session.status_message =
                     Some(format!("{label}ed — secrets wiped from memory"));
@@ -895,14 +917,19 @@ impl App {
     /// anywhere exists only in this process; locking it would destroy the only
     /// copy of the questions the user just typed.
     fn auto_smart_lock(&mut self) -> Action {
-        if !self.session.is_modified {
+        if !self.session.vault.is_modified() {
             return self.start_smart_lock();
         }
 
-        match self.session.save_target() {
-            Some((location, storage)) => {
+        match self
+            .session
+            .vault
+            .unlocked()
+            .and_then(manager::Vault::save_target)
+        {
+            Some(home) => {
                 self.after_save = Some(PendingAction::SmartLock);
-                self.start_save(location, storage)
+                self.start_save_to(home)
             }
             None => {
                 self.session.status_message = Some(
@@ -920,34 +947,23 @@ impl App {
         if self.session.busy {
             return Action::None;
         }
-        if self.session.answers.is_empty() {
+        let Some(vault) = self.session.vault.unlocked() else {
+            return Action::None;
+        };
+        // Smart Lock keys on an answer other than the first, so a one-question
+        // vault has nothing to key on.
+        if !vault.has_key_answer() {
             self.session.error_message = Some("Need at least 2 questions for Smart Lock".into());
             return Action::None;
         }
-
-        let answers = self.session.answers.clone();
-        let answer0 = self.session.answer0.clone();
-        let questions = self
-            .session
-            .questions_data
-            .as_ref()
-            .map(|q| q.questions.clone())
-            .unwrap_or_default();
-        let translit = self
-            .session
-            .file
-            .as_ref()
-            .is_some_and(|f| f.params.translit);
+        let inputs = vault.smart_lock_inputs();
 
         self.session.begin_work("Locking…");
         Action::Run(Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    Session::create_smart_lock_data(&answers, &answer0, &questions, translit)
-                        .map_err(|e| e.to_string())
-                })
-                .await
-                .expect("create_smart_lock_data task panicked")
+                tokio::task::spawn_blocking(move || inputs.run())
+                    .await
+                    .expect("create_smart_lock_data task panicked")
             },
             |result| Message::Global(GlobalMsg::SmartLockCreated(result)),
         ))
@@ -967,7 +983,7 @@ impl App {
                 if self.session.should_auto_smart_lock() {
                     self.auto_smart_lock()
                 } else if self.session.smart_lock_timed_out() {
-                    self.session.lock();
+                    self.session.vault.lock();
                     self.clear_secret_panes();
                     self.session.status_message =
                         Some("Smart Lock expired — the vault is fully locked".into());
@@ -994,7 +1010,7 @@ impl App {
             GlobalMsg::QuitRequested => {
                 // A modified vault gets the unsaved-changes dialog, which is a
                 // confirmation of its own; asking twice would be noise.
-                if self.session.is_modified || self.confirm_quit() {
+                if self.session.vault.is_modified() || self.confirm_quit() {
                     self.update_global(GlobalMsg::ExitApp)
                 } else {
                     Action::None
@@ -1005,7 +1021,7 @@ impl App {
                 self.session.finish_work();
                 match result {
                     Ok(data) => {
-                        self.session.apply_smart_lock(data);
+                        self.session.vault.apply_smart_lock(data);
                         self.clear_secret_panes();
                         self.session.status_message = Some("Vault is now Smart Locked".into());
                         Action::pane_run(
@@ -1024,7 +1040,9 @@ impl App {
                 self.session.finish_work();
                 match *result {
                     Ok(saved) => {
-                        self.session.apply_saved(saved);
+                        self.session.vault.apply_saved(saved);
+                        self.session.remember_vault();
+                        self.session.success_message = Some("Vault saved successfully".into());
                         if let Err(e) = self.session.settings.save() {
                             eprintln!("WARNING: Failed to save settings: {}", e);
                         }
@@ -1146,7 +1164,7 @@ impl App {
                 let on_items = self.effective_pane() == Pane::Items;
 
                 if modifiers.control() && key.as_ref() == keyboard::Key::Character("s") {
-                    if self.status().can_save() {
+                    if self.session.vault.can_save() {
                         self.session.clear_messages();
                         return self.save_now();
                     }

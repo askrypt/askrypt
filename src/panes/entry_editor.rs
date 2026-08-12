@@ -259,14 +259,21 @@ fn save(state: &mut State, session: &mut Session) -> (Action, bool) {
         .collect();
     entry.modified = chrono::Utc::now().timestamp();
 
+    // Only an unlocked vault has an item list to save into, and it is the one
+    // that marks itself modified — there is no separate flag to remember.
+    let Some(vault) = session.vault.unlocked_mut() else {
+        state.error = Some("The vault is not unlocked".to_string());
+        return (Action::None, false);
+    };
     match state.index {
         // A stale index means the list changed under the draft; append rather
         // than overwrite whatever moved into that slot.
-        Some(index) if index < session.entries.len() => session.entries[index] = entry,
-        _ => session.entries.push(entry),
+        Some(index) if index < vault.entries().len() => vault.update_entry(index, entry),
+        _ => {
+            vault.add_entry(entry);
+        }
     }
 
-    session.is_modified = true;
     session.success_message = Some(if state.is_new() {
         "Item added".to_string()
     } else {
@@ -386,7 +393,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
 
     // The vault is only written by an explicit Save; say so, since the item
     // itself looks saved the moment it appears in the list.
-    if session.is_modified {
+    if session.vault.is_modified() {
         body = body.push(
             text("Changes live in memory until the vault itself is saved.")
                 .size(11)
