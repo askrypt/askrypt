@@ -153,7 +153,19 @@ class AskryptFile {
   }
 
   /// Decrypt the entry list given the remaining answers (questions 2..n).
-  Future<List<SecretEntry>> decrypt(QuestionsData qd, List<String> answers) async {
+  Future<List<SecretEntry>> decrypt(QuestionsData qd, List<String> answers) async =>
+      (await decryptWithMaster(qd, answers)).entries;
+
+  /// Decrypt the entry list *and* hand back the vault's master key.
+  ///
+  /// This is the call anything that will save the vault again should make:
+  /// feeding the recovered key back into [create] re-wraps it instead of
+  /// rotating it, so blobs encrypted under it stay readable across the write.
+  /// The key falls out of the same derivation that opens the vault, so it costs
+  /// nothing over [decrypt] — mirrors `AskryptFile::decrypt_with_master` in
+  /// `core/src/lib.rs`.
+  Future<({List<SecretEntry> entries, Uint8List masterKey})> decryptWithMaster(
+      QuestionsData qd, List<String> answers) async {
     if (answers.isEmpty) {
       throw VaultException('at least 1 answer required');
     }
@@ -172,13 +184,27 @@ class AskryptFile {
 
     final dataJson = utf8.decode(aesCbcDecrypt(base64.decode(data), masterKey, iv));
     final list = jsonDecode(dataJson) as List<dynamic>;
-    return list
+    final entries = list
         .map((e) => SecretEntry.fromJson(e as Map<String, dynamic>))
         .toList();
+    return (entries: entries, masterKey: masterKey);
   }
 
   // --- creation (mirror of AskryptFile::create) ---
 
+  /// Build a vault file from questions, answers and entries.
+  ///
+  /// [masterKey] is the vault's existing 32-byte master key, recovered by
+  /// [decryptWithMaster]. Pass it on **every** save of an already-open vault —
+  /// including one that changes the questions — so that everything encrypted
+  /// under it survives the write; leave it null only for a vault that is coming
+  /// into existence. `salt0`, `salt1` and the data IV are always regenerated:
+  /// AES-CBC under a repeated key *and* IV would let anyone holding two versions
+  /// of a vault read off how long a prefix of the entry list went unchanged.
+  ///
+  /// Note for the [rng] seam: the draw order is salt0, salt1, master key, IV,
+  /// and supplying [masterKey] skips the third draw. The golden parity fixtures
+  /// pass [rng] without a [masterKey], so they are unaffected — keep it that way.
   static Future<AskryptFile> create({
     required List<String> questions,
     required List<String> answers,
@@ -187,6 +213,7 @@ class AskryptFile {
     bool translit = false,
     String? host,
     DateTime? updatedAt,
+    List<int>? masterKey,
     Random? rng,
   }) async {
     if (questions.length < 2) {
@@ -201,11 +228,17 @@ class AskryptFile {
       }
     }
 
+    if (masterKey != null && masterKey.length != 32) {
+      throw VaultException('master key must be 32 bytes');
+    }
+
     final norm = answers.map((a) => normalizeAnswer(a, translit)).toList();
     final r = rng ?? Random.secure();
     final salt0 = _randomBytes(16, r);
     final salt1 = _randomBytes(16, r);
-    final masterKey = _randomBytes(32, r);
+    // Only minted when the caller has no key to keep.
+    final key =
+        masterKey == null ? _randomBytes(32, r) : Uint8List.fromList(masterKey);
     final iv = _randomBytes(16, r);
     final salt0B64 = base64.encode(salt0);
 
@@ -218,13 +251,13 @@ class AskryptFile {
     // Layer 2: all remaining answers -> second-key -> encrypt master key+iv.
     final combined = norm.sublist(1).join();
     final secondKey = await pbkdf2(sha256Hex(combined, salt0B64), salt1, iterations);
-    final masterData = {'masterKey': base64.encode(masterKey), 'iv': base64.encode(iv)};
+    final masterData = {'masterKey': base64.encode(key), 'iv': base64.encode(iv)};
     final master =
         base64.encode(aesCbcEncrypt(_jsonBytes(masterData), secondKey, salt1));
 
     // Layer 3: master key+iv -> encrypt entry list.
     final dataJson = entries.map((e) => e.toJson()).toList();
-    final data = base64.encode(aesCbcEncrypt(_jsonBytes(dataJson), masterKey, iv));
+    final data = base64.encode(aesCbcEncrypt(_jsonBytes(dataJson), key, iv));
 
     return AskryptFile(
       version: _version,
@@ -241,6 +274,11 @@ class AskryptFile {
     );
   }
 }
+
+/// Mint a fresh 32-byte master key. Only a vault coming into existence should
+/// need one — mirrors `MasterSecret::generate` in `core/src/types.rs`.
+Uint8List generateMasterKey([Random? rng]) =>
+    _randomBytes(32, rng ?? Random.secure());
 
 /// Format [t] as RFC 3339 UTC with second precision — the `params.updated_at`
 /// shape written by `AskryptFile::touch` in `core/src/lib.rs`.

@@ -14,11 +14,18 @@ fn main() {
     let qd = file
         .get_questions_data(answers[0].clone())
         .expect("decrypt questions (wrong first answer?)");
-    let entries = file
-        .decrypt(&qd, answers[1..].to_vec())
+    let (entries, master) = file
+        .decrypt_with_master(&qd, answers[1..].to_vec())
         .expect("decrypt entries (wrong answers?)");
 
     println!("opened {path}: {} entries", entries.len());
+    // A fingerprint, never the key itself: it identifies the master key across
+    // saves and across clients — which is the point of the interop check — while
+    // keeping the live key off stdout and out of shell history.
+    println!(
+        "  master key fingerprint: {}",
+        &askrypt::sha256(&askrypt::encode_base64(master.as_bytes()), "")[..16]
+    );
     for e in &entries {
         println!(
             "  - name={:?} user={:?} secret={:?} tags={:?} hidden={}",

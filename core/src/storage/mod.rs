@@ -173,8 +173,9 @@ pub(crate) mod tests {
             hidden: false,
             card: Default::default(),
         }];
-        let file = AskryptFile::create(questions, answers, secrets.clone(), Some(6000), false)
-            .expect("failed to create vault");
+        let file =
+            AskryptFile::create(questions, answers, secrets.clone(), Some(6000), false, None)
+                .expect("failed to create vault");
         (file, secrets)
     }
 

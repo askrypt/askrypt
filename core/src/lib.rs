@@ -53,6 +53,7 @@
 //!     secrets.clone(),
 //!     Some(5000),
 //!     false,
+//!     None, // no existing master key: mint one
 //! ).unwrap();
 //!
 //! // Save to disk
@@ -122,6 +123,19 @@ impl AskryptFile {
     /// * `answers` - A vector of answers (same length as questions)
     /// * `secret_data` - A vector of SecretEntry items to encrypt
     /// * `iterations` - Optional iterations for first KDF (default: 600000)
+    /// * `master` - The vault's existing master key, or `None` to mint a fresh
+    ///   one. Pass `None` **only for a brand-new vault**: every save of an
+    ///   already-open vault must hand back the key
+    ///   [`decrypt_with_master`](Self::decrypt_with_master) recovered, so that
+    ///   blobs encrypted under it (the coming file attachments) survive the
+    ///   write. Changing the questions and answers is still a save in this
+    ///   sense — the answers re-wrap the same key, which is the whole point of
+    ///   the master-key indirection.
+    ///
+    /// `salt0`, `salt1` and the `data` IV are always regenerated, even when the
+    /// master key is kept. The IV especially: AES-CBC under a repeated key *and*
+    /// IV would let anyone holding two versions of a vault read off how long a
+    /// prefix of the entry list went unchanged.
     ///
     /// # Returns
     ///
@@ -158,7 +172,8 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers, data, Some(6000), false).unwrap();
+    /// let askrypt_file =
+    ///     AskryptFile::create(questions, answers, data, Some(6000), false, None).unwrap();
     /// ```
     pub fn create(
         questions: Vec<String>,
@@ -166,6 +181,7 @@ impl AskryptFile {
         secret_data: Vec<SecretEntry>,
         iterations: Option<u32>,
         translit: bool,
+        master: Option<&MasterSecret>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Validate inputs
         if questions.len() < 2 {
@@ -189,11 +205,12 @@ impl AskryptFile {
 
         let iterations = iterations.unwrap_or(600000);
 
-        // Step 1: Generate random values (the master key is secret)
-        let salt0 = generate_salt(16);
-        let salt1 = generate_salt(16);
-        let master_key_bytes = Zeroizing::new(generate_salt(32));
-        let iv_bytes = generate_salt(16);
+        // Step 1: Generate random values. The salts and the IV are always fresh;
+        // the master key is only minted when the caller has none to keep.
+        let salt0 = generate_bytes(16);
+        let salt1 = generate_bytes(16);
+        let master_key = master.cloned().unwrap_or_else(MasterSecret::generate);
+        let iv_bytes = generate_bytes(16);
 
         // Step 2: Derive first-key from first answer and salt0
         let salt0_b64 = encode_base64(&salt0);
@@ -220,19 +237,14 @@ impl AskryptFile {
 
         // Step 5: Encrypt master key and IV using second-key and salt1 as IV
         let master_data = MasterData {
-            master_key: encode_base64(&master_key_bytes),
+            master_key: encode_base64(master_key.as_bytes()),
             iv: encode_base64(&iv_bytes),
         };
         let master = encrypt_to_base64(&master_data, &second_key_array, &salt1_iv)?;
 
         // Step 6: Encrypt secret data using master key and IV
-        let mut master_key_array = Zeroizing::new([0u8; 32]);
-        if master_key_bytes.len() != 32 {
-            return Err("Invalid master key length".into());
-        }
-        master_key_array.copy_from_slice(&master_key_bytes);
         let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
-        let data = encrypt_to_base64(&secret_data, &master_key_array, &iv_array)?;
+        let data = encrypt_to_base64(&secret_data, master_key.as_bytes(), &iv_array)?;
 
         // Step 7: Create and return AskryptFile
         let mut file = AskryptFile {
@@ -250,8 +262,8 @@ impl AskryptFile {
             master,
             data,
         };
-        // Every write goes through `create` (the vault is re-encrypted from
-        // scratch on each save), so stamping here keeps the fields current.
+        // Every write goes through `create` (the vault's blobs are re-encrypted
+        // on each save), so stamping here keeps the fields current.
         file.touch();
         Ok(file)
     }
@@ -307,7 +319,9 @@ impl AskryptFile {
     ///     }
     /// ];
     ///
-    /// let askrypt_file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), false).unwrap();
+    /// let askrypt_file =
+    ///     AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), false, None)
+    ///         .unwrap();
     /// let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
     /// let decrypted_data = askrypt_file.decrypt(&questions_data, answers[1..].into()).unwrap();
     /// assert_eq!(decrypted_data, data);
@@ -317,6 +331,24 @@ impl AskryptFile {
         questions_data: &QuestionsData,
         answers: Vec<String>,
     ) -> Result<Vec<SecretEntry>, Box<dyn std::error::Error>> {
+        Ok(self.decrypt_with_master(questions_data, answers)?.0)
+    }
+
+    /// Decrypt an AskryptFile, handing back the vault's [`MasterSecret`] along
+    /// with the secret data.
+    ///
+    /// This is the call an app that intends to *save* the vault again should
+    /// make: feeding the recovered key back into
+    /// [`create`](Self::create) keeps every blob encrypted under it readable
+    /// across the write. The key falls out of the same derivation that opens the
+    /// vault, so this costs nothing over [`decrypt`](Self::decrypt) — asking for
+    /// the entries and the key separately would pay for the (expensive) second
+    /// KDF pass twice.
+    pub fn decrypt_with_master(
+        &self,
+        questions_data: &QuestionsData,
+        answers: Vec<String>,
+    ) -> Result<(Vec<SecretEntry>, MasterSecret), Box<dyn std::error::Error>> {
         // Validate inputs
         if answers.is_empty() {
             return Err("At least 1 answer is required".into());
@@ -349,18 +381,14 @@ impl AskryptFile {
         // Decode master key and IV
         let master_key_bytes = Zeroizing::new(decode_base64(&master_data.master_key)?);
         let iv_bytes = decode_base64(&master_data.iv)?;
-        let mut master_key_array = Zeroizing::new([0u8; 32]);
-        if master_key_bytes.len() != 32 {
-            return Err("Invalid master key length".into());
-        }
-        master_key_array.copy_from_slice(&master_key_bytes);
+        let master_key = MasterSecret::from_slice(&master_key_bytes)?;
         let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
 
         // Decrypt secret data using master key and IV
         let secret_data: Vec<SecretEntry> =
-            decrypt_from_base64(&self.data, &master_key_array, &iv_array)?;
+            decrypt_from_base64(&self.data, master_key.as_bytes(), &iv_array)?;
 
-        Ok(secret_data)
+        Ok((secret_data, master_key))
     }
 
     /// Get QuestionsData by first answer from the AskryptFile
@@ -800,7 +828,7 @@ pub fn decrypt_from_base64<T: for<'de> Deserialize<'de>>(
 /// # Returns
 ///
 /// A vector of random bytes
-pub fn generate_salt(length: usize) -> Vec<u8> {
+pub fn generate_bytes(length: usize) -> Vec<u8> {
     use rand::Rng;
     let mut salt = vec![0u8; length];
     rand::rng().fill_bytes(&mut salt);
@@ -998,13 +1026,13 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_salt() {
-        let salt1 = generate_salt(16);
-        let salt2 = generate_salt(16);
+    fn test_generate_bytes() {
+        let bytes1 = generate_bytes(16);
+        let bytes2 = generate_bytes(16);
 
-        assert_eq!(salt1.len(), 16);
-        assert_eq!(salt2.len(), 16);
-        assert_ne!(salt1, salt2); // Should be random
+        assert_eq!(bytes1.len(), 16);
+        assert_eq!(bytes2.len(), 16);
+        assert_ne!(bytes1, bytes2); // Should be random
     }
 
     #[test]
@@ -1107,6 +1135,7 @@ mod tests {
             data.clone(),
             Some(6000),
             false,
+            None,
         )
         .unwrap();
 
@@ -1222,7 +1251,7 @@ mod tests {
         let answers = vec![];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None, false);
+        let result = AskryptFile::create(questions, answers, data, None, false, None);
         assert!(result.is_err());
         assert!(
             result
@@ -1235,7 +1264,7 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None, false);
+        let result = AskryptFile::create(questions, answers, data2, None, false, None);
         assert!(result.is_err());
         assert!(
             result
@@ -1248,7 +1277,7 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None, false);
+        let result = AskryptFile::create(questions, answers, data2, None, false, None);
         assert!(result.is_err());
         assert!(
             result
@@ -1273,7 +1302,7 @@ mod tests {
         ];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None, false);
+        let result = AskryptFile::create(questions, answers, data, None, false, None);
         assert!(result.is_err());
         assert!(
             result
@@ -1331,6 +1360,7 @@ mod tests {
             original_data.clone(),
             Some(6000),
             false,
+            None,
         )
         .unwrap();
 
@@ -1374,6 +1404,7 @@ mod tests {
             data.clone(),
             Some(6000),
             false,
+            None,
         )
         .unwrap();
 
@@ -1417,8 +1448,15 @@ mod tests {
             },
         }];
 
-        let file = AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), false)
-            .unwrap();
+        let file = AskryptFile::create(
+            questions,
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            None,
+        )
+        .unwrap();
         let questions_data = file.get_questions_data(answers[0].clone()).unwrap();
         let decrypted = file.decrypt(&questions_data, answers[1..].into()).unwrap();
 
@@ -1501,6 +1539,7 @@ mod tests {
             data.clone(),
             Some(6000),
             false,
+            None,
         )
         .unwrap();
 
@@ -1553,7 +1592,7 @@ mod tests {
         }];
 
         let askrypt_file =
-            AskryptFile::create(questions, answers, data, Some(6000), false).unwrap();
+            AskryptFile::create(questions, answers, data, Some(6000), false, None).unwrap();
 
         let temp_file =
             std::env::temp_dir().join(format!("test_vault_content_{}.askrypt", std::process::id()));
@@ -1605,6 +1644,7 @@ mod tests {
             data.clone(),
             Some(6000),
             false,
+            None,
         )
         .unwrap();
 
@@ -1628,5 +1668,239 @@ mod tests {
     #[test]
     fn test_askrypt_file_from_bytes_rejects_garbage() {
         assert!(AskryptFile::from_bytes(b"not a zip archive").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Master key preservation
+    //
+    // The master key is minted once, at vault creation, and every later save
+    // re-wraps that same key. This is what will let file attachments live under
+    // the master key without being re-encrypted on every save.
+    // -----------------------------------------------------------------------
+
+    /// Questions, answers and one entry, for the master-key tests below.
+    fn master_test_vault() -> (Vec<String>, Vec<String>, Vec<SecretEntry>) {
+        let questions = vec![
+            "What is your mother's maiden name?".to_string(),
+            "What was your first pet's name?".to_string(),
+            "What city were you born in?".to_string(),
+        ];
+        let answers = vec![
+            "Smith".to_string(),
+            "Fluffy".to_string(),
+            "New York".to_string(),
+        ];
+        let data = vec![SecretEntry {
+            name: "example".to_string(),
+            user_name: "user5".to_string(),
+            secret: "password123".to_string(),
+            url: "https://example.com".to_string(),
+            notes: "My account".to_string(),
+            entry_type: "password".to_string(),
+            tags: vec![],
+            created: 1704067200,
+            modified: 1704067200,
+            hidden: false,
+            card: Default::default(),
+        }];
+        (questions, answers, data)
+    }
+
+    /// Open a vault the way an app does, returning the entries and the key.
+    fn open(file: &AskryptFile, answers: &[String]) -> (Vec<SecretEntry>, MasterSecret) {
+        let questions_data = file.get_questions_data(answers[0].clone()).unwrap();
+        file.decrypt_with_master(&questions_data, answers[1..].into())
+            .unwrap()
+    }
+
+    #[test]
+    fn test_saving_an_open_vault_keeps_its_master_key() {
+        let (questions, answers, data) = master_test_vault();
+
+        let first = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            None,
+        )
+        .unwrap();
+        let (entries, master) = open(&first, &answers);
+
+        // A save: same questions, same answers, the key handed back.
+        let second = AskryptFile::create(
+            questions,
+            answers.clone(),
+            entries.clone(),
+            Some(6000),
+            false,
+            Some(&master),
+        )
+        .unwrap();
+
+        let (reopened, master_again) = open(&second, &answers);
+        assert_eq!(
+            master_again, master,
+            "a save must not rotate the master key"
+        );
+        assert_eq!(reopened, entries);
+    }
+
+    #[test]
+    fn test_a_blob_under_the_master_key_survives_a_save() {
+        // The reason the key is preserved at all: encrypted file attachments
+        // will live under it, and must not need re-encrypting on every save.
+        let (questions, answers, data) = master_test_vault();
+
+        let first = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            None,
+        )
+        .unwrap();
+        let (entries, master) = open(&first, &answers);
+
+        let attachment = b"the contents of an attached file";
+        let attachment_iv = generate_bytes(16);
+        let attachment_iv: [u8; 16] = attachment_iv.try_into().unwrap();
+        let sealed = encrypt_with_aes(attachment, master.as_bytes(), &attachment_iv).unwrap();
+
+        let second = AskryptFile::create(
+            questions,
+            answers.clone(),
+            entries,
+            Some(6000),
+            false,
+            Some(&master),
+        )
+        .unwrap();
+
+        let (_, master_after_save) = open(&second, &answers);
+        let opened =
+            decrypt_with_aes(&sealed, master_after_save.as_bytes(), &attachment_iv).unwrap();
+        assert_eq!(opened, attachment);
+    }
+
+    #[test]
+    fn test_changing_the_answers_keeps_the_master_key() {
+        // Re-keying is exactly what the master-key indirection is for: the new
+        // answers re-wrap the small `master` blob, and everything under it stays
+        // readable.
+        let (questions, answers, data) = master_test_vault();
+
+        let first = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            None,
+        )
+        .unwrap();
+        let (entries, master) = open(&first, &answers);
+
+        let new_questions = vec![
+            "Favourite book?".to_string(),
+            "First school?".to_string(),
+            "Street you grew up on?".to_string(),
+        ];
+        let new_answers = vec![
+            "Dune".to_string(),
+            "Oakwood".to_string(),
+            "Baker Street".to_string(),
+        ];
+        let rekeyed = AskryptFile::create(
+            new_questions,
+            new_answers.clone(),
+            entries.clone(),
+            Some(6000),
+            false,
+            Some(&master),
+        )
+        .unwrap();
+
+        // The old answers no longer open it, but the key underneath is the same.
+        assert!(rekeyed.get_questions_data(answers[0].clone()).is_err());
+        let (reopened, master_again) = open(&rekeyed, &new_answers);
+        assert_eq!(master_again, master);
+        assert_eq!(reopened, entries);
+    }
+
+    #[test]
+    fn test_creating_two_vaults_mints_two_master_keys() {
+        let (questions, answers, data) = master_test_vault();
+
+        let a = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            None,
+        )
+        .unwrap();
+        let b =
+            AskryptFile::create(questions, answers.clone(), data, Some(6000), false, None).unwrap();
+
+        assert_ne!(open(&a, &answers).1, open(&b, &answers).1);
+    }
+
+    #[test]
+    fn test_a_save_rotates_the_salts_and_the_data_iv() {
+        // Keeping the master key must not mean keeping the IV: AES-CBC under a
+        // repeated key *and* IV lets anyone holding two versions of a vault read
+        // off how long a prefix of the entry list went unchanged.
+        let (questions, answers, data) = master_test_vault();
+
+        let first = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            None,
+        )
+        .unwrap();
+        let (entries, master) = open(&first, &answers);
+
+        let second = AskryptFile::create(
+            questions,
+            answers.clone(),
+            entries,
+            Some(6000),
+            false,
+            Some(&master),
+        )
+        .unwrap();
+
+        assert_ne!(first.params.salt, second.params.salt, "salt0 must rotate");
+        assert_ne!(first.qs, second.qs);
+        assert_ne!(first.master, second.master);
+        assert_ne!(
+            first.data, second.data,
+            "identical entries under a repeated key and IV would encrypt identically"
+        );
+
+        // And specifically the IV, not just the ciphertext around it.
+        let iv_of = |file: &AskryptFile| {
+            let questions_data = file.get_questions_data(answers[0].clone()).unwrap();
+            let salt1: [u8; 16] = decode_base64(&questions_data.salt)
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let combined: String = answers[1..]
+                .iter()
+                .map(|a| normalize_answer(a, file.params.translit))
+                .collect();
+            let second_hash = sha256(&combined, &file.params.salt);
+            let key = derive_key(&second_hash, &salt1, file.params.iterations).unwrap();
+            let master_data: MasterData = decrypt_from_base64(&file.master, &key, &salt1).unwrap();
+            master_data.iv.clone()
+        };
+        assert_ne!(iv_of(&first), iv_of(&second), "the data IV must rotate");
     }
 }

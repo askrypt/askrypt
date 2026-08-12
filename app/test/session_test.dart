@@ -187,6 +187,55 @@ void main() {
     expect(v3.reveal(0).secret, 'sekret');
   });
 
+  /// The master key is minted once, when the vault comes into existence, and
+  /// every later save re-wraps that same key — including a save that changes the
+  /// answers. This is what will let file attachments live under the master key
+  /// without being re-encrypted on every save, and it must hold identically in
+  /// Dart and in `core/` (see `AskryptFile::create`'s `master` parameter).
+  test('the master key survives every save, including a re-key', () async {
+    Future<Uint8List> masterOf(Uint8List bytes, List<String> answers) async {
+      final file = AskryptFile.fromBytes(bytes);
+      final qd = await file.getQuestionsData(answers[0]);
+      final opened = await file.decryptWithMaster(qd, answers.sublist(1));
+      return opened.masterKey;
+    }
+
+    final c = _container();
+    final n = _notifier(c);
+    n.createNew(questions: _questions, answers: _answers, iterations: _iters);
+    n.addEntry(_entry('keep', 'sekret'));
+
+    final first = Uint8List.fromList(await n.toBytes());
+    final minted = await masterOf(first, _answers);
+
+    // An ordinary save of the same open vault.
+    n.addEntry(_entry('second', 'sekret2'));
+    final second = Uint8List.fromList(await n.toBytes());
+    expect(await masterOf(second, _answers), minted);
+
+    // ...and one that changes the answers.
+    const newAnswers = ['alpha', 'beta'];
+    n.updateQuestions(
+        questions: const ['New Q1?', 'New Q2?'],
+        answers: newAnswers,
+        translit: false);
+    final rekeyed = Uint8List.fromList(await n.toBytes());
+    expect(await masterOf(rekeyed, newAnswers), minted);
+
+    // The salts and the data IV still rotate: AES-CBC under a repeated key
+    // *and* IV would leak how long a prefix of the entry list went unchanged.
+    expect(AskryptFile.fromBytes(second).salt0B64,
+        isNot(AskryptFile.fromBytes(first).salt0B64));
+    expect(AskryptFile.fromBytes(second).master,
+        isNot(AskryptFile.fromBytes(first).master));
+
+    // A different vault gets a key of its own.
+    final other = _notifier(_container())
+      ..createNew(questions: _questions, answers: _answers, iterations: _iters);
+    final otherBytes = Uint8List.fromList(await other.toBytes());
+    expect(await masterOf(otherBytes, _answers), isNot(minted));
+  });
+
   test('UnlockedVault.create rejects fewer than 2 questions', () {
     expect(
       () => UnlockedVault.create(

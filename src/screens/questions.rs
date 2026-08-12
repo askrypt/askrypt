@@ -8,7 +8,7 @@ use crate::ui::{
     caption_block, container_with_border, control_button, controls_block, padded_button,
     security_input_with_toggle, title_h1,
 };
-use askrypt::{AskryptFile, QuestionsData, encode_base64, generate_salt};
+use askrypt::{AskryptFile, MasterSecret, QuestionsData, encode_base64, generate_bytes};
 use iced::widget::{button, checkbox, column, operation, row, scrollable, text, text_input};
 use iced::{Element, Length, alignment};
 use zeroize::Zeroize;
@@ -172,9 +172,17 @@ fn save(state: &mut State, session: &mut Session) -> Action {
     // Set the other questions and answers
     session.questions_data = Some(QuestionsData {
         questions: state.editing_questions[1..].to_vec(),
-        salt: encode_base64(&generate_salt(16)),
+        salt: encode_base64(&generate_bytes(16)),
     });
     session.answers = state.editing_answers[1..].to_vec();
+
+    // New answers re-wrap the *existing* master key rather than rotating it —
+    // that is what the master-key indirection is for, and it keeps everything
+    // encrypted under it readable. A brand-new vault has none, so mint one.
+    let master = session
+        .master
+        .clone()
+        .unwrap_or_else(MasterSecret::generate);
 
     match AskryptFile::create(
         state.editing_questions.clone(),
@@ -182,9 +190,11 @@ fn save(state: &mut State, session: &mut Session) -> Action {
         session.entries.clone(),
         Some(iterations),
         state.editing_translit,
+        Some(&master),
     ) {
         Ok(file) => {
             session.file = Some(file);
+            session.master = Some(master);
         }
         Err(_) => {
             session.error_message = Some("Error creating file".into());

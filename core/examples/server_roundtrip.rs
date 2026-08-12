@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         Some(6_000),
         false,
+        None,
     )?;
 
     println!("uploading {name}");

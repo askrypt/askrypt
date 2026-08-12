@@ -9,7 +9,7 @@ use crate::screens::{
 };
 use crate::session::Session;
 use crate::ui::{padded_button, security_input_with_toggle, spinner_row, title_h1};
-use askrypt::{QuestionsData, SecretEntry};
+use askrypt::{MasterSecret, QuestionsData, SecretEntry};
 use iced::widget::{operation, row, text};
 use iced::{Element, Task, alignment};
 use std::time::Instant;
@@ -41,7 +41,7 @@ pub enum OtherMsg {
     AnswerEdited(usize, String),
     AnswerFinished(usize),
     UnlockVault,
-    VaultDecrypted(Result<Vec<SecretEntry>, String>),
+    VaultDecrypted(Result<(Vec<SecretEntry>, MasterSecret), String>),
     ToggleAnswer0Visibility,
     ShowAnswer(usize),
     OpenPassGen,
@@ -127,13 +127,16 @@ pub fn other_update(state: &mut OtherState, session: &mut Session, msg: OtherMsg
         OtherMsg::VaultDecrypted(result) => {
             session.decrypting = false;
             match result {
-                Ok(entries) => {
+                Ok((entries, master)) => {
                     let millis = session
                         .decrypt_started
                         .take()
                         .map(|start| start.elapsed().as_millis())
                         .unwrap_or(0);
                     session.entries = entries;
+                    // Kept so the next save re-wraps this key instead of
+                    // rotating it.
+                    session.master = Some(master);
                     session.unlocked = true;
                     session.last_user_activity = Some(Instant::now());
                     session.settings.last_opened_file = session.location.clone();
@@ -183,7 +186,8 @@ fn start_unlock(session: &mut Session) -> Action {
         Action::Run(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    file.decrypt(&data, answers).map_err(|e| e.to_string())
+                    file.decrypt_with_master(&data, answers)
+                        .map_err(|e| e.to_string())
                 })
                 .await
                 .expect("decrypt task panicked")

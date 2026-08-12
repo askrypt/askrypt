@@ -128,6 +128,54 @@ pub struct MasterData {
     pub iv: String,
 }
 
+/// A vault's 32-byte master key, in the clear.
+///
+/// This is the key the `data` blob — and, in future, every encrypted file
+/// attachment — is encrypted under. It is minted **once**, when the vault is
+/// created, and preserved for the life of the vault: [`AskryptFile::create`]
+/// takes it back as `Option<&MasterSecret>` so a save re-wraps the existing key
+/// under the answers instead of rotating it. Rotating it would mean decrypting
+/// and re-encrypting every blob beneath it on every save.
+///
+/// [`AskryptFile::decrypt_with_master`] is how a caller gets one: it falls out
+/// of the same derivation that opens the vault, so recovering it costs nothing
+/// extra.
+///
+/// [`AskryptFile::create`]: crate::AskryptFile::create
+/// [`AskryptFile::decrypt_with_master`]: crate::AskryptFile::decrypt_with_master
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct MasterSecret([u8; 32]);
+
+impl MasterSecret {
+    /// Mint a fresh master key. Only a brand-new vault should call this.
+    pub fn generate() -> Self {
+        use rand::Rng;
+        let mut key = [0u8; 32];
+        rand::rng().fill_bytes(&mut key);
+        Self(key)
+    }
+
+    /// Adopt 32 decoded bytes, rejecting any other length.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, &'static str> {
+        let key: [u8; 32] = bytes.try_into().map_err(|_| "Invalid master key length")?;
+        Ok(Self(key))
+    }
+
+    /// The raw key, for encrypting blobs that live under it.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Hand-written so the key never reaches a log or a `{:?}` of some message
+/// enum: this value is carried in the desktop apps' `Message` types, every one
+/// of which derives `Debug`.
+impl std::fmt::Debug for MasterSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MasterSecret(<redacted>)")
+    }
+}
+
 /// Main Askrypt file structure in JSON format
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AskryptFile {

@@ -165,7 +165,8 @@ clipboard.
     - `lib/session/unlocked_vault.dart` — `UnlockedVault`: open/create, secret-
       free `EntrySummary` list, reveal-on-demand, CRUD, `toBytes()`. Mirrors the
       desktop save model exactly (every save re-creates the whole file via
-      `AskryptFile.create`, rotating salts + master key).
+      `AskryptFile.create`, rotating the salts and the data IV but **re-wrapping
+      the same master key** — see `SPEC.md`, "Master key lifetime").
     - `lib/session/vault_session.dart` — Riverpod `NotifierProvider` exposing a
       sealed `VaultSession` (`VaultLocked` / `VaultUnlocked`); the rest of the
       app watches this instead of touching crypto directly.
@@ -217,7 +218,8 @@ clipboard.
 - **Phase 4 — Mobile-native security. ✅ DONE (on-device gate pending hardware).**
   - **Biometric quick-unlock — "answers-only" model.** After a successful manual
     unlock the user is offered enrollment; we store the *security answers* (not a
-    derived key — every save rotates salts + master key) in Keystore/Keychain via
+    derived key — every save rotates the salts, so a derived key would not
+    survive one) in Keystore/Keychain via
     `flutter_secure_storage`, keyed by `sha256(question0)`. On re-open the user
     picks the file (or taps the remembered-vault button — see the recent-vault
     cache below);

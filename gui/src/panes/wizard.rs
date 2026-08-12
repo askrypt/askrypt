@@ -440,6 +440,8 @@ fn load_task(location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Task<Me
                         file,
                         location,
                         storage: Arc::clone(&storage),
+                        // Still locked: the master key only appears at unlock.
+                        master: None,
                     })
                     .map_err(|e| VaultError::log("Failed to open vault", &e))
             })

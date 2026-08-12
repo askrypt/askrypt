@@ -57,6 +57,7 @@ pub fn update(state: &mut State, session: &mut Session, msg: Msg) -> Action {
                     session.answer0 = unlocked.answer0;
                     session.answers = unlocked.answers;
                     session.entries = unlocked.entries;
+                    session.master = Some(unlocked.master);
                     session.questions_data = Some(unlocked.questions_data);
                     session.unlocked = true;
                     session.last_user_activity = Some(Instant::now());
@@ -102,14 +103,15 @@ fn start_unlock(state: &mut State, session: &mut Session) -> Action {
                     let questions_data = file
                         .get_questions_data(answer0.clone())
                         .map_err(|e| e.to_string())?;
-                    let entries = file
-                        .decrypt(&questions_data, answers.clone())
+                    let (entries, master) = file
+                        .decrypt_with_master(&questions_data, answers.clone())
                         .map_err(|e| e.to_string())?;
                     Ok::<_, String>(SmartUnlockResult {
                         answer0,
                         answers,
                         questions_data,
                         entries,
+                        master,
                     })
                 })
                 .await

@@ -11,7 +11,7 @@
 //! `src/screens/questions.rs`, a failure there leaves the session untouched
 //! rather than proceeding as though it had worked.
 
-use askrypt::{AskryptFile, QuestionsData, SecretEntry};
+use askrypt::{AskryptFile, MasterSecret, QuestionsData, SecretEntry};
 use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Task, alignment::Vertical};
 use zeroize::Zeroize;
@@ -91,6 +91,10 @@ pub struct Built {
     pub question0: String,
     pub answer0: String,
     pub answers: Vec<String>,
+    /// The master key the built file is keyed on: the open vault's own when the
+    /// questions were merely changed, a fresh one when this call created the
+    /// vault.
+    pub master: MasterSecret,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +172,7 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                     session.question0 = built.question0;
                     session.answer0 = built.answer0;
                     session.answers = built.answers;
+                    session.master = Some(built.master);
                     session.questions_data = Some(built.questions_data);
                     session.file = Some(built.file);
                     session.unlocked = true;
@@ -217,12 +222,17 @@ fn save(state: &mut State, session: &mut Session) -> Action {
         .as_ref()
         .map(|f| f.params.iterations)
         .unwrap_or(DEFAULT_ITERATIONS);
+    // Changing the answers re-wraps the *existing* master key rather than
+    // rotating it — that is what the master-key indirection is for, and it is
+    // what keeps blobs encrypted under it readable. `None` only when this run
+    // is bringing a vault into existence.
+    let master = session.master.clone();
 
     session.begin_work("Encrypting…");
     Action::Run(Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                build(questions, answers, entries, iterations, translit)
+                build(questions, answers, entries, iterations, translit, master)
             })
             .await
             .expect("build vault task panicked")
@@ -242,13 +252,19 @@ fn build(
     entries: Vec<SecretEntry>,
     iterations: u32,
     translit: bool,
+    master: Option<MasterSecret>,
 ) -> Result<Built, String> {
+    // Minted here rather than left to `create`, so the session can adopt the
+    // very key this file was built with.
+    let master = master.unwrap_or_else(MasterSecret::generate);
+
     let file = AskryptFile::create(
         questions.clone(),
         answers.clone(),
         entries,
         Some(iterations),
         translit,
+        Some(&master),
     )
     .map_err(|e| e.to_string())?;
 
@@ -263,6 +279,7 @@ fn build(
         answers: answers.into_iter().skip(1).collect(),
         questions_data,
         file,
+        master,
     })
 }
 

@@ -9,8 +9,9 @@
 use crate::settings::{AppSettings, ServerSession, VaultLocation};
 use crate::tray::AppTray;
 use askrypt::{
-    AskryptFile, QuestionsData, SecretEntry, ServerClient, StorageError, VaultStorage, calc_pbkdf2,
-    decrypt_with_aes, encode_base64, encrypt_with_aes, generate_salt, normalize_answer, sha256,
+    AskryptFile, MasterSecret, QuestionsData, SecretEntry, ServerClient, StorageError,
+    VaultStorage, calc_pbkdf2, decrypt_with_aes, encode_base64, encrypt_with_aes, generate_bytes,
+    normalize_answer, sha256,
 };
 use rand::RngExt;
 use rfd::MessageDialogResult;
@@ -36,6 +37,9 @@ pub struct SmartUnlockResult {
     pub answers: Vec<String>,
     pub questions_data: QuestionsData,
     pub entries: Vec<SecretEntry>,
+    /// The vault's master key, so the next save re-wraps it rather than
+    /// rotating it — see [`Session::master`].
+    pub master: MasterSecret,
 }
 
 /// Data for Smart Lock mode - stores encrypted answers in RAM
@@ -77,6 +81,13 @@ pub struct Session {
     pub answer0: String,
     pub answers: Vec<String>,
     pub entries: Vec<SecretEntry>,
+    /// The open vault's master key, recovered by the unlock that opened it.
+    ///
+    /// Every save hands this back to `AskryptFile::create` instead of letting it
+    /// mint a new one, so anything else encrypted under the master key survives
+    /// the write. `None` means no vault is open, or the open one has never been
+    /// written.
+    pub master: Option<MasterSecret>,
     pub unlocked: bool,
     /// Track if vault data has been modified
     pub is_modified: bool,
@@ -134,6 +145,7 @@ impl Session {
             answer0: String::new(),
             answers: Vec::new(),
             entries: Vec::new(),
+            master: None,
             unlocked: false,
             is_modified: false,
             settings,
@@ -304,6 +316,10 @@ impl Session {
             let mut all_answers = vec![self.answer0.clone()];
             all_answers.extend(self.answers.clone());
 
+            // Re-wrap the vault's own master key rather than minting a new one,
+            // so everything encrypted under it survives the write.
+            let master = self.master.clone().unwrap_or_else(MasterSecret::generate);
+
             // Create new AskryptFile with current entries
             match AskryptFile::create(
                 questions,
@@ -311,10 +327,12 @@ impl Session {
                 self.entries.clone(),
                 Some(file.params.iterations),
                 file.params.translit,
+                Some(&master),
             ) {
                 Ok(new_file) => match storage.save_vault(&new_file) {
                     Ok(_) => {
                         self.file = Some(new_file);
+                        self.master = Some(master);
                         self.is_modified = false;
                         self.success_message = Some("Vault saved successfully".into());
                     }
@@ -360,6 +378,9 @@ impl Session {
                 }
             };
 
+            // A copy of the same vault, so it keeps the same master key.
+            let master = self.master.clone().unwrap_or_else(MasterSecret::generate);
+
             // Create new AskryptFile with current entries
             match AskryptFile::create(
                 questions,
@@ -367,11 +388,13 @@ impl Session {
                 self.entries.clone(),
                 Some(DEFAULT_ITERATIONS), // TODO: allow user to set this iterations
                 self.file.as_ref().is_some_and(|f| f.params.translit),
+                Some(&master),
             ) {
                 Ok(new_file) => match storage.save_vault(&new_file) {
                     Ok(_) => {
                         self.set_vault_location(location.clone(), storage);
                         self.file = Some(new_file);
+                        self.master = Some(master);
                         self.is_modified = false;
                         self.success_message = Some("Vault saved successfully".into());
                         self.settings.last_opened_file = Some(location);
@@ -426,17 +449,22 @@ impl Session {
             .map(|f| f.params.iterations)
             .unwrap_or(DEFAULT_ITERATIONS);
 
+        // The same vault, stored somewhere else: same master key.
+        let master = self.master.clone().unwrap_or_else(MasterSecret::generate);
+
         match AskryptFile::create(
             questions,
             all_answers,
             self.entries.clone(),
             Some(iterations),
             self.file.as_ref().is_some_and(|f| f.params.translit),
+            Some(&master),
         ) {
             Ok(new_file) => match storage.save_vault(&new_file) {
                 Ok(_) => {
                     self.set_vault_location(location.clone(), storage);
                     self.file = Some(new_file);
+                    self.master = Some(master);
                     self.is_modified = false;
                     self.success_message = Some("Vault saved to the server".into());
                     self.settings.last_opened_file = Some(location);
@@ -516,8 +544,8 @@ impl Session {
             .cloned()
             .unwrap_or_else(|| format!("Question {}", key_answer_index + 1));
 
-        let salt = generate_salt(16);
-        let iv = generate_salt(16);
+        let salt = generate_bytes(16);
+        let iv = generate_bytes(16);
 
         // Derive encryption key from the selected answer using PBKDF2
         let normalized_answer = Zeroizing::new(normalize_answer(&key_answer, translit));
@@ -602,5 +630,8 @@ impl Session {
         self.answer0.zeroize();
         self.answers.zeroize();
         self.entries.zeroize();
+        // Dropping the `MasterSecret` wipes it; the next unlock recovers the
+        // same key from the file.
+        self.master = None;
     }
 }

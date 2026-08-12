@@ -2,10 +2,11 @@
 /// app's unlocked session (`src/main.rs`).
 ///
 /// Mirrors the desktop save model exactly: while unlocked we keep the full
-/// question + answer lists in memory, and *every* save reconstructs the whole
-/// `AskryptFile` via [AskryptFile.create] (rotating salts + master key). There
-/// is no incremental "re-encrypt just the data layer" path; this matches
-/// `Message::SaveVault` in `src/main.rs`.
+/// question + answer lists in memory — and the vault's master key — and *every*
+/// save reconstructs the whole `AskryptFile` via [AskryptFile.create], rotating
+/// the salts and the data IV but **re-wrapping the same master key** so that
+/// anything else encrypted under it survives the write. There is no incremental
+/// "re-encrypt just the data layer" path.
 ///
 /// Plaintext lifetime is minimized at the *view* level — list rendering uses
 /// [EntrySummary] (no secret/notes), and the secret is only handed out on an
@@ -65,8 +66,10 @@ class UnlockedVault {
     required List<SecretEntry> entries,
     required this.translit,
     required this.iterations,
+    List<int>? masterKey,
   })  : _answers = answers,
-        _entries = entries;
+        _entries = entries,
+        _masterKey = masterKey;
 
   /// Full question list, including the first question (`question0`).
   final List<String> questions;
@@ -76,6 +79,13 @@ class UnlockedVault {
   final List<String> _answers;
 
   final List<SecretEntry> _entries;
+
+  /// The vault's 32-byte master key, recovered by the unlock that opened it.
+  /// Handed back to [AskryptFile.create] on every save so the key is re-wrapped
+  /// rather than rotated. Null for a vault that has never been written; the
+  /// first [toBytes] mints one and keeps it, so a second save of a brand-new
+  /// vault does not mint a second key.
+  List<int>? _masterKey;
 
   final bool translit;
   final int iterations;
@@ -120,13 +130,14 @@ class UnlockedVault {
     }
     final file = AskryptFile.fromBytes(bytes);
     final qd = await file.getQuestionsData(answers[0]);
-    final entries = await file.decrypt(qd, answers.sublist(1));
+    final opened = await file.decryptWithMaster(qd, answers.sublist(1));
     return UnlockedVault._(
       questions: [file.question0, ...qd.questions],
       answers: List.of(answers),
-      entries: entries,
+      entries: opened.entries,
       translit: file.translit,
       iterations: file.iterations,
+      masterKey: opened.masterKey,
     );
   }
 
@@ -178,9 +189,10 @@ class UnlockedVault {
   }
 
   /// Replace the questions/answers (and the transliteration setting), keeping
-  /// the existing entries. Mirrors the desktop "Edit questions" flow, which
-  /// re-keys the whole vault: the next [toBytes] re-derives every layer from
-  /// the new answers. Returns a fresh [UnlockedVault] carrying the same
+  /// the existing entries. Mirrors the desktop "Edit questions" flow: the next
+  /// [toBytes] re-derives the answer-side layers from the new answers, and
+  /// re-wraps the *same* master key — which is exactly what the master-key
+  /// indirection is for. Returns a fresh [UnlockedVault] carrying the same
   /// entries; the caller swaps it into the session.
   UnlockedVault withQuestions({
     required List<String> questions,
@@ -194,6 +206,7 @@ class UnlockedVault {
       entries: _entries,
       translit: translit,
       iterations: iterations,
+      masterKey: _masterKey,
     )..isModified = true;
   }
 
@@ -201,15 +214,19 @@ class UnlockedVault {
 
   /// Serialize the current state to a byte-compatible `vault.askrypt`.
   ///
-  /// Re-creates the whole file (fresh salts + master key) like the desktop
-  /// save path, then clears [isModified]. The bytes are ready to write to a
-  /// file/SAF document. Each save stamps `params.host`/`params.updated_at`
-  /// with this device and the current UTC time.
+  /// Re-creates the whole file — fresh salts and a fresh data IV, but the
+  /// vault's *existing* master key — like the desktop save path, then clears
+  /// [isModified]. The bytes are ready to write to a file/SAF document. Each
+  /// save stamps `params.host`/`params.updated_at` with this device and the
+  /// current UTC time.
   ///
   /// Async because [AskryptFile.create] performs two PBKDF2 derivations on
   /// native platform crypto (see [pbkdf2]); awaiting keeps a save responsive
   /// without an isolate.
   Future<Uint8List> toBytes() async {
+    // Minted here rather than left to `create`, so this vault keeps the key its
+    // first write used instead of minting another on the next save.
+    final key = _masterKey ??= generateMasterKey();
     final file = await AskryptFile.create(
       questions: questions,
       answers: _answers,
@@ -217,6 +234,7 @@ class UnlockedVault {
       iterations: iterations,
       translit: translit,
       host: currentHostName(),
+      masterKey: key,
     );
     isModified = false;
     return file.toBytes();

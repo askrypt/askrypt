@@ -371,7 +371,21 @@ only case `confirm()` acts on.
    `App::auto_smart_lock` saves first when the vault has a home — and declines
    to lock at all when it does not, because a never-saved vault exists only in
    this process.
-9. **`settings.window` holds the geometry the window *unmaximizes* back to**,
+9. **A vault's master key is minted once and never rotated.** It is a property
+   of the *vault*, not of a write, and it is what the coming file attachments
+   will be encrypted under — rotating it per save would mean re-encrypting all
+   of them each time. → `Session.master`, filled by `apply_unlock` /
+   `apply_smart_unlock` (from `AskryptFile::decrypt_with_master`) or by
+   `questions::build`, carried in `SaveRequest.master` and handed to
+   `AskryptFile::create`. `write_vault` mints one *only* when the request has
+   none — a vault that has never been written — and returns it on the
+   `VaultHandle` so `apply_saved` can adopt it; without that hand-back, a new
+   vault's second save would mint a second key. Cleared by `zeroize_secrets`,
+   which is what every lock and close path goes through. Guarded by
+   `a_new_vault_keeps_the_key_its_first_write_minted`. What is *not* preserved:
+   the salts and the `data` IV rotate on every write, and the IV must — see
+   `SPEC.md`, "Master key lifetime".
+10. **`settings.window` holds the geometry the window *unmaximizes* back to**,
    never the maximized box, or a window maximized at exit would come back
    maximized and shrink to the whole screen. Iced reports moves and resizes but
    has no maximized event, so `App::record_geometry` parks what it saw and one

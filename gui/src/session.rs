@@ -16,8 +16,9 @@
 use crate::settings::{AppSettings, ServerSession, VaultLocation};
 use crate::tray::AppTray;
 use askrypt::{
-    AskryptFile, QuestionsData, SecretEntry, ServerClient, StorageError, VaultStorage, calc_pbkdf2,
-    decrypt_with_aes, encode_base64, encrypt_with_aes, generate_salt, normalize_answer, sha256,
+    AskryptFile, MasterSecret, QuestionsData, SecretEntry, ServerClient, StorageError,
+    VaultStorage, calc_pbkdf2, decrypt_with_aes, encode_base64, encrypt_with_aes, generate_bytes,
+    normalize_answer, sha256,
 };
 use rand::RngExt;
 use std::sync::Arc;
@@ -40,6 +41,9 @@ pub struct SmartUnlockResult {
     pub answers: Vec<String>,
     pub questions_data: QuestionsData,
     pub entries: Vec<SecretEntry>,
+    /// The vault's master key, so the next save re-wraps it rather than
+    /// rotating it — see [`Session::master`].
+    pub master: MasterSecret,
 }
 
 /// Data for Smart Lock mode - stores encrypted answers in RAM
@@ -154,12 +158,16 @@ pub struct SaveRequest {
     pub entries: Vec<SecretEntry>,
     pub iterations: u32,
     pub translit: bool,
+    /// The vault's existing master key, or `None` for a vault that has never
+    /// had one (a brand-new vault, which mints its key on this first write).
+    pub master: Option<MasterSecret>,
 }
 
 impl Drop for SaveRequest {
     fn drop(&mut self) {
         self.answers.zeroize();
-        // `entries` are `SecretEntry`, which wipes itself on drop.
+        // `entries` are `SecretEntry` and `master` is a `MasterSecret`, both of
+        // which wipe themselves on drop.
     }
 }
 
@@ -172,6 +180,13 @@ pub struct VaultHandle {
     pub file: AskryptFile,
     pub location: VaultLocation,
     pub storage: Arc<dyn VaultStorage>,
+    /// The master key the write used — the session's own when it had one, and
+    /// otherwise the freshly minted one, which the session must adopt so the
+    /// *next* save of a brand-new vault does not mint a second key.
+    ///
+    /// `None` when the handle came from *opening* a vault rather than writing
+    /// one: those bytes are still locked, and the key only appears at unlock.
+    pub master: Option<MasterSecret>,
 }
 
 // `VaultStorage` is not `Debug` (it is an object-safe trait over backends), but
@@ -191,12 +206,21 @@ pub fn write_vault(
     location: VaultLocation,
     storage: Arc<dyn VaultStorage>,
 ) -> Result<VaultHandle, VaultError> {
+    // A vault that has never been written has no key yet; mint it here rather
+    // than inside `create` so the session can adopt the very key this file was
+    // built with.
+    let master = request
+        .master
+        .clone()
+        .unwrap_or_else(MasterSecret::generate);
+
     let file = AskryptFile::create(
         request.questions.clone(),
         request.answers.clone(),
         request.entries.clone(),
         Some(request.iterations),
         request.translit,
+        Some(&master),
     )
     .map_err(|e| VaultError::log_crypto("Failed to build vault", e.as_ref()))?;
 
@@ -208,6 +232,7 @@ pub fn write_vault(
         file,
         location,
         storage,
+        master: Some(master),
     })
 }
 
@@ -229,6 +254,15 @@ pub struct Session {
     pub answer0: String,
     pub answers: Vec<String>,
     pub entries: Vec<SecretEntry>,
+    /// The open vault's master key, recovered by the unlock that opened it (or
+    /// minted by the write that created it).
+    ///
+    /// Saving hands this back to `AskryptFile::create` instead of letting it
+    /// mint a new one, so everything encrypted under the master key — the
+    /// coming file attachments — survives the write. `None` means there is no
+    /// key to keep: no vault is open, or the one that is has never been
+    /// written.
+    pub master: Option<MasterSecret>,
     pub unlocked: bool,
     /// Track if vault data has been modified
     pub is_modified: bool,
@@ -294,6 +328,7 @@ impl Session {
             answer0: String::new(),
             answers: Vec::new(),
             entries: Vec::new(),
+            master: None,
             unlocked: false,
             is_modified: false,
             settings,
@@ -530,6 +565,7 @@ impl Session {
                 .map(|f| f.params.iterations)
                 .unwrap_or(DEFAULT_ITERATIONS),
             translit: self.file.as_ref().is_some_and(|f| f.params.translit),
+            master: self.master.clone(),
         })
     }
 
@@ -548,6 +584,11 @@ impl Session {
     pub fn apply_saved(&mut self, saved: VaultHandle) {
         self.set_vault_location(saved.location.clone(), saved.storage);
         self.file = Some(saved.file);
+        // Usually the key the session already held; on a brand-new vault's first
+        // write it is the one that write minted. Always `Some` here — only the
+        // *open* path builds a handle without a key, and that goes to
+        // `open_vault`.
+        self.master = saved.master;
         self.is_modified = false;
         self.settings.remember_vault(&saved.location);
         self.success_message = Some("Vault saved successfully".into());
@@ -612,6 +653,7 @@ impl Session {
         self.answer0 = unlocked.answer0;
         self.answers = unlocked.answers;
         self.entries = unlocked.entries;
+        self.master = Some(unlocked.master);
         self.questions_data = Some(unlocked.questions_data);
         self.unlocked = true;
         self.last_user_activity = Some(Instant::now());
@@ -620,9 +662,11 @@ impl Session {
         }
     }
 
-    /// A normal unlock completed: adopt the decrypted entries.
-    pub fn apply_unlock(&mut self, entries: Vec<SecretEntry>) {
+    /// A normal unlock completed: adopt the decrypted entries and the master key
+    /// that decrypted them.
+    pub fn apply_unlock(&mut self, entries: Vec<SecretEntry>, master: MasterSecret) {
         self.entries = entries;
+        self.master = Some(master);
         self.unlocked = true;
         self.last_user_activity = Some(Instant::now());
         if let Some(location) = self.location.clone() {
@@ -694,8 +738,8 @@ impl Session {
             .cloned()
             .unwrap_or_else(|| format!("Question {}", key_answer_index + 1));
 
-        let salt = generate_salt(16);
-        let iv = generate_salt(16);
+        let salt = generate_bytes(16);
+        let iv = generate_bytes(16);
 
         // Derive encryption key from the selected answer using PBKDF2
         let normalized_answer = Zeroizing::new(normalize_answer(&key_answer, translit));
@@ -779,6 +823,10 @@ impl Session {
         self.answer0.zeroize();
         self.answers.zeroize();
         self.entries.zeroize();
+        // Dropping the `MasterSecret` wipes it. The next unlock recovers the
+        // same key from the file, so nothing is lost by not keeping it here —
+        // and a locked session must not hold the key to its own data.
+        self.master = None;
     }
 }
 
@@ -822,6 +870,8 @@ mod tests {
             entries: vec![entry("GitHub")],
             iterations: 1_000,
             translit: false,
+            // A vault that has never been written: `write_vault` mints its key.
+            master: None,
         };
 
         let handle = write_vault(request, location.clone(), Arc::clone(&storage))
@@ -855,6 +905,54 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// The first write of a brand-new vault mints the master key and hands it
+    /// back, and every write after that re-wraps that same key. Without the
+    /// hand-back, a new vault would mint a second key on its second save and
+    /// orphan anything encrypted under the first.
+    #[test]
+    fn a_new_vault_keeps_the_key_its_first_write_minted() {
+        let path =
+            std::env::temp_dir().join(format!("askrypt-gui-master-{}.askrypt", std::process::id()));
+        let storage: Arc<dyn VaultStorage> = Arc::new(LocalFileStorage::new(path.clone()));
+        let location = VaultLocation::LocalFile(path.clone());
+
+        let request = SaveRequest {
+            questions: vec!["First pet?".to_string(), "First street?".to_string()],
+            answers: vec!["Rex".to_string(), "Baker Street".to_string()],
+            entries: vec![entry("GitHub")],
+            iterations: 1_000,
+            translit: false,
+            master: None,
+        };
+        let first = write_vault(request, location.clone(), Arc::clone(&storage))
+            .expect("the vault should be written");
+        let minted = first.master.expect("a first write mints a key");
+
+        // What `Session::apply_saved` then `Session::save_request` would carry.
+        let request = SaveRequest {
+            questions: vec!["First pet?".to_string(), "First street?".to_string()],
+            answers: vec!["Rex".to_string(), "Baker Street".to_string()],
+            entries: vec![entry("GitHub"), entry("GitLab")],
+            iterations: 1_000,
+            translit: false,
+            master: Some(minted.clone()),
+        };
+        let second = write_vault(request, location, Arc::clone(&storage))
+            .expect("the vault should be written again");
+        assert_eq!(second.master.as_ref(), Some(&minted));
+
+        // And the key really is the one the file on disk is keyed on.
+        let reopened = storage.load_vault().expect("the vault should load");
+        let questions_data = reopened.get_questions_data("Rex".to_string()).unwrap();
+        let (entries, on_disk) = reopened
+            .decrypt_with_master(&questions_data, vec!["Baker Street".to_string()])
+            .expect("the remaining answers should decrypt the entries");
+        assert_eq!(on_disk, minted);
+        assert_eq!(entries.len(), 2);
+
+        std::fs::remove_file(&path).ok();
+    }
+
     /// Answers are normalized before they reach the KDF, so the same answer
     /// typed differently still opens the vault.
     #[test]
@@ -871,6 +969,8 @@ mod tests {
             entries: vec![entry("GitHub")],
             iterations: 1_000,
             translit: false,
+            // A vault that has never been written: `write_vault` mints its key.
+            master: None,
         };
         write_vault(
             request,

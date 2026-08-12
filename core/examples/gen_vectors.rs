@@ -172,6 +172,7 @@ fn main() {
         entries.clone(),
         Some(iterations),
         false,
+        None,
     )
     .unwrap();
     // `create` stamps params.host/params.updated_at with this machine and the

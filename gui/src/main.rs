@@ -193,7 +193,9 @@ pub enum GlobalMsg {
     QuitRequested,
     ExitApp,
     SmartLockCreated(Result<SmartLockData, String>),
-    Saved(Result<VaultHandle, VaultError>),
+    /// Boxed: a `VaultHandle` carries the whole re-encrypted file and would
+    /// otherwise set the size of every `GlobalMsg` this app passes around.
+    Saved(Box<Result<VaultHandle, VaultError>>),
     /// The window moved or resized; ask whether it is maximized, since only
     /// then is the geometry the one worth remembering.
     ProbeWindow,
@@ -799,7 +801,7 @@ impl App {
                 .await
                 .expect("save task panicked")
             },
-            |result| Message::Global(GlobalMsg::Saved(result)),
+            |result| Message::Global(GlobalMsg::Saved(Box::new(result))),
         ))
     }
 
@@ -1020,7 +1022,7 @@ impl App {
             }
             GlobalMsg::Saved(result) => {
                 self.session.finish_work();
-                match result {
+                match *result {
                     Ok(saved) => {
                         self.session.apply_saved(saved);
                         if let Err(e) = self.session.settings.save() {

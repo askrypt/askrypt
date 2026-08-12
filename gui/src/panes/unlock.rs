@@ -11,7 +11,7 @@
 //! completion messages below. A wrong answer is not detected by a check — it is
 //! a decryption that fails.
 
-use askrypt::{QuestionsData, SecretEntry};
+use askrypt::{MasterSecret, QuestionsData, SecretEntry};
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Task, alignment::Vertical};
 use zeroize::Zeroize;
@@ -93,8 +93,10 @@ pub enum Msg {
     CloseVault,
     /// The first answer decrypted (or failed to decrypt) the question list.
     Answer0Loaded(Result<QuestionsData, String>),
-    /// All the answers together decrypted (or failed to decrypt) the entries.
-    VaultDecrypted(Result<Vec<SecretEntry>, String>),
+    /// All the answers together decrypted (or failed to decrypt) the entries,
+    /// and with them the vault's master key — which the session keeps so the
+    /// next save re-wraps it rather than rotating it.
+    VaultDecrypted(Result<(Vec<SecretEntry>, MasterSecret), String>),
     /// One answer recovered the Smart Lock bundle and reopened the vault.
     SmartUnlockDone(Result<SmartUnlockResult, String>),
 }
@@ -145,11 +147,11 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
         Msg::VaultDecrypted(result) => {
             session.finish_work();
             match result {
-                Ok(entries) => {
+                Ok((entries, master)) => {
                     let millis = session.elapsed_millis();
-                    // Keep `session.answer0`/`answers`: a save re-derives every
-                    // key from them.
-                    session.apply_unlock(entries);
+                    // Keep `session.answer0`/`answers`: a save re-derives the
+                    // answer-side keys from them, and re-wraps `master`.
+                    session.apply_unlock(entries, master);
                     state.reset_for(session);
                     session.status_message = Some(format!("The vault unlocked in {} ms", millis));
                     Action::pane_run(Pane::Items, iced::widget::operation::focus(SEARCH_INPUT_ID))
@@ -240,7 +242,7 @@ fn start_full_unlock(state: &mut State, session: &mut Session) -> Action {
     Action::Run(Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
-                file.decrypt(&questions_data, rest)
+                file.decrypt_with_master(&questions_data, rest)
                     .map_err(|e| e.to_string())
             })
             .await
@@ -277,14 +279,15 @@ fn start_smart_unlock(state: &mut State, session: &mut Session) -> Action {
                 let questions_data = file
                     .get_questions_data(answer0.clone())
                     .map_err(|e| e.to_string())?;
-                let entries = file
-                    .decrypt(&questions_data, answers.clone())
+                let (entries, master) = file
+                    .decrypt_with_master(&questions_data, answers.clone())
                     .map_err(|e| e.to_string())?;
                 Ok::<_, String>(SmartUnlockResult {
                     answer0,
                     answers,
                     questions_data,
                     entries,
+                    master,
                 })
             })
             .await
