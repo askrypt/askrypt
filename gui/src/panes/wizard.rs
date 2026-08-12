@@ -524,6 +524,18 @@ fn name_status(state: &State) -> NameStatus {
         .map_or(NameStatus::Free, NameStatus::Replaces)
 }
 
+/// The server's own vault file manager (`/vaults`), for the "Manage vaults"
+/// link. The listing here is read-only in both directions — renaming, deleting
+/// and browsing a vault's history all live on the website — so the wizard points
+/// at it rather than growing its own file manager.
+///
+/// `ServerClient` already stores the base URL without a trailing slash, but the
+/// address also reaches here from the settings, so normalize the same way `core`
+/// does rather than building `https://host//vaults`.
+fn manage_vaults_url(base_url: &str) -> String {
+    format!("{}/vaults", askrypt::normalize_base_url(base_url))
+}
+
 /// Human-readable byte size for the vault listing.
 fn human_size(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
@@ -829,7 +841,7 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
         .into();
     }
 
-    let account = row![
+    let mut account = row![
         text(format!(
             "Signed in as {}",
             session.server_email.clone().unwrap_or_default()
@@ -837,13 +849,34 @@ fn server_step<'a>(state: &'a State, session: &'a Session) -> Element<'a, Messag
         .size(12)
         .style(text::secondary)
         .width(Length::Fill),
-        theme::button_link("Refresh", "Fetch the vault list again", None)
-            .on_press(Message::Wizard(Msg::Refresh)),
-        theme::button_link("Sign out", "Forget this sign-in", None)
-            .on_press(Message::Wizard(Msg::SignOut)),
     ]
     .spacing(12)
     .align_y(Vertical::Center);
+
+    // The listing this step draws is read-only in both directions; renaming,
+    // deleting and version history live on the website. Addressed off the
+    // signed-in client rather than the setting, which the "signed in elsewhere"
+    // check above can leave briefly divergent from it.
+    if let Some(client) = &session.server_client {
+        account = account.push(
+            theme::button_link(
+                "Manage vaults",
+                "Open the vault manager on the server's website",
+                Some(icon::box_arrow_up_right(11)),
+            )
+            .on_press(Message::OpenUrl(manage_vaults_url(client.base_url()))),
+        );
+    }
+
+    let account = account
+        .push(
+            theme::button_link("Refresh", "Fetch the vault list again", None)
+                .on_press(Message::Wizard(Msg::Refresh)),
+        )
+        .push(
+            theme::button_link("Sign out", "Forget this sign-in", None)
+                .on_press(Message::Wizard(Msg::SignOut)),
+        );
 
     if state.purpose.is_save() {
         let status = name_status(state);
@@ -1110,6 +1143,20 @@ mod tests {
         // marked row spells the existing name out next to what was typed.
         let state = armed("work", Some(vec![remote("Work")]), false);
         assert_eq!(name_status(&state), NameStatus::Replaces(0));
+    }
+
+    #[test]
+    fn the_manage_link_points_at_the_web_file_manager() {
+        assert_eq!(
+            manage_vaults_url("https://askrypt.com"),
+            "https://askrypt.com/vaults"
+        );
+        // The address also arrives from a hand-edited setting, trailing slash
+        // and all.
+        assert_eq!(
+            manage_vaults_url("https://askrypt.com/"),
+            "https://askrypt.com/vaults"
+        );
     }
 
     #[test]

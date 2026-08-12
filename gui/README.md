@@ -237,6 +237,16 @@ address is a setting and the sign-in happens in a browser (see invariant 4), so
 that step is one button, the shared waiting card, the account's vault list
 (Open), or — saving — a name field over that same list, rendered read-only.
 
+**Everything the listing cannot do is a link to the website.** Both directions
+render the same account row, and it carries a `Manage vaults` link beside
+`Refresh` and `Sign out` that opens `<server>/vaults` (`manage_vaults_url`, over
+the existing `Message::OpenUrl`) in the browser. Renaming, deleting, the quota
+and version history all live in the server's own file manager, and this pane is
+deliberately not growing a second one. The URL comes from the *signed-in
+client's* `base_url()`, not `settings.server_url()` — the "signed in elsewhere"
+check at the top of the step can leave the two divergent for a frame — and the
+link is absent while signed out, where `/vaults` would only bounce to `/login`.
+
 **Entering the server step always refetches that list.** Caching it per sign-in
 (which is what `src/screens/server.rs` does, and what this pane used to do)
 hides every vault saved since — by this app or another device — from the open
