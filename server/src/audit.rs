@@ -99,6 +99,10 @@ pub const ACCOUNT_UNBANNED: &str = "account.unbanned";
 pub const ACCOUNT_DELETED_BY_ADMIN: &str = "account.deleted_by_admin";
 pub const ROLE_GRANTED: &str = "role.granted";
 pub const ROLE_REVOKED: &str = "role.revoked";
+/// A server-wide setting was changed (Phase 12). `account` is the
+/// administrator who changed it — there is no account it was done *to* —
+/// and `detail` carries `key=value` plus their address.
+pub const SETTING_CHANGED: &str = "setting.changed";
 // Desktop sign-in handed to the browser. `account` is empty on `started`,
 // which needs no authentication and so belongs to nobody yet; `detail` carries
 // the device label the app asked for. The poll token and the issued session

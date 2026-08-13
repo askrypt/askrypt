@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 
 pub use types::{
     Account, AccountId, CaptchaError, DeviceLink, DeviceLinkId, DeviceLinkStatus, IdTokenError,
-    MailerError, NewAccount, Role, Session, StoreError, VaultId, VaultMeta, VaultVersion,
+    MailerError, NewAccount, Role, Session, Setting, StoreError, VaultId, VaultMeta, VaultVersion,
     VaultVersionId, VerifiedIdToken,
 };
 
@@ -90,6 +90,30 @@ pub trait RoleStore: Send + Sync {
     async fn revoke(&self, account: AccountId, role: &str) -> Result<(), StoreError>;
     /// Drops every grant held by `account`, as account deletion requires.
     async fn delete_for_account(&self, account: AccountId) -> Result<(), StoreError>;
+}
+
+/// Whether this server accepts new account registrations. Absent means yes —
+/// see [`crate::settings`], which owns that rule and the parsing.
+///
+/// Named here, next to [`ADMIN_ROLE`], so no caller carries a bare key
+/// literal around.
+pub const REGISTRATION_ENABLED: &str = "registration_enabled";
+
+/// Server-wide settings an administrator edits at runtime, as opposed to the
+/// `ASKRYPT_*` environment [`crate::config`] reads once at startup.
+///
+/// Deliberately a string key/value seam: the typed reading of each key lives
+/// in [`crate::settings`], so a second setting is a constant and an accessor
+/// rather than a schema change. There is no `delete` — a setting is either
+/// unwritten (the default) or explicitly set, and offering a third state
+/// would only invite the two to drift.
+#[async_trait]
+pub trait SettingsStore: Send + Sync {
+    /// `None` when the key was never written, which callers must read as
+    /// "use the built-in default" rather than as an error.
+    async fn get(&self, key: &str) -> Result<Option<Setting>, StoreError>;
+    /// Inserts or replaces. Idempotent, so a double-submitted form cannot fail.
+    async fn set(&self, key: &str, value: &str) -> Result<(), StoreError>;
 }
 
 #[async_trait]

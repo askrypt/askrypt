@@ -13,15 +13,15 @@ use uuid::Uuid;
 use super::{
     ADMIN_ROLE, Account, AccountId, AccountStore, CaptchaError, CaptchaVerifier, DeviceLink,
     DeviceLinkId, DeviceLinkStatus, DeviceLinkStore, IdTokenError, IdTokenVerifier, Mailer,
-    MailerError, NewAccount, PAYMENT_USER_ROLE, Role, RoleStore, Session, SessionStore, StoreError,
-    VaultBlobStore, VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId,
-    VaultVersionStore, VerifiedIdToken,
+    MailerError, NewAccount, PAYMENT_USER_ROLE, Role, RoleStore, Session, SessionStore, Setting,
+    SettingsStore, StoreError, VaultBlobStore, VaultId, VaultMeta, VaultMetaStore, VaultVersion,
+    VaultVersionId, VaultVersionStore, VerifiedIdToken,
 };
 
 pub use super::types::{
     FakeCaptchaVerifier, FakeIdTokenVerifier, MemoryAccountStore, MemoryDeviceLinkStore,
-    MemoryMailer, MemoryRoleStore, MemorySessionStore, MemoryVaultBlobStore, MemoryVaultMetaStore,
-    MemoryVaultVersionStore, SentMail,
+    MemoryMailer, MemoryRoleStore, MemorySessionStore, MemorySettingsStore, MemoryVaultBlobStore,
+    MemoryVaultMetaStore, MemoryVaultVersionStore, SentMail,
 };
 
 #[async_trait]
@@ -195,6 +195,25 @@ fn check_unique(
         return Err(StoreError::Conflict("google account already linked".into()));
     }
     Ok(())
+}
+
+#[async_trait]
+impl SettingsStore for MemorySettingsStore {
+    async fn get(&self, key: &str) -> Result<Option<Setting>, StoreError> {
+        Ok(self.values.lock().unwrap().get(key).cloned())
+    }
+
+    async fn set(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.values.lock().unwrap().insert(
+            key.to_string(),
+            Setting {
+                key: key.to_string(),
+                value: value.to_string(),
+                updated_at: Utc::now(),
+            },
+        );
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -676,6 +695,31 @@ mod tests {
         // Past the end is empty, not an error: a stale page link is a
         // browser doing something reasonable.
         assert!(store.list(2, 99).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn settings_start_absent_and_are_overwritten_in_place() {
+        // Same expectations as the SQLite twin, so the two backends cannot
+        // disagree about what an unwritten key means.
+        let store = MemorySettingsStore::default();
+        assert!(store.get("registration_enabled").await.unwrap().is_none());
+
+        store.set("registration_enabled", "false").await.unwrap();
+        let stored = store.get("registration_enabled").await.unwrap().unwrap();
+        assert_eq!(stored.key, "registration_enabled");
+        assert_eq!(stored.value, "false");
+
+        store.set("registration_enabled", "true").await.unwrap();
+        assert_eq!(
+            store
+                .get("registration_enabled")
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            "true"
+        );
+        assert!(store.get("never_written").await.unwrap().is_none());
     }
 
     #[tokio::test]

@@ -1,0 +1,11 @@
+{% extends "layout.html" %}
+{% block title %}Server settings &middot; Askrypt{% endblock %}
+{% block content %}
+<h1>Server settings</h1>
+<p class="hint">Switches that apply to this whole server. They take effect
+immediately and are stored in its database, so they survive a restart —
+unlike the environment the server was started with.</p>
+
+{#- One section that renders and swaps itself; see web::settings. -#}
+{{ settings|safe }}
+{% endblock %}

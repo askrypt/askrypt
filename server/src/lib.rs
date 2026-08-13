@@ -25,6 +25,7 @@ pub mod hardening;
 pub mod profile;
 pub mod ratelimit;
 pub mod routes;
+pub mod settings;
 pub mod state;
 pub mod store;
 #[cfg(test)]

@@ -97,8 +97,9 @@ namespacing), 2 (auth: register, login, Google sign-in), 3 (profile API), 4
 (vault cloud storage), 5 (hardening & deployment), 7 (the website: 7.1
 foundations, 7.2 browser sessions/CSRF, 7.3 profile pages, 7.4 vault file
 manager), 8 (roles + the admin Users page), 9 (the paid storage tier), 10
-(the browser device link that signs desktop apps in) and 11 (reCAPTCHA v3 on
-the website's auth forms) are done. Still open: Phase 6
+(the browser device link that signs desktop apps in), 11 (reCAPTCHA v3 on
+the website's auth forms) and 12 (server settings + the registration switch)
+are done. Still open: Phase 6
 (CI/CD) and browser Google sign-in.
 Self-hosting is documented in **`server/DEPLOY.md`**.
 
@@ -167,11 +168,12 @@ next request.
   `RelaxedCsp`/`SecurityHeaders`, the auth/devicelink/profile/vaults request
   and response bodies, `AuthSession`, `AdminUser`, `VaultStamp`, and the
   `#[cfg(test)]` tracing-capture types. See the "Types live apart from
-  behaviour" note above before adding one.
+  behaviour" note above before adding one. `crate::settings` declares none of
+  its own — it is constants and free functions over the store seam.
 - **`server/src/main.rs`** — Startup: tracing init (`RUST_LOG`), env-var config,
   backend selection, graceful shutdown (Ctrl+C/SIGTERM). The `sqlite` backend
   wires `SqliteAccountStore`/`SqliteRoleStore`/`SqliteSessionStore`/
-  `SqliteVaultMetaStore`/
+  `SqliteSettingsStore`/`SqliteVaultMetaStore`/
   `SqliteVaultVersionStore` plus **two** on-disk `DiskVaultBlobStore`s over
   the *same* root — `new` for the live vaults, `versions` for the archived
   generations — with `vaults_dir()` created at startup so a backup script
@@ -307,7 +309,9 @@ next request.
   password set/change + failed re-auth, email change, session revocation,
   account deletion, and the Phase 8 admin actions — ban/unban, role
   grant/revoke, admin-initiated deletion, where the `account` field names the
-  account acted *on* and the acting administrator goes in `detail`), plus the
+  account acted *on* and the acting administrator goes in `detail`; plus
+  Phase 12's `SETTING_CHANGED`, the one admin event with no account it was
+  done *to*, so `account` is the administrator themselves), plus the
   infallible `ClientInfo` extractor (IP + capped
   user agent). Never logs tokens, passwords, or the email on a *failed* login.
   Vault *file* operations are not audit events — they log from `vaults.rs` on
@@ -344,7 +348,15 @@ next request.
   digest (`pub(crate)` for exactly this), so a log line matches a device-list
   row while **the token itself is never logged**. The happy path logs at
   `trace`, not `debug`: it fires on every authenticated request and the crate
-  defaults to `debug`.
+  defaults to `debug`. Phase 12 hung the **registration switch** off the same
+  two account-creation paths: `register_account` checks
+  `settings::registration_enabled` **first**, before `validate_email`, so a
+  closed server neither spends an argon2 hash nor answers differently for an
+  address that happens to be taken, and `upsert_google_account` checks it
+  **inside the `None` arm only** — signing in with an existing Google account,
+  and *linking* Google to an existing address, both stay open. Both raise the
+  same `registration_disabled()` 403. Gating there rather than in `web/` is
+  what gives the browser form its rendered message for free.
 - **`server/src/devicelink.rs`** — Phase 10: the desktop sign-in a browser
   completes. `POST /api/v1/auth/device` opens a link (public `link_id` for the
   URL, secret `poll_token` for the app, a display-only `user_code`, a
@@ -384,6 +396,19 @@ next request.
   **There is no JSON admin API** —
   administration is a website capability, and no desktop or mobile client
   needs it.
+- **`server/src/settings.rs`** — Phase 12 server settings: runtime state an
+  administrator edits, as opposed to the `ASKRYPT_*` environment `config.rs`
+  reads once at startup. Same split as `admin.rs` — `pub(crate)` free
+  functions (`registration_enabled`, `set_registration_enabled`) over
+  `AppState`, no HTML, and no JSON surface. `store::SettingsStore` moves plain
+  strings; the *typed* reading of each key lives here, so a second setting is
+  a `pub const` in `store/mod.rs` plus an accessor rather than a schema
+  change. **An unwritten key means the default** — nothing seeds the table, so
+  an upgraded database reads exactly as it behaved before the key existed —
+  and three cases all read as "registration open": absent, a value this build
+  does not understand (a hand-edited row must not quietly close a server), and
+  a store failure. That last is a deliberate fail-*open*: the same database
+  that could not answer could not have created the account either.
 - **`server/src/profile.rs`** — Phase 3 profile API under `/api/v1/me`
   (handlers are wrappers; the rules are the `pub(crate)` free functions
   `set_email`, `set_password`, `active_sessions`, `revoke_session_id`,
@@ -552,15 +577,30 @@ next request.
   rather than a route per role. Every admin action re-renders the **whole**
   `#user-list` fragment,
   not the row: each one moves the account total and the administrator count
-  the guards depend on. `Chrome` carries `is_admin` (set by `Shell::as_admin`,
-  defaulting to *off*) so the nav can offer the Users link on every page —
-  hiding it is decoration, `AdminSession` is the gate. Templates must
+  the guards depend on. `settings.rs` is the Phase 12 twin — `/admin/settings`
+  behind the same `AdminSession`, one `#server-settings` card that renders and
+  swaps itself, and a `finish` shaped exactly like `admin.rs`'s minus the
+  paging (plain POST redirects with a flash; htmx cannot, since the flash
+  cookie is only read by the *next* page render, so the confirmation rides in
+  the fragment). Its switch is a hidden `enabled=true|false` field rather than
+  a checkbox: an unchecked checkbox submits nothing, so "off" and "the field
+  never arrived" would be the same request, and the CSP forbids the script
+  that would paper over it. `Chrome` carries `is_admin` (set by `Shell::as_admin`,
+  defaulting to *off*) so the nav can offer the Users and Settings links on
+  every page — hiding them is decoration, `AdminSession` is the gate. The
+  register form carries `AuthForm.registration_closed` (chained on like
+  `with_captcha`, and only ever by the two register handlers), which draws a
+  warning **above a form that still renders**: the refusal itself is
+  `auth::register_account`'s, so the two cannot disagree if the switch is
+  flipped between the GET and the POST. Templates must
   not contain inline `<script>`/`<style>`, `hx-on:` or `js:` htmx
   expressions — the CSP forbids them and `tests/web.rs` guards it.
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
   seam; handlers can only reach the traits. Two of them are the same trait:
   `vault_blobs` (live files) and `vault_version_blobs` (archived generations,
   keyed by version id, under each account's `versions/` subdirectory).
+  `settings` is the runtime-switch seam every account-creation path reads
+  through `crate::settings`.
   `captcha` is also the single source of truth for *whether* there is a
   captcha — its `site_key()` is what the templates and the CSP decision both
   read. `in_memory()` wires `DisabledCaptchaVerifier`, not the fake: a
@@ -568,7 +608,10 @@ next request.
   token, so suites that want one override the seam.
 - **`server/src/store/`** — The backend traits (`mod.rs`): `AccountStore`,
   `RoleStore`,
-  `SessionStore`, `DeviceLinkStore` (the short-lived browser sign-ins, with
+  `SessionStore`, `SettingsStore` (a string key/value seam — `get`/`set`, no
+  `delete`, since a key is either unwritten or explicitly set and a third
+  state would only drift; the typed reading of each key lives in
+  `crate::settings`), `DeviceLinkStore` (the short-lived browser sign-ins, with
   the atomic `claim` and the `delete_expired` sweep),
   `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
   `Mailer`,
@@ -576,19 +619,22 @@ next request.
   `IdTokenError`/`CaptchaError`, all
   `#[non_exhaustive]`, and the `ADMIN_ROLE`/`PAYMENT_USER_ROLE` name
   constants — the stores themselves are name-generic, so a new role needs no
-  code in either backend). `mod.rs` keeps the traits, the constants and the
+  code in either backend — plus the `REGISTRATION_ENABLED` setting key, named
+  for the same reason). `mod.rs` keeps the traits, the constants and the
   inherent impls; every *type* — `Account`, `Session`, `VaultMeta`, the id
   aliases, the error enums, and each backend's own handle and `sqlx` row
   struct — is declared in `types.rs` and re-exported by the module that
   implements over it. `memory.rs`
   in-memory fakes for all of them (used by tests
   and the `memory` backend — `MemoryRoleStore::default` seeds both roles with
-  the *same fixed uuids* the migration writes, so the two backends agree;
+  the *same fixed uuids* the migration writes, so the two backends agree, while
+  `MemorySettingsStore::default` starts **empty**, because the migration seeds
+  no settings either and absence is what a default means there;
   `FakeCaptchaVerifier` is the exception nothing defaults to, see below);
   `sqlite.rs` SQLite pool + embedded migration
   runner over `server/migrations/` plus `SqliteAccountStore`/`SqliteRoleStore`/
-  `SqliteSessionStore`/`SqliteDeviceLinkStore`/`SqliteVaultMetaStore`/
-  `SqliteVaultVersionStore`
+  `SqliteSessionStore`/`SqliteSettingsStore`/`SqliteDeviceLinkStore`/
+  `SqliteVaultMetaStore`/`SqliteVaultVersionStore`
   (uuids as TEXT, timestamps via sqlx-chrono, sessions, vault, `device_links`
   and
   `account_roles` rows cascade
@@ -599,7 +645,14 @@ next request.
   `created_at, id` — the id tiebreak is what keeps paging stable) because the
   admin page must never load every account at once. Adding an `accounts`
   column means touching six places in `sqlite.rs`; `ACCOUNT_COLUMNS` covers
-  the three SELECTs, the INSERT and UPDATE lists are separate); `disk.rs` `DiskVaultBlobStore` storing
+  the three SELECTs, the INSERT and UPDATE lists are separate). **A schema
+  change to a table an applied migration created is a new numbered script,
+  not an edit** — `sqlx::migrate!` validates the checksum of every migration
+  already applied, so editing one a deployed server has run aborts its
+  startup. Phase 8 could still fold `roles` into `0002_auth.sql` because
+  nothing was deployed yet; Phase 12's `settings` table is
+  `0005_settings.sql`. A `sqlite.rs` unit test asserts the migration count,
+  so adding a script means bumping it; `disk.rs` `DiskVaultBlobStore` storing
   bytes at `<root>/<account-id>/<blob-id>.askrypt` with atomic temp-file +
   rename writes (path components are uuids, so no user string reaches the
   filesystem) — instantiated **twice** over `<data>/vaults`: `new` keyed by
@@ -685,7 +738,15 @@ next request.
   token *not* echoed back into the re-rendered field, the JSON auth API still
   working untouched, and — the ordering guarantee — a wrong password *and* a
   bad token yielding the captcha message, which is how you can tell argon2
-  was never reached). Middleware needing a slow
+  was never reached) and
+  `settings.rs` (the Phase 12 gate, 9 tests, both halves at once for the same
+  reason `device_link.rs` is: a server nobody configured is open, the page is
+  advertised and reachable only to administrators, the switch survives and
+  flips back, the htmx swap, its CSRF rejection, and then what "closed"
+  actually refuses — the browser form still rendering but answering 200 with
+  the refusal, the JSON API answering 403 `registration_disabled`, Google
+  refused for a *new* address but still linking to an existing one, and
+  password sign-in untouched on both surfaces). Middleware needing a slow
   or parked handler (timeout, shedding) is unit-tested inside
   `src/hardening.rs` instead. The `last_admin` guard is unreachable through
   the website — only the sole administrator can act on themselves, and the
@@ -693,9 +754,11 @@ next request.
 - **`server/templates/` + `server/static/`** — The website's markup and its
   only loose files. Templates (`layout.html`, `landing.html`,
   `auth_page.html`, `account.html`, `vaults.html`, `admin_users.html`,
+  `admin_settings.html`,
   `link.html` (the device-link page, in its four states), `error.html`, and
   `fragments/` — `auth_form`, `email_form`, `password_form`, `devices`,
   `delete_account`, `vault_upload`, `vault_list`, `user_list`,
+  `settings_form`,
   `error_notice` — the htmx twin of `error.html`, one element rather than a
   document, because it is swapped into `<main>`) compile into
   the binary;

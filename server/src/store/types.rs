@@ -85,6 +85,18 @@ pub struct Role {
     pub description: String,
 }
 
+/// One server-wide setting: an operator-editable value keyed by name.
+///
+/// Rows are written only by an administrator, so a key that has never been
+/// touched is simply absent — which every reader must treat as "use the
+/// built-in default" rather than as an error. See [`crate::settings`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setting {
+    pub key: String,
+    pub value: String,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// An authenticated device session, keyed by its opaque bearer token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
@@ -410,6 +422,14 @@ pub struct MemoryRoleStore {
     pub(crate) grants: Mutex<HashSet<(AccountId, Uuid)>>,
 }
 
+/// In-memory [`super::SettingsStore`]. Starts empty, unlike
+/// [`MemoryRoleStore`]: the migration seeds no settings either, and absence
+/// is what "the default" means here.
+#[derive(Debug, Default)]
+pub struct MemorySettingsStore {
+    pub(crate) values: Mutex<HashMap<String, Setting>>,
+}
+
 #[derive(Debug, Default)]
 pub struct MemorySessionStore {
     pub(crate) sessions: Mutex<HashMap<String, Session>>,
@@ -506,6 +526,18 @@ pub(crate) struct RoleRow {
 
 #[derive(Clone)]
 pub struct SqliteRoleStore {
+    pub(crate) pool: SqlitePool,
+}
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct SettingRow {
+    pub(crate) key: String,
+    pub(crate) value: String,
+    pub(crate) updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub struct SqliteSettingsStore {
     pub(crate) pool: SqlitePool,
 }
 

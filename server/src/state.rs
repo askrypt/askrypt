@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use crate::store::memory::{
     FakeIdTokenVerifier, MemoryAccountStore, MemoryDeviceLinkStore, MemoryMailer, MemoryRoleStore,
-    MemorySessionStore, MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
+    MemorySessionStore, MemorySettingsStore, MemoryVaultBlobStore, MemoryVaultMetaStore,
+    MemoryVaultVersionStore,
 };
 use crate::store::recaptcha::DisabledCaptchaVerifier;
 
@@ -22,6 +23,7 @@ impl AppState {
             accounts: Arc::new(MemoryAccountStore::default()),
             roles: Arc::new(MemoryRoleStore::default()),
             sessions: Arc::new(MemorySessionStore::default()),
+            settings: Arc::new(MemorySettingsStore::default()),
             device_links: Arc::new(MemoryDeviceLinkStore::default()),
             vault_meta: Arc::new(MemoryVaultMetaStore::default()),
             vault_blobs: Arc::new(MemoryVaultBlobStore::default()),

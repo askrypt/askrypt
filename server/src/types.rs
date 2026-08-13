@@ -37,8 +37,8 @@ use crate::store::recaptcha::RecaptchaConfig;
 use crate::store::smtp::SmtpConfig;
 use crate::store::{
     Account, AccountId, AccountStore, CaptchaVerifier, DeviceLinkId, DeviceLinkStore,
-    IdTokenVerifier, Mailer, RoleStore, Session, SessionStore, VaultBlobStore, VaultId,
-    VaultMetaStore, VaultVersionId, VaultVersionStore,
+    IdTokenVerifier, Mailer, RoleStore, Session, SessionStore, SettingsStore, VaultBlobStore,
+    VaultId, VaultMetaStore, VaultVersionId, VaultVersionStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +180,10 @@ pub struct AppState {
     /// the migration, so this seam only ever reads it and writes grants.
     pub roles: Arc<dyn RoleStore>,
     pub sessions: Arc<dyn SessionStore>,
+    /// Server-wide switches an administrator edits at runtime. Every key is
+    /// absent until one is written, so this seam answering `None` is the
+    /// normal case rather than an error — see [`crate::settings`].
+    pub settings: Arc<dyn SettingsStore>,
     /// Desktop sign-ins in flight: the app creates one, the browser approves
     /// it, the app claims the session it authorizes. Short-lived by
     /// construction — every record is deleted on claim or swept at expiry.

@@ -40,14 +40,17 @@ pub use crate::web::types::{DeleteInput, Notice, Paging, RoleInput, UserList, Us
 pub const USERS_PATH: &str = "/admin/users";
 
 impl Notice {
-    fn good(text: impl Into<String>) -> Self {
+    // `pub(crate)` for the settings page, which words its own notices the
+    // same way; the impl stays here, with the module that owns the type's
+    // presentation.
+    pub(crate) fn good(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             danger: false,
         }
     }
 
-    fn bad(text: impl Into<String>) -> Self {
+    pub(crate) fn bad(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             danger: true,

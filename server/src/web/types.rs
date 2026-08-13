@@ -206,6 +206,8 @@ pub enum Flash {
     AdminRevoked,
     PaymentGranted,
     PaymentRevoked,
+    RegistrationOpened,
+    RegistrationClosed,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +272,11 @@ pub struct AuthForm {
     /// all. Filled in by `AuthForm::with_captcha`, never by the two
     /// constructors, so the action and the key can't be set out of step.
     pub(crate) captcha_key: Option<String>,
+    /// Whether an administrator has closed registration. Only the register
+    /// form ever sets it (via `AuthForm::with_registration_closed`), and it is
+    /// a *warning above a form that still renders*: the refusal itself is
+    /// [`crate::auth::register_account`]'s, not this field's.
+    pub(crate) registration_closed: bool,
 }
 
 #[derive(Template)]
@@ -517,6 +524,36 @@ pub struct RoleInput {
     /// predates the paid tier and never sent this.
     #[serde(default)]
     pub(crate) role: String,
+}
+
+// ---------------------------------------------------------------------------
+// settings — the server settings page
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "admin_settings.html")]
+pub(crate) struct SettingsPage {
+    pub(crate) chrome: Chrome,
+    pub(crate) settings: SettingsForm,
+}
+
+#[derive(Template)]
+#[template(path = "fragments/settings_form.html")]
+pub struct SettingsForm {
+    pub(crate) csrf: String,
+    pub(crate) registration_enabled: bool,
+    pub(crate) notice: Option<Notice>,
+}
+
+/// Which way to flip a switch. A hidden field rather than a checkbox: an
+/// unchecked checkbox submits nothing at all, so "off" and "the field never
+/// arrived" would be the same request, and the CSP forbids the script that
+/// would otherwise paper over it. Anything but `"true"` reads as off, so a
+/// hand-made POST cannot mean a third thing.
+#[derive(Deserialize)]
+pub struct SettingsInput {
+    #[serde(default)]
+    pub(crate) enabled: String,
 }
 
 // ---------------------------------------------------------------------------

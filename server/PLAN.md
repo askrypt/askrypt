@@ -697,6 +697,55 @@ askrypt/
     reached. `server/tests/captcha.rs` (12 tests) plus unit tests in
     `src/store/recaptcha.rs` and `src/config.rs`.
 
+- **Phase 12 — Server settings and the registration switch.** ✅ *(done
+  2026-08-13)*
+  Everything about a running server was fixed at startup by the `ASKRYPT_*`
+  environment or scoped to one account. An operator had no way to say "this
+  server is not taking new accounts" — not on a self-hosted instance, and not
+  on the public one — short of a restart with a config that did not exist.
+
+  - **A key/value table, not a column per switch.** `settings (key, value,
+    updated_at)` behind a new `SettingsStore` seam (`get`/`set`, no `delete`),
+    with the typed reading of each key in `src/settings.rs`. A second setting
+    is a `pub const` plus an accessor; the stores stay key-generic, like the
+    role stores are name-generic.
+  - **An unwritten key means the default.** The migration seeds *nothing* and
+    `MemorySettingsStore` starts empty, so an existing database reads exactly
+    as it behaved before the key existed. A value this build does not
+    understand and a store failure read as the default too — the second is a
+    deliberate fail-*open*, since the database that could not answer could not
+    have created the account either.
+  - **A new numbered migration**, `0005_settings.sql`, not an edit to
+    `0002_auth.sql` the way Phase 8 added `roles`. `sqlx::migrate!` validates
+    the checksum of every applied migration, and this server is deployed now:
+    editing one it has already run would abort its startup.
+  - **The gate is in `crate::auth`, once per creation path.**
+    `register_account` checks first, before `validate_email`, so a closed
+    server neither spends an argon2 hash nor answers differently for an
+    address that is taken; that one edit covers the JSON API, the browser form
+    and the `?link=` device-link registration that routes through it.
+    `upsert_google_account` checks inside its `None` arm only, so signing in
+    with an existing Google account and *linking* Google to an existing
+    address both stay open.
+  - **The register page keeps its form and warns.** Hiding it would leave a
+    visitor who actually has an account with nowhere to go, and the warning is
+    only a warning: `register_account` is what refuses, so the two cannot
+    disagree if the switch is flipped between the GET and the POST.
+  - **`/admin/settings` is HTML only**, behind the same `AdminSession` and the
+    same shared limiter as the Users page, with no `/api/v1/admin/*` — the
+    Phase 8 rule. The switch is a hidden `enabled=true|false` field rather
+    than a checkbox: an unchecked checkbox submits nothing, so "off" and "the
+    field never arrived" would be the same request, and the CSP forbids the
+    script that would paper over it.
+  - **Phase gate:** ✅ a server nobody configured is open; the page is
+    advertised and reachable only to administrators; the switch survives and
+    flips back; the htmx swap and its CSRF rejection; and what "closed"
+    refuses — the browser form still rendering but answering 200 with the
+    refusal, the JSON API answering 403 `registration_disabled`, Google
+    refused for a new address but still linking to an existing one, and
+    password sign-in untouched on both surfaces. `server/tests/settings.rs`
+    (9 tests) plus unit tests in `src/settings.rs` and both store backends.
+
 ## Open decisions (not blocking)
 
 - ~~Client-side sync UX for **desktop**~~ — decided and built: manual

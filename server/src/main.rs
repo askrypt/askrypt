@@ -12,7 +12,7 @@ use askrypt_server::store::recaptcha::{DisabledCaptchaVerifier, RecaptchaVerifie
 use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
     self, SqliteAccountStore, SqliteDeviceLinkStore, SqliteRoleStore, SqliteSessionStore,
-    SqliteVaultMetaStore, SqliteVaultVersionStore,
+    SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 use askrypt_server::store::{
     ADMIN_ROLE, AccountStore, CaptchaVerifier, IdTokenVerifier, Mailer, RoleStore,
@@ -271,6 +271,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 accounts: Arc::new(SqliteAccountStore::new(pool.clone())),
                 roles: Arc::new(SqliteRoleStore::new(pool.clone())),
                 sessions: Arc::new(SqliteSessionStore::new(pool.clone())),
+                settings: Arc::new(SqliteSettingsStore::new(pool.clone())),
                 device_links: Arc::new(SqliteDeviceLinkStore::new(pool.clone())),
                 vault_meta: Arc::new(SqliteVaultMetaStore::new(pool.clone())),
                 vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),

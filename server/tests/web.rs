@@ -329,7 +329,7 @@ async fn no_page_carries_an_inline_script_or_style() {
     let signed_out = ["/", "/login", "/register", "/nope"];
     // The first account registered on a server is its administrator, so this
     // jar reaches the Users page too.
-    let signed_in = ["/account", "/vaults", "/admin/users"];
+    let signed_in = ["/account", "/vaults", "/admin/users", "/admin/settings"];
     for (path, jar) in signed_out
         .iter()
         .map(|p| (*p, ""))

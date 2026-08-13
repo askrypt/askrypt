@@ -39,6 +39,8 @@ impl Flash {
             Self::AdminRevoked => "arevoke",
             Self::PaymentGranted => "pgrant",
             Self::PaymentRevoked => "prevoke",
+            Self::RegistrationOpened => "regon",
+            Self::RegistrationClosed => "regoff",
         }
     }
 
@@ -64,6 +66,8 @@ impl Flash {
             "arevoke" => Some(Self::AdminRevoked),
             "pgrant" => Some(Self::PaymentGranted),
             "prevoke" => Some(Self::PaymentRevoked),
+            "regon" => Some(Self::RegistrationOpened),
+            "regoff" => Some(Self::RegistrationClosed),
             _ => None,
         }
     }
@@ -94,6 +98,10 @@ impl Flash {
             Self::AdminRevoked => "That account is no longer an administrator.",
             Self::PaymentGranted => "That account is now on the paid storage tier.",
             Self::PaymentRevoked => "That account is back on the standard storage quota.",
+            Self::RegistrationOpened => "Anyone can create an account on this server again.",
+            Self::RegistrationClosed => {
+                "New accounts are closed. Everyone who already has one can still sign in."
+            }
         }
     }
 }
@@ -146,6 +154,8 @@ mod tests {
             Flash::AdminRevoked,
             Flash::PaymentGranted,
             Flash::PaymentRevoked,
+            Flash::RegistrationOpened,
+            Flash::RegistrationClosed,
         ];
         for flash in all {
             assert_eq!(Flash::from_code(flash.code()), Some(flash));

@@ -1,7 +1,7 @@
 //! SQLite backend: connection pool, embedded migration runner, and the
 //! SQLite implementations of [`AccountStore`], [`SessionStore`] (Phase 2),
 //! [`VaultMetaStore`] (Phase 4), [`VaultVersionStore`] and [`RoleStore`]
-//! (Phase 8).
+//! (Phase 8), and [`SettingsStore`] (Phase 12).
 //!
 //! Uuids are stored as hyphenated TEXT, timestamps as TEXT via sqlx's
 //! chrono mapping. Migrations are embedded in the binary from
@@ -16,16 +16,18 @@ use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
-use super::types::{AccountRow, DeviceLinkRow, RoleRow, SessionRow, VaultMetaRow, VaultVersionRow};
+use super::types::{
+    AccountRow, DeviceLinkRow, RoleRow, SessionRow, SettingRow, VaultMetaRow, VaultVersionRow,
+};
 use super::{
     Account, AccountId, AccountStore, DeviceLink, DeviceLinkId, DeviceLinkStatus, DeviceLinkStore,
-    NewAccount, Role, RoleStore, Session, SessionStore, StoreError, VaultId, VaultMeta,
-    VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
+    NewAccount, Role, RoleStore, Session, SessionStore, Setting, SettingsStore, StoreError,
+    VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
 };
 
 pub use super::types::{
     SqliteAccountStore, SqliteDeviceLinkStore, SqliteRoleStore, SqliteSessionStore,
-    SqliteVaultMetaStore, SqliteVaultVersionStore,
+    SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -291,6 +293,50 @@ impl RoleStore for SqliteRoleStore {
             .execute(&self.pool)
             .await
             .map_err(backend_err)?;
+        Ok(())
+    }
+}
+
+impl SettingRow {
+    fn into_setting(self) -> Setting {
+        Setting {
+            key: self.key,
+            value: self.value,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
+impl SqliteSettingsStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl SettingsStore for SqliteSettingsStore {
+    async fn get(&self, key: &str) -> Result<Option<Setting>, StoreError> {
+        let row: Option<SettingRow> =
+            sqlx::query_as("SELECT key, value, updated_at FROM settings WHERE key = ?1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(backend_err)?;
+        Ok(row.map(SettingRow::into_setting))
+    }
+
+    async fn set(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT (key) DO UPDATE SET \
+             value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map_err(backend_err)?;
         Ok(())
     }
 }
@@ -784,7 +830,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(applied, 4);
+        assert_eq!(applied, 5);
 
         // Re-opening is idempotent: already-applied migrations are skipped.
         let pool2 = open(&db_path).await.unwrap();
@@ -1087,6 +1133,33 @@ mod tests {
             roles[1].id.to_string(),
             "a0000000-0000-4000-8000-000000000002"
         );
+    }
+
+    #[tokio::test]
+    async fn settings_start_absent_and_are_overwritten_in_place() {
+        let (_dir, pool) = setup().await;
+        let settings = SqliteSettingsStore::new(pool);
+        // The migration seeds no rows: absence is what "the default" means.
+        assert!(
+            settings
+                .get("registration_enabled")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        settings.set("registration_enabled", "false").await.unwrap();
+        let stored = settings.get("registration_enabled").await.unwrap().unwrap();
+        assert_eq!(stored.key, "registration_enabled");
+        assert_eq!(stored.value, "false");
+
+        // Setting again replaces rather than conflicting, so a double-submitted
+        // form cannot fail.
+        settings.set("registration_enabled", "true").await.unwrap();
+        let stored = settings.get("registration_enabled").await.unwrap().unwrap();
+        assert_eq!(stored.value, "true");
+
+        assert!(settings.get("never_written").await.unwrap().is_none());
     }
 
     #[tokio::test]

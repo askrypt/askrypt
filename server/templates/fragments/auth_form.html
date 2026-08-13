@@ -8,6 +8,14 @@
 <form id="auth-form" class="card form" method="post" action="{{ action }}"
       hx-post="{{ action }}" hx-target="this" hx-swap="outerHTML">
   <h1>{{ heading }}</h1>
+{%- if registration_closed %}
+  {#- A warning, not the refusal: `auth::register_account` is what actually
+      turns a submit away, so this stays true even if the switch is flipped
+      between rendering the form and posting it. The fields keep rendering —
+      a visitor who is really here to sign in still needs the link below. -#}
+  <p class="error" role="status">This server is not accepting new accounts
+  right now. If you already have one, sign in instead.</p>
+{%- endif %}
 {%- if let Some(error) = error.as_deref() %}
   <p class="error" role="alert">{{ error }}</p>
 {%- endif %}

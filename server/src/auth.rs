@@ -31,6 +31,7 @@ use tokio::sync::Semaphore;
 use crate::admin;
 use crate::audit::{self, ClientInfo};
 use crate::error::{ApiError, ApiJson, ApiResult};
+use crate::settings;
 use crate::state::AppState;
 use crate::store::{Account, AccountId, NewAccount, Session, StoreError, VerifiedIdToken};
 
@@ -147,13 +148,26 @@ pub async fn logout(
 /// Creates an email+password account, auditing every rejection.
 ///
 /// Shared with the HTML register form, which must not re-derive the
-/// validation or the "email taken" audit.
+/// validation or the "email taken" audit — and, since Phase 12, the one place
+/// the registration switch is enforced for both surfaces.
 pub(crate) async fn register_account(
     state: &AppState,
     client: &ClientInfo,
     raw_email: &str,
     password: String,
 ) -> ApiResult<Account> {
+    // First, before the address is even validated: a closed server must not
+    // spend an argon2 hash on a submission it will refuse, and must not
+    // answer differently for an address that happens to be taken.
+    if !settings::registration_enabled(state).await {
+        audit::emit(
+            audit::REGISTER_DENIED,
+            client,
+            None,
+            "registration_disabled",
+        );
+        return Err(registration_disabled());
+    }
     let email = validate_email(raw_email).inspect_err(|err| {
         audit::emit(audit::REGISTER_DENIED, client, None, err.code);
     })?;
@@ -253,6 +267,17 @@ pub(crate) fn account_banned() -> ApiError {
     )
 }
 
+/// The refusal every account-creation path shares once an administrator has
+/// closed registration. Sign-in is untouched by it, and so is linking Google
+/// to an account that already exists.
+pub(crate) fn registration_disabled() -> ApiError {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "registration_disabled",
+        "this server is not accepting new accounts",
+    )
+}
+
 /// Creates or links the account behind a *verified* Google ID token,
 /// returning it plus the audit outcome (`existing` / `linked` /
 /// `new_account`) for the caller to emit alongside its own event.
@@ -304,6 +329,19 @@ pub(crate) async fn upsert_google_account(
             }
         },
         None => {
+            // Only this arm is gated: signing in with a Google account that
+            // already exists, and *linking* Google to an existing address,
+            // both stay open when registration is closed. This is the only
+            // place on the path that creates an account.
+            if !settings::registration_enabled(state).await {
+                audit::emit(
+                    audit::LOGIN_GOOGLE_DENIED,
+                    client,
+                    None,
+                    "registration_disabled",
+                );
+                return Err(registration_disabled());
+            }
             outcome = "new_account";
             let account = state
                 .accounts

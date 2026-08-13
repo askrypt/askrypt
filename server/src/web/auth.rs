@@ -16,6 +16,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use crate::audit::{self, ClientInfo};
 use crate::auth;
 use crate::devicelink;
+use crate::settings;
 use crate::state::AppState;
 use crate::store::{Account, DeviceLinkId};
 use crate::web::WebError;
@@ -49,6 +50,7 @@ impl AuthForm {
             link,
             captcha_action: captcha::LOGIN_ACTION,
             captcha_key: None,
+            registration_closed: false,
         }
     }
 
@@ -71,6 +73,7 @@ impl AuthForm {
             link,
             captcha_action: captcha::REGISTER_ACTION,
             captcha_key: None,
+            registration_closed: false,
         }
     }
 
@@ -79,6 +82,17 @@ impl AuthForm {
     /// cannot pair one form's key with the other's action.
     fn with_captcha(mut self, state: &AppState) -> Self {
         self.captcha_key = state.captcha.site_key().map(str::to_owned);
+        self
+    }
+
+    /// Warns that an administrator has closed registration. Chained for the
+    /// same reason as [`Self::with_captcha`], and only ever with `true` from
+    /// the two register handlers — the sign-in form has nothing to say about
+    /// it. The form still renders: the refusal is
+    /// [`crate::auth::register_account`]'s job, and hiding the fields would
+    /// only leave a visitor with an existing account nowhere to go.
+    fn with_registration_closed(mut self, closed: bool) -> Self {
+        self.registration_closed = closed;
         self
     }
 }
@@ -95,6 +109,7 @@ pub async fn login_form(
         &headers,
         AuthForm::login,
         query.link.as_deref(),
+        false,
     )
 }
 
@@ -104,12 +119,14 @@ pub async fn register_form(
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> Response {
+    let closed = !settings::registration_enabled(&state).await;
     auth_page(
         &state,
         session,
         &headers,
         AuthForm::register,
         query.link.as_deref(),
+        closed,
     )
 }
 
@@ -121,6 +138,7 @@ fn auth_page(
     headers: &HeaderMap,
     build: BuildForm,
     link: Option<&str>,
+    registration_closed: bool,
 ) -> Response {
     let link = link.and_then(devicelink::parse_link_id);
     if session.0.is_some() {
@@ -147,7 +165,8 @@ fn auth_page(
         None,
         link.map(|id| id.to_string()),
     )
-    .with_captcha(state);
+    .with_captcha(state)
+    .with_registration_closed(registration_closed);
     let relaxed = form.captcha_key.is_some();
     let page = Page(AuthPage { chrome, form }).into_response();
     with_cookies(captcha::relax_csp(page, relaxed), cookies)
@@ -172,6 +191,7 @@ pub async fn login_submit(
             form.email,
             message.to_string(),
             link,
+            false,
         );
     }
     let account = match auth::authenticate(&state, &client, &form.email, form.password).await {
@@ -184,6 +204,7 @@ pub async fn login_submit(
                 form.email,
                 err.message,
                 link,
+                false,
             );
         }
     };
@@ -201,6 +222,9 @@ pub async fn register_submit(
 ) -> Response {
     let link = form.link.as_deref().and_then(devicelink::parse_link_id);
     let email = form.email.clone();
+    // Read for the *warning* only; `register_account` re-reads it and is what
+    // actually refuses, so a switch flipped between the two still holds.
+    let closed = !settings::registration_enabled(&state).await;
     // Same order as sign-in, for the same reason plus one: registration is
     // the endpoint that creates rows, so a scripted flood is worth more here.
     if let Err(message) = captcha::check(
@@ -218,6 +242,7 @@ pub async fn register_submit(
             email,
             message.to_string(),
             link,
+            closed,
         );
     }
     let account = match auth::register_account(&state, &client, &form.email, form.password).await {
@@ -230,6 +255,7 @@ pub async fn register_submit(
                 email,
                 err.message,
                 link,
+                closed,
             );
         }
     };
@@ -316,6 +342,7 @@ fn rejected(
     email: String,
     message: String,
     link: Option<DeviceLinkId>,
+    registration_closed: bool,
 ) -> Response {
     let (chrome, cookies) = Shell::build(headers, None)
         .without_auth_links()
@@ -326,7 +353,8 @@ fn rejected(
         Some(message),
         link.map(|id| id.to_string()),
     )
-    .with_captcha(state);
+    .with_captcha(state)
+    .with_registration_closed(registration_closed);
     let relaxed = form.captcha_key.is_some();
     let body = if is_htmx(headers) {
         (StatusCode::OK, Page(form)).into_response()

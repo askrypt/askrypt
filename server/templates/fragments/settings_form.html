@@ -1,0 +1,45 @@
+{#-
+  The server settings card. It renders and swaps itself, like the user list,
+  so one POST both applies a switch and redraws its current state.
+
+  Each switch is a form with a hidden `enabled` value rather than a checkbox:
+  an unchecked checkbox submits nothing at all, so "off" and "the field never
+  arrived" would be the same request, and the CSP forbids the script that
+  would otherwise submit one. Closing registration is a <details> disclosure
+  for the same reason the destructive actions on the Users page are — it
+  works with JavaScript switched off, which the pages have to.
+-#}
+<section class="card" id="server-settings">
+  <h2>Registration</h2>
+{%- if let Some(notice) = notice %}
+  <p class="{% if notice.danger %}error{% else %}flash{% endif %}" role="alert">{{ notice.text }}</p>
+{%- endif %}
+
+{%- if registration_enabled %}
+  <p>Anyone who reaches this server can create an account.</p>
+  <details class="confirm">
+    <summary>Close registration</summary>
+    <form method="post" action="/admin/settings"
+          hx-post="/admin/settings" hx-target="#server-settings"
+          hx-swap="outerHTML">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="enabled" value="false">
+      <p class="hint">Stops new accounts being created — through the website,
+      through the apps, and through Google sign-in. Everyone who already has
+      an account keeps signing in and keeps their vaults, and you can open
+      registration again at any time.</p>
+      <button class="button small" type="submit">Close registration</button>
+    </form>
+  </details>
+{%- else %}
+  <p class="error" role="status">New accounts are closed. Everyone who
+  already has one can still sign in.</p>
+  <form method="post" action="/admin/settings"
+        hx-post="/admin/settings" hx-target="#server-settings"
+        hx-swap="outerHTML">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="enabled" value="true">
+    <button class="button small" type="submit">Open registration</button>
+  </form>
+{%- endif %}
+</section>

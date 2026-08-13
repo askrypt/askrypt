@@ -37,6 +37,7 @@ pub mod flash;
 pub mod pages;
 pub mod render;
 pub mod session;
+pub mod settings;
 pub mod types;
 pub mod vaults;
 
@@ -125,6 +126,10 @@ pub fn routes(
         .route("/admin/users/{id}/unban", post(admin::unban))
         .route("/admin/users/{id}/role", post(admin::set_role))
         .route("/admin/users/{id}/delete", post(admin::delete))
+        .route(
+            "/admin/settings",
+            get(settings::page).post(settings::update),
+        )
         .route_layer(middleware::from_fn_with_state(profile_limiter, rate_limit));
 
     let vault_routes = Router::new()
