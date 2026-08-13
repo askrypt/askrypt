@@ -310,6 +310,7 @@ dependencies = [
  "http-body-util",
  "jsonwebtoken",
  "lettre",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

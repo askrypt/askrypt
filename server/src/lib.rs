@@ -26,8 +26,10 @@ pub mod profile;
 pub mod ratelimit;
 pub mod routes;
 pub mod settings;
+pub mod startup;
 pub mod state;
 pub mod store;
+pub mod sysinfo;
 #[cfg(test)]
 mod testlog;
 pub mod types;

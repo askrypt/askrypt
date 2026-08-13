@@ -53,6 +53,12 @@ askama = "0.16"
 # attribute string visible and under test.
 serde_urlencoded = "0.7"
 
+# `statvfs` for the free-space figure in the startup notice (src/sysinfo.rs).
+# Already in the tree via tokio; std has no API for it, and a `df` subprocess
+# would need coreutils in the runtime image.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # `io-util` for the fake SMTP server in `store::smtp`'s tests; the rest of
 # the features come from the main dependency above.

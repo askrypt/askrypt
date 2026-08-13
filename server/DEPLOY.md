@@ -38,6 +38,8 @@ All settings are environment variables; all are optional.
 | Variable | Default | Meaning |
 |---|---|---|
 | `ASKRYPT_BIND` | `127.0.0.1:8080` | Listen address. Keep it on loopback (or a private network) behind the proxy |
+| `ASKRYPT_DOMAIN` | *(empty)* | The public host name. Caddy requests its certificate for this; the server only *reports* it, in the startup email — no routing, no redirect, no cookie domain depends on it |
+| `ASKRYPT_ADMIN_EMAIL` | *(the SMTP sender)* | Recipient of the startup notice. Unset sends it to `ASKRYPT_SMTP_FROM`, which is usually a mailbox you already own |
 | `ASKRYPT_DATA_DIR` | `data` | SQLite db + vault blobs. Set an absolute path in production |
 | `ASKRYPT_BACKEND` | `sqlite` | `sqlite` or `memory` (nothing persisted — dev only) |
 | `ASKRYPT_STATIC_DIR` | `server/static` | Assets served at `/assets` (stylesheet + vendored htmx). The default is relative to the working directory |
@@ -109,6 +111,41 @@ Treat that warning as a deployment defect. A bad sender address or unusable
 relay fails at startup, not on the first message; half-set credentials fail
 `Config::from_env` before the server binds. The password is never logged — it
 is redacted from every `Debug` rendering and from configuration errors.
+
+#### The startup notice
+
+With a relay configured, every start sends one email — to `ASKRYPT_ADMIN_EMAIL`
+if set, otherwise to the `ASKRYPT_SMTP_FROM` address:
+
+```
+Subject: Askrypt server started on askrypt.example.com
+
+askrypt-server has started.
+
+Domain:      askrypt.example.com
+Listening:   0.0.0.0:8080
+Backend:     sqlite
+Data dir:    /home/askrypt-server/data
+Build:       9f2c1ab
+Server time: 2026-08-13 09:12:44 +00:00 (09:12:44 UTC)
+
+Memory:      4.0 GiB used of 16.0 GiB (12.0 GiB free)
+Disk:        12.0 GiB used of 40.0 GiB (26.0 GiB free) on the data directory's filesystem
+```
+
+Read it as a **restart alarm**: a deploy explains one, and anything else — an
+OOM kill, a host reboot, a container the supervisor is recycling — is a mail
+you did not expect. The two capacity figures are there so the mail that arrives
+at 3 a.m. already says whether the box is out of room. In a container the
+memory figures are the *host's* (`/proc/meminfo` does not reflect a cgroup
+limit); the disk figures are the real ones, since the data directory is a bind
+mount from the host.
+
+It carries no account data, no counts and no secrets, so a shared operations
+mailbox is a fine destination. It cannot delay or fail startup — it is sent
+after the socket is bound, on its own task, and a refused delivery is logged
+at `warn` and forgotten. `ASKRYPT_SMTP_HOST` unset means no notice at all
+rather than one printed to the log.
 
 ### Sizing note
 
@@ -544,6 +581,10 @@ docker volume rm askrypt_askrypt-data askrypt_askrypt-logs
       tokens included — instead of sending them.
 - [ ] `ASKRYPT_SMTP_PASSWORD` comes from `/home/askrypt-server/.env` (mode
       `0600`), not from a file under version control.
+- [ ] The **startup email arrived** after the first deploy, at
+      `ASKRYPT_ADMIN_EMAIL` (or the sender address), and names the right
+      domain. It is the cheapest end-to-end proof the relay works — and from
+      then on, every one you did not expect is a restart worth explaining.
 - [ ] `ASKRYPT_DOMAIN` in that `.env` is the real hostname, and its DNS A/AAAA
       record already points here — Caddy cannot get a certificate otherwise.
 - [ ] `spot.yml`'s `targets:` hold the real hosts, and `./deploy.sh <target>

@@ -317,9 +317,23 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         info!("trusting X-Real-IP/X-Forwarded-For — the listener must not be reachable directly");
     }
 
+    // Kept from the state before it moves into the router: the startup notice
+    // sends through the same relay the account emails do.
+    let notice_mailer = state.mailer.clone();
+
     let app = routes::router(state, &config);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
-    info!(addr = %listener.local_addr()?, "listening");
+    let addr = listener.local_addr()?;
+    info!(%addr, "listening");
+
+    // After the bind, so the notice only goes out for a server that is
+    // actually up, and on its own task, so a slow or dead relay delays
+    // nothing. It sends only when an SMTP relay is configured.
+    tokio::spawn({
+        let config = config.clone();
+        async move { askrypt_server::startup::notify_started(&*notice_mailer, &config, addr).await }
+    });
+
     // ConnectInfo gives the rate limiter and audit log a per-peer key when
     // no trusted reverse proxy sets the client-address headers.
     axum::serve(

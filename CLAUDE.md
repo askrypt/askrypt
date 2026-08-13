@@ -179,7 +179,8 @@ next request.
   `ApiBytes` and the serialized `ErrorBody`, `ClientIpPolicy`, `ClientInfo`,
   `Config`/`Backend`/`LogFormat`/`ConfigError`, `AppState`, `RateLimiter`,
   `RelaxedCsp`/`SecurityHeaders`, the auth/devicelink/profile/vaults request
-  and response bodies, `AuthSession`, `AdminUser`, `VaultStamp`, and the
+  and response bodies, `AuthSession`, `AdminUser`, `VaultStamp`,
+  `MemoryUsage`/`DiskUsage`, and the
   `#[cfg(test)]` tracing-capture types. See the "Types live apart from
   behaviour" note above before adding one. `crate::settings` declares none of
   its own — it is constants and free functions over the store seam.
@@ -216,10 +217,42 @@ next request.
   deliberately does *not* write files — run from cron as root it would create
   the day's file unwritable by the service user. The returned `WorkerGuard`
   flushes the non-blocking writer on drop, so every `process::exit` path
-  drops it by hand first.
+  drops it by hand first. Once the listener is bound it spawns
+  `startup::notify_started` on its own task — **after** the bind, so the mail
+  only goes out for a server that is actually up, and detached, so a relay
+  that takes ten seconds to answer does not hold serving back.
+- **`server/src/startup.rs`** — The "server is up" email: which deployment
+  (`ASKRYPT_DOMAIN`), where it listens, the backend, the data dir, the build
+  revision, the server's own wall clock *and* its UTC reading, plus the host's
+  free/used memory and the free/used space on the data directory's
+  filesystem. It exists as a **restart alarm** — a deploy explains one, an OOM
+  kill or a recycling container does not. Three rules: it sends only through a
+  real relay (with none configured the mailer *logs* messages in full, so a
+  notice there would be console noise and no delivery); it cannot delay or
+  fail startup (spawned after the bind, a refused delivery is a `warn!`); and
+  the body carries no account data, counts or secrets, so a shared operations
+  mailbox is a fine destination. `recipient` is `ASKRYPT_ADMIN_EMAIL` or, unset,
+  the SMTP sender — configuring a relay is enough. `compose` is pure and takes
+  the probes and the timestamp as arguments (a `DateTime<FixedOffset>`, so the
+  offset is in the test rather than in the test machine's timezone).
+- **`server/src/sysinfo.rs`** — The two host probes that notice feeds on, and
+  nothing else in the server reads: `memory()` parses `/proc/meminfo`
+  (`MemAvailable`, falling back to `MemFree` on pre-3.14 kernels — never
+  `MemFree` when both exist, or a healthy server reads as nearly out of
+  memory), `disk()` is `statvfs` via `libc` (`f_bavail`, the unprivileged
+  figure, walking up to the nearest existing ancestor so the data directory
+  need not have been created yet), and `format_bytes` is the binary-unit
+  rendering. Every probe answers `None` rather than zero when it cannot read —
+  "0 free" would be an emergency, "unavailable" is the truth. In a container
+  the memory figures are the *host's*; the disk figures are real, the data
+  directory being a bind mount.
 - **`server/src/config.rs`** — `Config::from_env()`, layered over
   `Config::default()` (which tests use directly): `ASKRYPT_BIND`
-  (default `127.0.0.1:8080`), `ASKRYPT_DATA_DIR` (default `data`, gitignored),
+  (default `127.0.0.1:8080`), `ASKRYPT_DOMAIN` and `ASKRYPT_ADMIN_EMAIL` (both
+  `Option<String>` via `non_empty`, where a blank value means unset because the
+  compose file passes them through as `"${VAR:-}"`; neither is routed on —
+  they only address and name the startup notice), `ASKRYPT_DATA_DIR` (default
+  `data`, gitignored),
   `ASKRYPT_BACKEND` (`sqlite` default | `memory`), `ASKRYPT_STATIC_DIR`
   (default `server/static`, i.e. `cargo run` from the workspace root),
   `ASKRYPT_GOOGLE_CLIENT_IDS` (comma-separated ID-token audiences; empty
@@ -876,6 +909,7 @@ next request.
 | `askama` | Server-rendered HTML templates, compiled into the server binary |
 | `lettre` | SMTP delivery for the server's `Mailer` seam (rustls, no OpenSSL) |
 | `tracing-appender` | The server's daily-rotating log files under `ASKRYPT_LOG_DIR` |
+| `libc` | `statvfs` for the free-space figure in the server's startup notice (unix only) |
 
 ### Build & Test
 

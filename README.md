@@ -132,6 +132,8 @@ Configuration via environment variables (all optional):
 | Variable             | Default          | Meaning                                  |
 |----------------------|------------------|------------------------------------------|
 | `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on              |
+| `ASKRYPT_DOMAIN`     | *(empty)*        | Public host name. Reporting only — nothing routes on it |
+| `ASKRYPT_ADMIN_EMAIL` | *(SMTP sender)* | Where the startup notice goes            |
 | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data dir (SQLite db, vault blobs)|
 | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite` or `memory`    |
 | `ASKRYPT_STATIC_DIR` | `server/static`  | Assets served at `/assets` (CSS + htmx)  |
@@ -167,6 +169,15 @@ Without `ASKRYPT_SMTP_HOST` the server keeps the development mailer, which
 writes each message — recipient, subject **and body** — to the log rather than
 sending it. That is convenient for reading a verification link off the console
 and unacceptable in production, where those bodies carry single-use tokens.
+
+With a relay configured, the server emails a **startup notice** to
+`ASKRYPT_ADMIN_EMAIL` (or, unset, to the `ASKRYPT_SMTP_FROM` address) each time
+it comes up: the domain, the listen address, the build revision, the server's
+own clock, and how much memory and disk the host has left. It is how a restart
+nobody ordered — an OOM kill, a reboot, a container the supervisor keeps
+recycling — announces itself. Sending happens after the socket is bound and on
+its own task, so a slow or dead relay delays nothing and a refused delivery is
+a `warn!` rather than a failed startup.
 
 Logging uses the standard `RUST_LOG` filter; keep `askrypt_server` at `info` or
 lower, since the audit log rides that target. Everything printed to the console

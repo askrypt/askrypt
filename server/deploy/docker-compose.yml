@@ -37,6 +37,12 @@ services:
     expose:
       - "8080"
     environment:
+      # The same domain Caddy gets its certificate for. The server routes
+      # nothing on it — it names the deployment in the startup email, so a
+      # mailbox collecting notices from several servers can be told apart.
+      ASKRYPT_DOMAIN: "${ASKRYPT_DOMAIN:-}"
+      # Where that startup notice goes. Empty sends it to ASKRYPT_SMTP_FROM.
+      ASKRYPT_ADMIN_EMAIL: "${ASKRYPT_ADMIN_EMAIL:-}"
       # Set to the OAuth client ids of the web/desktop/mobile apps to enable
       # Google sign-in; leave unset to disable it.
       ASKRYPT_GOOGLE_CLIENT_IDS: "${ASKRYPT_GOOGLE_CLIENT_IDS:-}"

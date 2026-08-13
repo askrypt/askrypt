@@ -3,6 +3,8 @@
 //! | Variable             | Default          | Meaning                          |
 //! |----------------------|------------------|----------------------------------|
 //! | `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on      |
+//! | `ASKRYPT_DOMAIN`     | *(empty)*        | Public host name, for operational notices only — nothing routes on it |
+//! | `ASKRYPT_ADMIN_EMAIL` | *(SMTP sender)* | Recipient of operational notices (the startup email) |
 //! | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data directory           |
 //! | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite`/`memory` |
 //! | `ASKRYPT_STATIC_DIR` | `server/static`  | Assets served at `/assets` (CSS + htmx) |
@@ -58,6 +60,8 @@ use crate::store::smtp::{SmtpConfig, SmtpCredentials, SmtpEncryption};
 pub use crate::types::{Backend, Config, ConfigError, LogFormat};
 
 pub const ENV_BIND: &str = "ASKRYPT_BIND";
+pub const ENV_DOMAIN: &str = "ASKRYPT_DOMAIN";
+pub const ENV_ADMIN_EMAIL: &str = "ASKRYPT_ADMIN_EMAIL";
 pub const ENV_DATA_DIR: &str = "ASKRYPT_DATA_DIR";
 pub const ENV_BACKEND: &str = "ASKRYPT_BACKEND";
 pub const ENV_STATIC_DIR: &str = "ASKRYPT_STATIC_DIR";
@@ -107,6 +111,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             bind: DEFAULT_BIND.parse().expect("valid default bind address"),
+            domain: None,
+            admin_email: None,
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
             backend: Backend::Sqlite,
             static_dir: PathBuf::from(DEFAULT_STATIC_DIR),
@@ -194,6 +200,8 @@ impl Config {
 
         Ok(Config {
             bind,
+            domain: non_empty(ENV_DOMAIN),
+            admin_email: non_empty(ENV_ADMIN_EMAIL),
             data_dir,
             backend,
             static_dir,
@@ -372,6 +380,16 @@ fn recaptcha_from(
         secret,
         min_score,
     }))
+}
+
+/// A plain text variable, trimmed, where blank means unset. The compose file
+/// passes several of these through as `"${VAR:-}"`, so "set to the empty
+/// string" and "never set" have to mean the same thing.
+fn non_empty(var: &'static str) -> Option<String> {
+    std::env::var(var)
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
 }
 
 fn parse_bool(var: &'static str, default: bool) -> Result<bool, ConfigError> {

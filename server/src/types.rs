@@ -134,6 +134,15 @@ pub struct ConfigError {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
+    /// The public host name this server answers on, as the deployment's
+    /// `ASKRYPT_DOMAIN` states it. Nothing routes on it — it is there so an
+    /// operational notice can say *which* server it is about. `None` when the
+    /// variable is unset, which is the normal case for a local run.
+    pub domain: Option<String>,
+    /// Where operational notices go (today: the startup email in
+    /// [`crate::startup`]). `None` falls back to the SMTP sender address, so
+    /// a configured relay always has somewhere to send.
+    pub admin_email: Option<String>,
     pub data_dir: PathBuf,
     pub backend: Backend,
     pub static_dir: PathBuf,
@@ -167,6 +176,31 @@ pub struct Config {
     /// reCAPTCHA v3 on the website's auth forms. `None` (no
     /// `ASKRYPT_RECAPTCHA_SITE_KEY`) leaves them exactly as they were.
     pub recaptcha: Option<RecaptchaConfig>,
+}
+
+// ---------------------------------------------------------------------------
+// sysinfo — what the host has left
+// ---------------------------------------------------------------------------
+
+/// System memory, in bytes. Read once, for a report — nothing in the server
+/// makes a decision from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryUsage {
+    pub total: u64,
+    /// What a new allocation could actually get (`MemAvailable`), which is
+    /// not `MemFree`: page cache and reclaimable slab count as available.
+    pub available: u64,
+}
+
+/// One filesystem's occupancy, in bytes, as `statvfs` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskUsage {
+    pub total: u64,
+    /// Free space this process may actually use — the unprivileged figure,
+    /// so it excludes the root-reserved blocks `used + available < total`
+    /// otherwise looks like a rounding error.
+    pub available: u64,
+    pub used: u64,
 }
 
 // ---------------------------------------------------------------------------
