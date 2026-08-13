@@ -785,4 +785,16 @@ cargo test -p askrypt-server
 cargo clippy -p askrypt-server --all-targets
 cargo run -p askrypt-server        # then curl /healthz, /api/v1/... smoke checks
 cargo test --workspace             # desktop/core remain green
+
+# The live gate: every endpoint, over a real socket, as both an administrator
+# and a plain account. Starts and stops its own throwaway server, and refuses
+# any host that is not loopback.
+scripts/server-roundtrip.sh
+scripts/server-roundtrip.sh --backend sqlite   # the real stores, not the fakes
 ```
+
+`server/tests/` runs against an in-process router with in-memory fakes;
+`scripts/server-roundtrip.sh` is the other half — a real process, real sockets,
+the SQLite stores and the disk blob store. A phase is not finished until both
+are green. The suite lives in `core/examples/server_roundtrip/` because no
+crate may link `askrypt-core` and `askrypt-server` at once.

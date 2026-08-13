@@ -51,10 +51,13 @@ gethostname = "1.1"
 # OpenSSL out of the build (the server crate makes the same choice).
 ureq = { version = "3", optional = true, default-features = false, features = ["rustls", "json"] }
 
-# Manual end-to-end check against a running `askrypt-server`; needs the backend
-# it exercises, so it is skipped by a plain `cargo build --examples`.
+# Manual end-to-end conformance run against a *local* `askrypt-server`; needs
+# the backend it exercises, so it is skipped by a plain `cargo build --examples`.
+# A directory rather than a single file: it walks the whole HTTP surface, and
+# each group of checks lives in its own module.
 [[example]]
 name = "server_roundtrip"
+path = "examples/server_roundtrip/main.rs"
 required-features = ["server-storage"]
 
 [dev-dependencies]
