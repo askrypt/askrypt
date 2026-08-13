@@ -483,6 +483,12 @@ next request.
   entry or a pre-stamp file simply has no stamp, and the host/time halves are
   independent. Host names are foreign text bound for a table cell: control
   characters stripped, 128 chars max, escaped by askama at render time.
+  `is_vault` is the module's other export and its only opinion: does the
+  archive hold an `askrypt.json` member at all. Presence only — the entry's
+  contents stay none of the server's business — and it is used **by the
+  website's upload form alone** (`web::vaults::check_upload`), never on the
+  JSON API, whose callers are the apps that wrote the bytes and whose contract
+  stays the ZIP magic and nothing further.
 - **`server/src/ratelimit.rs`** — In-memory fixed-window `RateLimiter` +
   axum middleware, keyed via `clientip::client_ip` (`client_key` is
   `pub(crate)` so `web` can bucket identically); 429s carry `Retry-After`.
@@ -566,7 +572,17 @@ next request.
   `listing` re-sorts by `updated_at` descending, and since the sort is stable
   over the name-sorted list `list_for` returns, files stored in the same
   instant stay in name order; the JSON `/api/v1/vaults` listing keeps the
-  plain name order. Plus `explain`, which turns the handful of reachable `ApiError`
+  plain name order. `check_upload` is the one rule this module owns rather
+  than borrows, run by **both** upload and replace before anything is stored:
+  the *uploaded file's* name must end in `.askrypt` (case-insensitively, and
+  it is the picked file's name, not the name the vault is stored under — the
+  desktop stores server vaults under a bare name) and the bytes must pass
+  `vaultfile::is_vault`. It lives here because the difference is the browser:
+  an API upload was written by the app sending it, a page upload was picked
+  out of a folder by hand. The two refusals are told apart on purpose —
+  `invalid_vault_extension` (the wrong file entirely) and `invalid_vault_file`
+  (an archive with no `askrypt.json`, which the ZIP magic happily admits).
+  Plus `explain`, which turns the handful of reachable `ApiError`
   codes into sentences; `pages.rs` landing and the HTML 404; and `admin.rs`
   the Phase 8 Users page (`/admin/users` behind `AdminSession`, with per-row
   suspend/lift, promote/demote, paid-tier grant/revoke and typed-confirmation
@@ -697,7 +713,7 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 38 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 40 tests:
   template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
@@ -710,7 +726,11 @@ next request.
   1–10 MiB band, which the API suite never exercises through `refused`) as
   the listing plus its notice, and over the body limit as the retargeted
   error fragment, in each case next to the plain no-JS request that still
-  carries the real status) and
+  carries the real status. The upload gate gets all three of its cases: the
+  wrong extension, a ZIP with no `askrypt.json` (which the API's magic check
+  admits), and a refused *replace* leaving the stored bytes untouched — each
+  asserting the file was not stored, since a readable message over a stored
+  file would be the worse bug) and
   `admin.rs` (the Phase 8 gate, 11 tests: first-account-is-admin and the nav
   link that follows, 403-vs-redirect for non-admin and signed-out visitors,
   suspend → old session dies *and* a fresh JSON login is refused → lift

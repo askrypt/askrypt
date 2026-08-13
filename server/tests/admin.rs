@@ -584,6 +584,21 @@ async fn vaults_csrf(app: &Router, cookies: &str) -> String {
     csrf_field(&html)
 }
 
+/// A vault as the upload form checks for one: an archive with the
+/// `askrypt.json` member in it. Its contents are none of the server's
+/// business, so there is nothing else in here.
+fn vault_bytes() -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        zip.start_file("askrypt.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, br#"{"version":"0.9"}"#).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
 fn upload(cookies: &str, csrf: &str, name: &str) -> Request<Body> {
     let mut body: Vec<u8> = Vec::new();
     let mut part = |field: &str, value: &[u8], filename: Option<&str>| {
@@ -607,7 +622,7 @@ fn upload(cookies: &str, csrf: &str, name: &str) -> Request<Body> {
     // buffered.
     part("csrf", csrf.as_bytes(), None);
     part("name", name.as_bytes(), None);
-    part("file", b"PK\x03\x04askrypt-test-vault", Some(name));
+    part("file", &vault_bytes(), Some(name));
     body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
 
     Request::post("/vaults")

@@ -12,6 +12,13 @@
 //! `multipart/form-data` instead of a raw body, an ETag carried in a hidden
 //! field instead of a header, and a "changed on another device" message
 //! instead of a bare 412.
+//!
+//! [`check_upload`] is the one rule that is this module's own rather than a
+//! stricter reading of one of those, and it is here because the difference is
+//! the browser: a file arriving on the API was written by the app that is
+//! sending it, while a file arriving here was picked out of a folder by hand.
+//! So the two ways of picking the wrong one — the wrong extension and an
+//! archive that is not a vault — are caught before anything is stored.
 
 use std::cmp::Reverse;
 
@@ -113,6 +120,12 @@ pub async fn upload(
         "" => form.file_name.clone().unwrap_or_default(),
         typed => typed.to_string(),
     };
+    // The picked file's own name, which is what the extension is about; the
+    // typed name stands in only for a client that sent no file name at all.
+    let picked = form.file_name.as_deref().unwrap_or(name.as_str());
+    if let Err(err) = check_upload(picked, &form.file) {
+        return refused(&state, &web, &headers, err).await;
+    }
     match crate::vaults::create(&state, web.account.id, &name, &form.file).await {
         Ok(_) => finish(&state, &web, &headers, Flash::VaultUploaded).await,
         Err(err) => refused(&state, &web, &headers, err).await,
@@ -128,6 +141,11 @@ pub async fn replace(
     CsrfMultipart(form): CsrfMultipart,
 ) -> WebResult<Response> {
     let vault_id = parse_vault_id(&id)?;
+    // Replacing is picking a file out of a folder too, and the file it lands
+    // on is one the visitor already cares about, so the same gate applies.
+    if let Err(err) = check_upload(form.file_name.as_deref().unwrap_or_default(), &form.file) {
+        return refused(&state, &web, &headers, err).await;
+    }
     // The ETag the row was rendered with. Missing rather than stale would
     // mean a hand-made form, so it is treated as a mismatch, not as `*`.
     let expected = form.field("etag").to_string();
@@ -275,6 +293,53 @@ fn version_filename(version: &VaultVersion) -> String {
     }
 }
 
+/// The extension every app writes a vault under. Matched case-insensitively:
+/// the apps write it in lower case, but a file that has been round-tripped
+/// through Windows, a mail client or a cloud drive can come back shouting.
+const VAULT_EXTENSION: &str = ".askrypt";
+
+/// Refuses a browser upload that is not a vault file, before it is stored.
+///
+/// Two things are checked, and they catch different mistakes. The extension
+/// catches the wrong file entirely — the `.zip` next to it in the folder, a
+/// photo, a text file — and it is checked against the *uploaded file's* name,
+/// not the name the vault will be stored under: those differ on purpose (the
+/// desktop app stores server vaults under a bare name, no extension), and it
+/// is the thing on disk this is about. The contents then have to actually be
+/// a vault archive, since an extension is a claim and nothing more.
+///
+/// A missing file part reads as an empty name and empty bytes, so it is
+/// refused here rather than being stored as a zero-byte vault.
+fn check_upload(file_name: &str, bytes: &[u8]) -> Result<(), ApiError> {
+    let name = file_name.trim();
+    // A bare `.askrypt` is an extension with nothing in front of it, so the
+    // stem has to be non-empty; the char-boundary test keeps a name ending in
+    // a multi-byte character from being sliced through.
+    let named_like_a_vault = name
+        .len()
+        .checked_sub(VAULT_EXTENSION.len())
+        .is_some_and(|stem| {
+            stem > 0
+                && name.is_char_boundary(stem)
+                && name[stem..].eq_ignore_ascii_case(VAULT_EXTENSION)
+        });
+    if !named_like_a_vault {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_vault_extension",
+            "vault files are named *.askrypt",
+        ));
+    }
+    if !crate::vaultfile::is_vault(bytes) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_vault_file",
+            "not an askrypt vault file",
+        ));
+    }
+    Ok(())
+}
+
 /// A change that went through: the refreshed listing for htmx, a
 /// POST-redirect-GET with a flash otherwise.
 async fn finish(
@@ -362,10 +427,16 @@ fn explain(err: &ApiError, quota: u64) -> String {
         }
         // Written without an apostrophe on purpose: askama escapes it to
         // `&#39;`, which is correct HTML and unpleasant to read in a test.
-        "invalid_vault_file" => {
+        "invalid_vault_extension" => {
             "That file is not an Askrypt vault. Vaults are the .askrypt files your app saves."
                 .to_string()
         }
+        // The name promised a vault and the bytes did not deliver one, which
+        // is worth saying differently: the file is plausibly the right kind
+        // of thing and is still not openable.
+        "invalid_vault_file" => "That file is not an Askrypt vault. It is missing the \
+             askrypt.json every vault archive contains, so no app could open it."
+            .to_string(),
         "payload_too_large" => format!(
             "Vault files are limited to {}.",
             human_bytes(MAX_VAULT_BYTES as u64)
@@ -477,6 +548,65 @@ mod tests {
     #[test]
     fn a_filename_cannot_escape_the_content_disposition_quoting() {
         assert_eq!(sanitize_filename("my\"vault\\.askrypt"), "myvault.askrypt");
+    }
+
+    /// A vault-shaped archive: the entry the check looks for, and nothing
+    /// else worth reading.
+    fn vault_archive() -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            zip.start_file("askrypt.json", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, br#"{"version":"0.9"}"#).unwrap();
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn an_upload_must_be_named_like_a_vault_and_be_one() {
+        let vault = vault_archive();
+        assert!(check_upload("personal.askrypt", &vault).is_ok());
+        // A file that has been through something that shouts.
+        assert!(check_upload("PERSONAL.ASKRYPT", &vault).is_ok());
+        assert!(check_upload("  personal.askrypt  ", &vault).is_ok());
+
+        // The wrong file out of the folder.
+        for name in ["notes.txt", "personal.zip", "personal", "askrypt", ""] {
+            let err = check_upload(name, &vault).unwrap_err();
+            assert_eq!(err.code, "invalid_vault_extension", "{name:?}");
+        }
+        // An extension is a claim; the bytes are the evidence.
+        let err = check_upload("personal.askrypt", b"just some text").unwrap_err();
+        assert_eq!(err.code, "invalid_vault_file");
+        // Neither is a form that arrived with no file part at all.
+        assert!(check_upload("", b"").is_err());
+    }
+
+    /// A name ending in a multi-byte character is shorter than the extension
+    /// in bytes at exactly the wrong place; it must be refused, not panicked
+    /// on.
+    #[test]
+    fn a_multibyte_name_is_refused_rather_than_sliced_through() {
+        assert!(check_upload("сейф", &vault_archive()).is_err());
+        assert!(check_upload("хранилище.askrypt", &vault_archive()).is_ok());
+    }
+
+    /// Both refusals name the thing the visitor picked, and neither leaks the
+    /// API's code.
+    #[test]
+    fn a_file_that_is_not_a_vault_is_explained_two_ways() {
+        let explain_code = |code| {
+            explain(
+                &ApiError::new(StatusCode::BAD_REQUEST, code, "not an askrypt vault file"),
+                ACCOUNT_QUOTA_BYTES,
+            )
+        };
+        let extension = explain_code("invalid_vault_extension");
+        assert!(extension.contains(".askrypt"), "{extension}");
+        let contents = explain_code("invalid_vault_file");
+        assert!(contents.contains("askrypt.json"), "{contents}");
     }
 
     #[test]

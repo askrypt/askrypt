@@ -17,6 +17,11 @@
 //! Nothing in here can fail loudly. A file that is not a ZIP, has no
 //! `askrypt.json`, or was written by a version predating the stamp simply has
 //! no stamp, and a save is never refused over it.
+//!
+//! [`is_vault`] is the one exception, and it is not the stamp reader: it
+//! answers "is this a vault file at all?" for the website's upload form,
+//! where the bytes come from a person picking a file out of a folder rather
+//! than from an app that just wrote them.
 
 use std::io::{Cursor, Read};
 
@@ -42,6 +47,27 @@ const MAX_JSON_BYTES: u64 = 1024 * 1024;
 /// Host names are at most 253 characters; anything longer is not a host name
 /// and has no business in a table cell.
 const MAX_HOST_CHARS: usize = 128;
+
+/// Whether these bytes are a vault file at all: a readable ZIP archive with
+/// an `askrypt.json` member in it.
+///
+/// A *deeper* look than [`crate::vaults`]'s ZIP-magic check, and deliberately
+/// not a replacement for it. The API's callers are the apps: they wrote the
+/// bytes themselves, the format is theirs to extend, and refusing an upload
+/// over a member this build expects to find would be the server having an
+/// opinion about a format it does not own. The website's upload form is the
+/// other case — the wrong file picked out of a folder is the mistake that
+/// actually happens there, and it is worth catching before it lands in the
+/// account as a vault the apps cannot open.
+///
+/// Only the entry's *presence* is checked. What is in it stays encrypted and
+/// none of the server's business.
+pub fn is_vault(bytes: &[u8]) -> bool {
+    match zip::ZipArchive::new(Cursor::new(bytes)) {
+        Ok(mut archive) => archive.by_name(ENTRY).is_ok(),
+        Err(_) => false,
+    }
+}
 
 /// Reads the write stamp out of vault bytes, or an empty stamp if there is
 /// none to read.
@@ -169,6 +195,24 @@ mod tests {
         // and every other test in the suite uploads.
         assert!(read_stamp(b"PK\x03\x04 pretend vault").is_empty());
         assert!(read_stamp(b"").is_empty());
+    }
+
+    /// The upload gate: an archive is a vault when it carries the entry, and
+    /// the ZIP magic alone — which is all the API asks for — is not enough.
+    #[test]
+    fn only_an_archive_holding_the_vault_entry_counts_as_one() {
+        assert!(is_vault(&archive_with(ENTRY, &vault_json(""))));
+        // A stamp is optional; the entry is not.
+        assert!(is_vault(&archive_with(
+            ENTRY,
+            &vault_json(r#","host":"box""#)
+        )));
+        // A perfectly good ZIP of something else.
+        assert!(!is_vault(&archive_with("notes.txt", "hello")));
+        // What the API's magic check lets through.
+        assert!(!is_vault(b"PK\x03\x04 pretend vault"));
+        assert!(!is_vault(b"just some text"));
+        assert!(!is_vault(b""));
     }
 
     #[test]

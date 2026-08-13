@@ -220,17 +220,16 @@ fn post_multipart_htmx(
     request
 }
 
-/// Bytes that pass the ZIP-magic check. The server never looks further in —
-/// a real vault is an encrypted archive it has no key for.
+/// A vault as far as the website is concerned: an archive holding the
+/// `askrypt.json` member the upload form checks for. Everything a real vault
+/// keeps in there is encrypted and plays no part here, so the marker — which
+/// is only there to tell two uploads apart — stands in for all of it.
 fn vault_bytes(marker: u8) -> Vec<u8> {
-    let mut bytes = b"PK\x03\x04askrypt-test-vault".to_vec();
-    bytes.push(marker);
-    bytes
+    vault_archive(&format!(r#"{{"version":"0.9","marker":{marker}}}"#), 0)
 }
 
-/// A real vault-shaped archive: the two unencrypted stamp fields the server
-/// reads, in the entry it reads them from. The rest of a vault's JSON is
-/// encrypted and plays no part here.
+/// The same archive with the two unencrypted stamp fields the server lifts
+/// off an upload for the listing's `Saved` column.
 fn stamped_vault_bytes(host: &str, saved_at: &str) -> Vec<u8> {
     let json = serde_json::json!({
         "version": "1",
@@ -243,15 +242,57 @@ fn stamped_vault_bytes(host: &str, saved_at: &str) -> Vec<u8> {
         },
     })
     .to_string();
+    vault_archive(&json, 0)
+}
+
+/// A vault archive of a given size: `askrypt.json` plus, when `pad` is set, a
+/// stored member of that many bytes. Padding *inside* the archive is what
+/// keeps a big fixture a readable ZIP — bytes appended after the end record
+/// would make it something the upload form refuses for the wrong reason.
+fn vault_archive(json: &str, pad: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
         zip.start_file("askrypt.json", zip::write::SimpleFileOptions::default())
             .unwrap();
         std::io::Write::write_all(&mut zip, json.as_bytes()).unwrap();
+        if pad > 0 {
+            zip.start_file(
+                "data",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+            std::io::Write::write_all(&mut zip, &vec![b'x'; pad]).unwrap();
+        }
         zip.finish().unwrap();
     }
     buf
+}
+
+/// A valid vault archive of at least `size` bytes.
+fn vault_bytes_of(size: usize) -> Vec<u8> {
+    vault_archive(r#"{"version":"0.9"}"#, size)
+}
+
+/// A download, kept as bytes. [`send`] renders a body as lossy UTF-8, which
+/// is right for every page here and wrong for a vault archive: the deflated
+/// bytes are not text, and comparing them through a `String` compares two
+/// runs of replacement characters.
+async fn download_bytes(app: &Router, uri: &str, cookies: &str) -> Vec<u8> {
+    let response = app
+        .clone()
+        .oneshot(get_with_cookies(uri, cookies))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
 }
 
 /// Signs in through the browser and returns the jar plus the `/vaults` page.
@@ -351,8 +392,7 @@ async fn no_page_carries_an_inline_script_or_style() {
 async fn an_oversized_upload_is_refused_with_a_readable_page() {
     let app = app();
     let (cookies, html) = with_vaults_page(&app, "toobig@example.com").await;
-    let mut huge = vault_bytes(1);
-    huge.resize(11 * 1024 * 1024, b'x');
+    let huge = vault_bytes_of(11 * 1024 * 1024);
 
     let (status, _, body) = send(
         &app,
@@ -381,8 +421,7 @@ async fn an_oversized_upload_is_refused_with_a_readable_page() {
 async fn an_oversized_upload_over_htmx_comes_back_as_a_swappable_fragment() {
     let app = app();
     let (cookies, html) = with_vaults_page(&app, "toobig-htmx@example.com").await;
-    let mut huge = vault_bytes(1);
-    huge.resize(11 * 1024 * 1024, b'x');
+    let huge = vault_bytes_of(11 * 1024 * 1024);
 
     let (status, headers, body) = send(
         &app,
@@ -418,8 +457,7 @@ async fn an_over_quota_upload_explains_itself_instead_of_failing() {
     let (cookies, html) = with_vaults_page(&app, "quota-page@example.com").await;
     // Comfortably over the 1 MiB free quota and comfortably under the 10 MiB
     // per-file limit: the whole band this test exists for.
-    let mut big = vault_bytes(1);
-    big.resize(3 * 1024 * 1024, b'x');
+    let big = vault_bytes_of(3 * 1024 * 1024);
 
     let (status, _, body) = send(
         &app,
@@ -447,8 +485,7 @@ async fn an_over_quota_upload_explains_itself_instead_of_failing() {
 async fn an_over_quota_upload_over_htmx_returns_the_listing_with_a_notice() {
     let app = app();
     let (cookies, html) = with_vaults_page(&app, "quota-htmx@example.com").await;
-    let mut big = vault_bytes(1);
-    big.resize(3 * 1024 * 1024, b'x');
+    let big = vault_bytes_of(3 * 1024 * 1024);
 
     let (status, headers, body) = send(
         &app,
@@ -1083,20 +1120,8 @@ async fn a_vault_can_be_uploaded_listed_downloaded_renamed_and_deleted() {
         headers[header::CONTENT_DISPOSITION],
         "attachment; filename=\"personal.askrypt\""
     );
-    let downloaded = app
-        .clone()
-        .oneshot(get_with_cookies(
-            &format!("/vaults/{id}/download"),
-            &cookies,
-        ))
-        .await
-        .unwrap()
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    assert_eq!(downloaded.as_ref(), bytes.as_slice(), "bytes changed");
+    let downloaded = download_bytes(&app, &format!("/vaults/{id}/download"), &cookies).await;
+    assert_eq!(downloaded, bytes, "bytes changed");
 
     // Rename.
     let (status, _, _) = send(
@@ -1181,12 +1206,8 @@ async fn replacing_a_vault_that_changed_elsewhere_explains_the_conflict() {
     assert!(!html.contains("412"), "{html}");
 
     // And the file kept the version that won.
-    let (_, _, bytes) = send(
-        &app,
-        get_with_cookies(&format!("/vaults/{id}/download"), &cookies),
-    )
-    .await;
-    assert_eq!(bytes.as_bytes(), vault_bytes(2).as_slice());
+    let bytes = download_bytes(&app, &format!("/vaults/{id}/download"), &cookies).await;
+    assert_eq!(bytes, vault_bytes(2));
 }
 
 #[tokio::test]
@@ -1210,6 +1231,82 @@ async fn a_file_that_is_not_a_vault_is_refused_in_plain_words() {
     assert!(html.contains("is not an Askrypt vault"), "{html}");
     assert!(!html.contains("invalid_vault_file"), "raw API code leaked");
     assert!(html.starts_with("<!doctype html>"), "expected a full page");
+    assert!(html.contains("No vault files yet"), "it was stored anyway");
+}
+
+/// The other half of the same gate: the name promises a vault and the bytes
+/// are an ordinary archive. The API stops at the ZIP magic — which this file
+/// has — so a page upload has to look further, or the account collects files
+/// no app can open.
+#[tokio::test]
+async fn an_archive_without_the_vault_entry_is_refused_too() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "notavault@example.com").await;
+    let mut not_a_vault = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut not_a_vault));
+        zip.start_file("holiday.jpg", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, b"not a vault").unwrap();
+        zip.finish().unwrap();
+    }
+
+    let (status, _, html) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[],
+            Some(("photos.askrypt", &not_a_vault)),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("askrypt.json"), "{html}");
+    assert!(html.contains("No vault files yet"), "it was stored anyway");
+}
+
+/// Replacing takes a file off the disk the same way uploading does, so it is
+/// gated the same way — and a refusal must leave the vault it was aimed at
+/// exactly as it was.
+#[tokio::test]
+async fn replacing_a_vault_with_something_that_is_not_one_is_refused() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "replace-junk@example.com").await;
+    let token = csrf_field(&html);
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &token,
+            &[],
+            Some(("personal.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+    // A plain upload answers with a redirect, so the row comes off the page.
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = first_vault_id(&html);
+
+    let (status, _, page) = send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &csrf_field(&html),
+            &[("etag", &field_value(&html, "etag").unwrap())],
+            Some(("notes.txt", b"just some text")),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("is not an Askrypt vault"), "{page}");
+    let bytes = download_bytes(&app, &format!("/vaults/{id}/download"), &cookies).await;
+    assert_eq!(bytes, vault_bytes(1), "the stored file was touched");
 }
 
 /// The history disclosure a row grows once it has been replaced: read a
@@ -1256,16 +1353,10 @@ async fn the_file_manager_can_download_and_restore_an_earlier_version() {
     let version_id = html[start..][..html[start..].find('/').unwrap()].to_string();
 
     // Its bytes are the ones the replace displaced, under a dated name.
-    let (status, headers, body) = send(
-        &app,
-        get_with_cookies(
-            &format!("/vaults/{id}/versions/{version_id}/download"),
-            &cookies,
-        ),
-    )
-    .await;
+    let uri = format!("/vaults/{id}/versions/{version_id}/download");
+    let (status, headers, _) = send(&app, get_with_cookies(&uri, &cookies)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), vault_bytes(1).as_slice());
+    assert_eq!(download_bytes(&app, &uri, &cookies).await, vault_bytes(1));
     let disposition = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
     assert!(disposition.contains("notes."), "{disposition}");
     assert!(disposition.ends_with(".askrypt\""), "{disposition}");
@@ -1286,12 +1377,8 @@ async fn the_file_manager_can_download_and_restore_an_earlier_version() {
     .await;
     assert_eq!(status, StatusCode::OK, "{html}");
     assert!(html.contains("Earlier version restored"), "{html}");
-    let (_, _, bytes) = send(
-        &app,
-        get_with_cookies(&format!("/vaults/{id}/download"), &cookies),
-    )
-    .await;
-    assert_eq!(bytes.as_bytes(), vault_bytes(1).as_slice());
+    let bytes = download_bytes(&app, &format!("/vaults/{id}/download"), &cookies).await;
+    assert_eq!(bytes, vault_bytes(1));
 }
 
 /// The listing tells the visitor where and when a file was saved, taken from
