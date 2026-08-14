@@ -367,9 +367,11 @@ next request.
   `/login` and `/register` and only for the widget the page actually
   rendered: `CSP_CAPTCHA` (naming `www.google.com`/`www.gstatic.com` and
   allowing inline **styles**, for reCAPTCHA's injected badge stylesheet),
-  `CSP_GOOGLE` (the sign-in button — *tighter*, because Google publishes a
-  path-scoped source list for `accounts.google.com/gsi/`, so `style-src`
-  keeps `'self'` and **no** `'unsafe-inline'` appears) and
+  `CSP_GOOGLE` (the sign-in button — every host path-scoped, out of the
+  source list Google publishes for `accounts.google.com/gsi/`, plus inline
+  **styles**: Identity Services styles the button with inline `style`
+  attributes on elements it writes into the page, and without the concession
+  the button renders unstyled) and
   `CSP_CAPTCHA_GOOGLE`, their union. `script-src` is free of
   `'unsafe-inline'` in all four, and `POLICIES` + the unit tests hold every
   new one to that. `policy()` is the whole selection; a page opts in with the

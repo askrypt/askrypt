@@ -27,7 +27,10 @@
 //! loosening of the first: every other route, including the rest of the
 //! website, still gets [`CSP`] byte for byte, and a page that renders one
 //! widget gives up nothing on account of the other. [`policy`] is the whole
-//! selection, and [`RelaxedCsp`] is how a handler opts in.
+//! selection, and [`RelaxedCsp`] is how a handler opts in. Both widgets cost
+//! `'unsafe-inline'` in `style-src` — each writes its own styles into the
+//! page — and neither costs anything in `script-src`, which is the line that
+//! does not move.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,15 +76,24 @@ frame-ancestors 'none'";
 /// The policy the sign-in and registration pages send when the **Google
 /// Identity Services** button is configured, and reCAPTCHA is not.
 ///
-/// Tighter than [`CSP_CAPTCHA`] despite naming the same vendor, because
-/// Google publishes an exact source list for this library and it is
-/// path-scoped: `accounts.google.com/gsi/client` is the only script, `gsi/`
-/// the only frame and XHR target, and `gsi/style` the only stylesheet — so
-/// `style-src` keeps `'self'` alone and **no `'unsafe-inline'` appears
-/// anywhere**. Nothing here is a wildcard and nothing else is widened.
+/// Every host here is path-scoped, out of the exact source list Google
+/// publishes for this library: `accounts.google.com/gsi/client` is the only
+/// script, `gsi/` the only frame and XHR target, and `gsi/style` the only
+/// stylesheet. Nothing is a wildcard.
+///
+/// `style-src` carries `'unsafe-inline'` all the same, for the same reason
+/// [`CSP_CAPTCHA`] does: the library styles the button it draws by writing
+/// inline `style` attributes into the host document, and under `'self'` plus
+/// the stylesheet host alone those are dropped and the button renders
+/// unstyled. Google's own guidance names the concession. It is confined to
+/// styles — `script-src` has no `'unsafe-inline'` and no `'unsafe-eval'`,
+/// which is the widening that would actually be worth something to an
+/// attacker — and, like the captcha's, it reaches only the two auth pages
+/// and only when a button was rendered.
 pub const CSP_GOOGLE: &str = "default-src 'self'; \
 script-src 'self' https://accounts.google.com/gsi/client; \
-style-src 'self' https://accounts.google.com/gsi/style; img-src 'self' data:; \
+style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; \
+img-src 'self' data:; \
 connect-src 'self' https://accounts.google.com/gsi/; font-src 'self'; \
 object-src 'none'; base-uri 'none'; form-action 'self'; \
 frame-src https://accounts.google.com/gsi/; frame-ancestors 'none'";
@@ -342,10 +354,14 @@ mod tests {
         assert_eq!(policy(Some(&relaxed(true, true))), CSP_CAPTCHA_GOOGLE);
 
         // A captcha alone never names the sign-in host, and the button alone
-        // never buys reCAPTCHA's inline-style concession.
+        // never names the captcha's.
         assert!(!CSP_CAPTCHA.contains("accounts.google.com"));
-        assert!(!CSP_GOOGLE.contains("'unsafe-inline'"));
         assert!(!CSP_GOOGLE.contains("www.gstatic.com"));
+        assert!(!CSP_GOOGLE.contains("https://www.google.com"));
+
+        // Both widgets need inline *styles* and neither gets inline script;
+        // the loop above holds every policy to the second half.
+        assert!(CSP_GOOGLE.contains("style-src 'self' 'unsafe-inline'"));
     }
 
     async fn status_of(app: &Router, path: &str) -> StatusCode {

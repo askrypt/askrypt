@@ -334,7 +334,11 @@ Applied to every response by `src/hardening.rs`:
 
 - `Content-Security-Policy: default-src 'self'; script-src 'self'; …` — no
   `unsafe-inline`, no `unsafe-eval`, `frame-ancestors 'none'`. The website's
-  pages are written to fit this, not the other way round.
+  pages are written to fit this, not the other way round. `/login` and
+  `/register` send a widened policy when reCAPTCHA or the Google sign-in
+  button is configured — the vendor's hosts plus `'unsafe-inline'` in
+  `style-src`, since both widgets style themselves in the page; `script-src`
+  never widens.
 - `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`
   (**not** `no-referrer`, which would make browsers stamp same-origin form
   posts `Origin: null` and get them refused by the CSRF check),

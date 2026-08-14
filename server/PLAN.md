@@ -766,10 +766,12 @@ askrypt/
   - **Two headers widen, on two pages, for what the page actually loads.**
     `RelaxedCsp` grew from a marker into two flags, so `hardening::policy`
     picks among four written-out policies: a page with a captcha and no button
-    is not handed the sign-in host, and vice versa. `CSP_GOOGLE` is *tighter*
-    than the captcha's — Google publishes a path-scoped source list for this
-    library, so `style-src` keeps `'self'` and no `'unsafe-inline'` appears
-    anywhere. `Cross-Origin-Opener-Policy` relaxes to
+    is not handed the sign-in host, and vice versa. `CSP_GOOGLE` names only
+    path-scoped sources out of the list Google publishes for this library,
+    and concedes `'unsafe-inline'` in `style-src` alone — Identity Services
+    styles the button it draws with inline `style` attributes, and without it
+    the button renders unstyled; `script-src` stays as strict as the base
+    policy in all four. `Cross-Origin-Opener-Policy` relaxes to
     `same-origin-allow-popups` only there: a popup cannot answer its opener
     under plain `same-origin`, which is a silent failure rather than a
     console error.
