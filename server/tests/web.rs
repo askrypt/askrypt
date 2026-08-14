@@ -1158,6 +1158,75 @@ async fn a_vault_can_be_uploaded_listed_downloaded_renamed_and_deleted() {
     assert!(html.contains("No vault files yet"), "{html}");
 }
 
+/// The desktop app stores a server vault under a bare name, with no
+/// extension. Downloading one still has to land a `.askrypt` file in the
+/// downloads folder — including the archived generations, whose names carry
+/// the stamp between the stem and the extension.
+#[tokio::test]
+async fn a_vault_stored_without_an_extension_downloads_with_one() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "bare@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            // The name the desktop would have stored it under.
+            &[("name", "personal")],
+            Some(("personal.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = first_vault_id(&html);
+    let token = csrf_field(&html);
+    let etag = field_value(&html, "etag").expect("no etag in the replace form");
+    assert!(html.contains("value=\"personal\""), "{html}");
+
+    let (status, headers, _) = send(
+        &app,
+        get_with_cookies(&format!("/vaults/{id}/download"), &cookies),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"personal.askrypt\""
+    );
+
+    // Replacing archives the bytes above under the same bare name; the
+    // generation's download gets the extension too.
+    send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &token,
+            &[("etag", &etag)],
+            Some(("personal.askrypt", &vault_bytes(2))),
+        ),
+    )
+    .await;
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let marker = format!("/vaults/{id}/versions/");
+    let start = html.find(&marker).expect("no archived generation") + marker.len();
+    let version_id = &html[start..][..html[start..].find('/').unwrap()];
+    let (status, headers, _) = send(
+        &app,
+        get_with_cookies(
+            &format!("/vaults/{id}/versions/{version_id}/download"),
+            &cookies,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let disposition = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
+    assert!(disposition.starts_with("attachment; filename=\"personal."));
+    assert!(disposition.ends_with(".askrypt\""), "{disposition}");
+}
+
 /// Replacing carries the row's ETag, so the Phase 4 `If-Match` path applies:
 /// a version that moved on elsewhere is explained, not shown as a raw 412.
 #[tokio::test]

@@ -690,6 +690,14 @@ next request.
   out of a folder by hand. The two refusals are told apart on purpose —
   `invalid_vault_extension` (the wrong file entirely) and `invalid_vault_file`
   (an archive with no `askrypt.json`, which the ZIP magic happily admits).
+  `download_filename` is the mirror of that rule on the way out: a stored name
+  is not required to carry `.askrypt` (the desktop's are bare), and a browser
+  saves exactly what `Content-Disposition` says, so the extension is appended
+  when absent — case-insensitively, via the shared `vault_extension_stem`, so
+  nothing ever lands as `.askrypt.askrypt` — and `version_filename` normalizes
+  through it before slotting the archival stamp in ahead of the extension.
+  The JSON API sends no `Content-Disposition` at all and is unaffected: its
+  callers name the file themselves.
   Plus `explain`, which turns the handful of reachable `ApiError`
   codes into sentences; `pages.rs` landing and the HTML 404; and `admin.rs`
   the Phase 8 Users page (`/admin/users` behind `AdminSession`, with per-row

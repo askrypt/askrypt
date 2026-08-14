@@ -212,7 +212,10 @@ pub async fn download(
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", sanitize_filename(&meta.name)),
+                format!(
+                    "attachment; filename=\"{}\"",
+                    sanitize_filename(&download_filename(&meta.name))
+                ),
             ),
         ],
         bytes,
@@ -285,12 +288,44 @@ pub async fn download_version(
 /// `personal.2026-08-08T101500Z.askrypt` — the stem keeps the file
 /// recognizable, the stamp keeps generations apart, and the extension stays
 /// where apps look for it.
+///
+/// The name is put through [`download_filename`] first, so a vault stored
+/// under a bare name gets its extension here too rather than landing as
+/// `personal.2026-08-08T101500Z`.
 fn version_filename(version: &VaultVersion) -> String {
     let stamp = version.archived_at.format("%Y-%m-%dT%H%M%SZ");
-    match version.name.rsplit_once('.') {
+    let name = download_filename(&version.name);
+    match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => format!("{stem}.{stamp}.{ext}"),
-        _ => format!("{}.{stamp}", version.name),
+        _ => format!("{name}.{stamp}"),
     }
+}
+
+/// The name a downloaded vault lands under.
+///
+/// A stored name need not carry the extension: the desktop app addresses a
+/// server vault by a bare name, so `personal` is the common case rather than
+/// the odd one, and a browser saves exactly what this header says. Appending
+/// `.askrypt` when it is absent is what makes the downloaded file open on a
+/// double-click and re-upload without being refused by [`check_upload`]. A
+/// name that already ends in it — in whatever case it came back in — is left
+/// alone, so nothing ever gets `.askrypt.askrypt`.
+fn download_filename(name: &str) -> String {
+    if vault_extension_stem(name).is_some() {
+        return name.to_string();
+    }
+    format!("{name}{VAULT_EXTENSION}")
+}
+
+/// Splits the vault extension off a name, case-insensitively, returning what
+/// precedes it. `None` when the name does not end in one — including when it
+/// is shorter than the extension, and when the extension's length lands
+/// inside a multi-byte character, which is why the boundary is tested rather
+/// than the name sliced.
+fn vault_extension_stem(name: &str) -> Option<&str> {
+    let stem = name.len().checked_sub(VAULT_EXTENSION.len())?;
+    (name.is_char_boundary(stem) && name[stem..].eq_ignore_ascii_case(VAULT_EXTENSION))
+        .then(|| &name[..stem])
 }
 
 /// The extension every app writes a vault under. Matched case-insensitively:
@@ -313,16 +348,8 @@ const VAULT_EXTENSION: &str = ".askrypt";
 fn check_upload(file_name: &str, bytes: &[u8]) -> Result<(), ApiError> {
     let name = file_name.trim();
     // A bare `.askrypt` is an extension with nothing in front of it, so the
-    // stem has to be non-empty; the char-boundary test keeps a name ending in
-    // a multi-byte character from being sliced through.
-    let named_like_a_vault = name
-        .len()
-        .checked_sub(VAULT_EXTENSION.len())
-        .is_some_and(|stem| {
-            stem > 0
-                && name.is_char_boundary(stem)
-                && name[stem..].eq_ignore_ascii_case(VAULT_EXTENSION)
-        });
+    // stem has to be non-empty.
+    let named_like_a_vault = vault_extension_stem(name).is_some_and(|stem| !stem.is_empty());
     if !named_like_a_vault {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -543,6 +570,49 @@ mod tests {
         // A file that carries no stamp gets no cell text at all — the
         // template shows "Not recorded" rather than an empty date.
         assert_eq!(saved_stamp(None, None), None);
+    }
+
+    /// A vault stored under a bare name — which is how the desktop app stores
+    /// them — still has to land in the downloads folder as a `.askrypt` file.
+    #[test]
+    fn a_download_always_carries_the_vault_extension() {
+        assert_eq!(download_filename("personal"), "personal.askrypt");
+        assert_eq!(download_filename("personal.askrypt"), "personal.askrypt");
+        // Already named like a vault, whatever case it came back in.
+        assert_eq!(download_filename("PERSONAL.ASKRYPT"), "PERSONAL.ASKRYPT");
+        // A dot in the name is not an extension; only ours counts.
+        assert_eq!(download_filename("personal.zip"), "personal.zip.askrypt");
+        // Shorter than the extension, and ending mid-character: neither may
+        // panic, and both get the extension.
+        assert_eq!(download_filename("p"), "p.askrypt");
+        assert_eq!(download_filename("сейф"), "сейф.askrypt");
+    }
+
+    #[test]
+    fn an_archived_generation_keeps_its_extension_too() {
+        let archived_at = DateTime::parse_from_rfc3339("2026-08-08T10:15:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let named = |name: &str| {
+            version_filename(&VaultVersion {
+                id: uuid::Uuid::nil(),
+                vault_id: uuid::Uuid::nil(),
+                account_id: uuid::Uuid::nil(),
+                name: name.to_string(),
+                size: 0,
+                etag: String::new(),
+                updated_at: archived_at,
+                archived_at,
+                host: None,
+                saved_at: None,
+            })
+        };
+        assert_eq!(
+            named("personal.askrypt"),
+            "personal.2026-08-08T101500Z.askrypt"
+        );
+        // The bare name the desktop app stores under gets the same shape.
+        assert_eq!(named("personal"), "personal.2026-08-08T101500Z.askrypt");
     }
 
     #[test]
