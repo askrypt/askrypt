@@ -114,6 +114,61 @@ pub fn run(report: &mut Report, ctx: &mut Ctx) {
         Ok(())
     });
 
+    report.check("a bogus Google credential is refused", || {
+        // The endpoint exists whether or not a client id is configured — it
+        // is the verifier that is switched off, not the route — and a
+        // credential that does not verify is a normal outcome of the page,
+        // so it re-renders the form at 200 rather than answering a 4xx.
+        let handle = ctx.main.http.anonymous();
+        handle.get("/login")?.expect(200)?;
+        let resp = handle.form("/auth/google", &[("credential", "not-a-token")])?;
+        resp.expect(200)?;
+        resp.expect_contains("name=\"password\"")?;
+        if handle.cookie(SESSION_COOKIE).is_some() {
+            return Err("a refused Google sign-in set a session cookie".to_string());
+        }
+        Ok(())
+    });
+
+    report.check("the Google button is complete, or absent", || {
+        // Both configurations are legitimate, so what is checked is that the
+        // page is not half of one: a button with no script behind it cannot
+        // be clicked, and a script with no widened policy behind it is
+        // blocked without ever saying so.
+        let handle = ctx.main.http.anonymous();
+        let resp = handle.get("/login")?;
+        resp.expect(200)?;
+        let page = resp.text();
+        if !page.contains("data-google-client-id") {
+            for absent in ["/assets/google.js", "accounts.google.com"] {
+                if page.contains(absent) {
+                    return Err(format!("{absent} is loaded with no button to use it"));
+                }
+            }
+            return Ok(());
+        }
+        for marker in [
+            "/assets/google.js",
+            "https://accounts.google.com/gsi/client",
+            "action=\"/auth/google\"",
+            "name=\"credential\"",
+        ] {
+            if !page.contains(marker) {
+                return Err(format!("the button is rendered but {marker} is not"));
+            }
+        }
+        let csp = resp.header("content-security-policy").unwrap_or_default();
+        if !csp.contains("https://accounts.google.com/gsi/client") {
+            return Err("the CSP would block Google's library".to_string());
+        }
+        // Without this the sign-in popup cannot answer the page that opened
+        // it, and the sign-in simply never completes.
+        match resp.header("cross-origin-opener-policy") {
+            Some("same-origin-allow-popups") => Ok(()),
+            other => Err(format!("the opener policy is {other:?}")),
+        }
+    });
+
     report.check("the page's hidden field matches the cookie", || {
         let handle = ctx.main.http.anonymous();
         let resp = handle.get("/login")?;

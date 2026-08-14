@@ -148,6 +148,34 @@ p { margin: 0.6rem 0; }
 .form .button { margin-top: 1.25rem; width: 100%; }
 .form .alt { margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
 
+/* Separator between the password form and the Google button. The rules are
+   pseudo-elements rather than a border on the text, so the label sits in a
+   gap in the line however wide the card is. */
+.or {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1.5rem 0 1.25rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.or::before,
+.or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* The slot Google's script draws its button into. Reserves the button's own
+   height so the card doesn't jump once the library loads, and stays empty and
+   invisible if it never does. */
+.google-signin {
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+}
+
 .button {
   display: inline-block;
   padding: 0.55rem 1.1rem;

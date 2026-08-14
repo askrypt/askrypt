@@ -260,6 +260,22 @@ pub trait Mailer: Send + Sync {
 #[async_trait]
 pub trait IdTokenVerifier: Send + Sync {
     async fn verify(&self, id_token: &str) -> Result<VerifiedIdToken, IdTokenError>;
+
+    /// The **public** OAuth client id the website's own "Sign in with Google"
+    /// button is rendered with, or `None` when the website has no button —
+    /// which is what a template reads to decide whether to render one, and
+    /// how the auth pages decide whether they need the widened CSP.
+    ///
+    /// The mirror of [`CaptchaVerifier::site_key`], and for the same reason:
+    /// the seam that will *check* the credential is the one place that knows
+    /// whether there is anything to check, so a page cannot offer a widget the
+    /// server would then refuse. `None` here never disables the JSON API —
+    /// native clients mint their own tokens and only need an audience.
+    ///
+    /// Defaulted, because only the Google-backed verifier has one to give.
+    fn web_client_id(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Scores a reCAPTCHA v3 token minted by a form.

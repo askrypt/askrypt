@@ -16,11 +16,10 @@ use axum::response::{IntoResponse, Redirect, Response};
 use crate::audit::{self, ClientInfo};
 use crate::auth;
 use crate::devicelink;
+use crate::hardening::RelaxedCsp;
 use crate::settings;
 use crate::state::AppState;
 use crate::store::{Account, DeviceLinkId};
-use crate::web::WebError;
-use crate::web::captcha;
 use crate::web::csrf::{self, CsrfForm};
 use crate::web::flash::{self, Flash};
 use crate::web::render::{Page, Shell, is_htmx, with_cookies};
@@ -28,13 +27,20 @@ use crate::web::session::{
     self, LOGIN_PATH, MaybeWebSession, WEB_SESSION_LABEL, WEB_SESSION_TTL_DAYS, WebSession,
 };
 use crate::web::types::{AuthPage, BuildForm};
+use crate::web::{self, WebError};
+use crate::web::{captcha, google};
 
 pub use crate::web::types::{AuthForm, AuthQuery, Credentials, TokenOnly};
 
 const ACCOUNT_PATH: &str = "/account";
 
 impl AuthForm {
-    fn login(csrf: String, email: String, error: Option<String>, link: Option<String>) -> Self {
+    pub(crate) fn login(
+        csrf: String,
+        email: String,
+        error: Option<String>,
+        link: Option<String>,
+    ) -> Self {
         Self {
             action: LOGIN_PATH,
             heading: "Sign in",
@@ -50,6 +56,8 @@ impl AuthForm {
             link,
             captcha_action: captcha::LOGIN_ACTION,
             captcha_key: None,
+            google_client_id: None,
+            google_text: google::SIGN_IN_TEXT,
             registration_closed: false,
         }
     }
@@ -73,6 +81,8 @@ impl AuthForm {
             link,
             captcha_action: captcha::REGISTER_ACTION,
             captcha_key: None,
+            google_client_id: None,
+            google_text: google::SIGN_UP_TEXT,
             registration_closed: false,
         }
     }
@@ -83,6 +93,26 @@ impl AuthForm {
     fn with_captcha(mut self, state: &AppState) -> Self {
         self.captcha_key = state.captcha.site_key().map(str::to_owned);
         self
+    }
+
+    /// Fills in the Google client id, from the same seam that will verify the
+    /// credential the button mints. Chained for the reason
+    /// [`Self::with_captcha`] is, and asked of the verifier rather than of
+    /// the config so a page can never offer a button whose token this server
+    /// would refuse.
+    fn with_google(mut self, state: &AppState) -> Self {
+        self.google_client_id = state.id_verifier.web_client_id().map(str::to_owned);
+        self
+    }
+
+    /// Which widened CSP this form's page needs, gathered in one place
+    /// because [`RelaxedCsp`] is a single response extension: two handlers
+    /// each inserting their own would leave the second overwriting the first.
+    fn relaxed_csp(&self) -> RelaxedCsp {
+        RelaxedCsp {
+            captcha: self.captcha_key.is_some(),
+            google: self.google_client_id.is_some(),
+        }
     }
 
     /// Warns that an administrator has closed registration. Chained for the
@@ -166,10 +196,11 @@ fn auth_page(
         link.map(|id| id.to_string()),
     )
     .with_captcha(state)
+    .with_google(state)
     .with_registration_closed(registration_closed);
-    let relaxed = form.captcha_key.is_some();
+    let relaxed = form.relaxed_csp();
     let page = Page(AuthPage { chrome, form }).into_response();
-    with_cookies(captcha::relax_csp(page, relaxed), cookies)
+    with_cookies(web::relax_csp(page, relaxed), cookies)
 }
 
 pub async fn login_submit(
@@ -208,7 +239,7 @@ pub async fn login_submit(
             );
         }
     };
-    match sign_in(&state, &client, &account, "password").await {
+    match sign_in(&state, &client, &account, audit::LOGIN_OK, "password").await {
         Ok(cookies) => with_cookies(Redirect::to(&after_auth(link)).into_response(), cookies),
         Err(err) => err.into_response(),
     }
@@ -261,7 +292,7 @@ pub async fn register_submit(
     };
     // Registering signs you straight in: a new account with nothing in it
     // has nothing to protect behind a second password prompt.
-    match sign_in(&state, &client, &account, "password").await {
+    match sign_in(&state, &client, &account, audit::LOGIN_OK, "password").await {
         Ok(mut cookies) => {
             cookies.push(flash::set(Flash::AccountCreated));
             with_cookies(Redirect::to(&after_auth(link)).into_response(), cookies)
@@ -272,7 +303,7 @@ pub async fn register_submit(
 
 /// Where a successful sign-in lands: back at the device link when one sent the
 /// visitor here, and the account page otherwise.
-fn after_auth(link: Option<DeviceLinkId>) -> String {
+pub(crate) fn after_auth(link: Option<DeviceLinkId>) -> String {
     match link {
         Some(id) => devicelink::verification_path(id),
         None => ACCOUNT_PATH.to_string(),
@@ -304,11 +335,18 @@ pub async fn logout(
 }
 
 /// Issues the browser session and returns the cookies that establish it.
-async fn sign_in(
+///
+/// `event` and `detail` are the audit line this sign-in leaves: password
+/// sign-ins are [`audit::LOGIN_OK`] with the method, Google ones
+/// [`audit::LOGIN_GOOGLE_OK`] with the create-or-link outcome — the same two
+/// events, with the same details, that the JSON handlers in [`crate::auth`]
+/// emit, so one query covers both surfaces.
+pub(crate) async fn sign_in(
     state: &AppState,
     client: &ClientInfo,
     account: &Account,
-    method: &'static str,
+    event: &'static str,
+    detail: &'static str,
 ) -> Result<Vec<String>, WebError> {
     let session = auth::issue_session(
         state,
@@ -317,7 +355,7 @@ async fn sign_in(
         WEB_SESSION_TTL_DAYS,
     )
     .await?;
-    audit::emit(audit::LOGIN_OK, client, Some(account.id), method);
+    audit::emit(event, client, Some(account.id), detail);
     // A token minted before the session existed shouldn't survive into it.
     let (_, csrf_cookie) = csrf::rotate();
     Ok(vec![
@@ -335,7 +373,7 @@ async fn sign_in(
 /// The re-rendered form carries the captcha field again, empty. A v3 token is
 /// single-use, so the one that came with the refused submit is already spent;
 /// `captcha.js` re-mints into the swapped-in field.
-fn rejected(
+pub(crate) fn rejected(
     state: &AppState,
     headers: &HeaderMap,
     build: BuildForm,
@@ -354,12 +392,13 @@ fn rejected(
         link.map(|id| id.to_string()),
     )
     .with_captcha(state)
+    .with_google(state)
     .with_registration_closed(registration_closed);
-    let relaxed = form.captcha_key.is_some();
+    let relaxed = form.relaxed_csp();
     let body = if is_htmx(headers) {
         (StatusCode::OK, Page(form)).into_response()
     } else {
         Page(AuthPage { chrome, form }).into_response()
     };
-    with_cookies(captcha::relax_csp(body, relaxed), cookies)
+    with_cookies(web::relax_csp(body, relaxed), cookies)
 }

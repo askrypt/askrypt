@@ -550,6 +550,14 @@ impl FakeIdTokenVerifier {
     pub fn register(&self, id_token: impl Into<String>, claims: VerifiedIdToken) {
         self.tokens.lock().unwrap().insert(id_token.into(), claims);
     }
+
+    /// Presents a web client id, so the website renders its sign-in button
+    /// exactly as a configured deployment would. Opt-in: the default is no
+    /// button at all.
+    pub fn with_web_client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.web_client_id = Some(client_id.into());
+        self
+    }
 }
 
 #[async_trait]
@@ -561,6 +569,10 @@ impl IdTokenVerifier for FakeIdTokenVerifier {
             .get(id_token)
             .cloned()
             .ok_or_else(|| IdTokenError::Invalid("unknown token".into()))
+    }
+
+    fn web_client_id(&self) -> Option<&str> {
+        self.web_client_id.as_deref()
     }
 }
 

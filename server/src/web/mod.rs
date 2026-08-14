@@ -15,16 +15,18 @@
 //!   loaded: an `HX-Request` gets a fragment, a plain request gets the whole
 //!   page, and the plain path is the one that has to be correct.
 //!
-//! Both rules have exactly one exception, and it is the same one: with
-//! reCAPTCHA configured, the sign-in and registration pages send
-//! [`crate::hardening::CSP_CAPTCHA`] and need JavaScript to mint a token. See
-//! [`captcha`] — nothing else on the site is allowed to follow that lead.
+//! Both rules have their exceptions on the same two pages, and nowhere else:
+//! with reCAPTCHA configured the sign-in and registration pages need
+//! JavaScript to mint a token ([`captcha`]), and with a Google client id
+//! configured they need it to render the sign-in button ([`google`]). Each
+//! widens the CSP for what it actually loads — see
+//! [`crate::hardening::policy`] — and nothing else on the site is allowed to
+//! follow that lead. Both pages still carry the email-and-password form,
+//! which works with scripts off unless a captcha is configured.
 //!
 //! Phase 7.2 shipped sign-in, registration and sign-out; 7.3 the profile
-//! pages ([`account`]); 7.4 the vault file manager ([`vaults`]). Browser
-//! Google sign-in is still missing — the JSON API covers it for native
-//! clients, and the redirect flow needs configuration the server doesn't
-//! have yet (see `server/PLAN.md`).
+//! pages ([`account`]); 7.4 the vault file manager ([`vaults`]); Phase 13 the
+//! Google button ([`google`]).
 
 pub mod account;
 pub mod admin;
@@ -34,6 +36,7 @@ pub mod csrf;
 pub mod devicelink;
 pub mod error;
 pub mod flash;
+pub mod google;
 pub mod pages;
 pub mod render;
 pub mod session;
@@ -91,6 +94,10 @@ pub fn routes(
             "/register",
             get(auth::register_form).post(auth::register_submit),
         )
+        // Same budget as the two forms above, deliberately: it is a third door
+        // into the same sessions, and it creates accounts. POST only — a
+        // sign-in a link could trigger is one a prefetcher can trigger.
+        .route("/auth/google", post(google::submit))
         .route_layer(middleware::from_fn_with_state(auth_limiter, rate_limit));
 
     // The browser half of the desktop sign-in, on the same budget as the API
@@ -167,6 +174,21 @@ pub fn routes(
         // Outermost, so it sees every finished error response — including
         // the ones an extractor rejection produced before a handler ran.
         .layer(middleware::from_fn(htmx_error_fragment))
+}
+
+/// Marks a response as needing a widened CSP, naming the third-party widgets
+/// it actually rendered.
+///
+/// See [`hardening::RelaxedCsp`]: the header itself is still written in one
+/// place, by [`hardening::security_headers`], which is the outermost layer and
+/// so the last word on headers. Attach it **once** per response — a second
+/// insert replaces the first rather than merging with it, which is why
+/// `web::auth` gathers both flags before it builds anything.
+pub fn relax_csp(mut response: Response, relaxed: hardening::RelaxedCsp) -> Response {
+    if relaxed != hardening::RelaxedCsp::default() {
+        response.extensions_mut().insert(relaxed);
+    }
+    response
 }
 
 /// Makes a [`WebError`] visible when htmx is driving the form.

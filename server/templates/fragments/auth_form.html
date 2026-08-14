@@ -1,12 +1,15 @@
 {#-
-  The sign-in / create-account form, rendered on its own for an `HX-Request`
-  and embedded in `auth_page.html` otherwise. `hx-post` targets the form
-  itself, so a failed submit swaps in this same fragment with the error
-  filled in; with JavaScript disabled the plain POST re-renders the whole
-  page instead, which is why nothing here depends on htmx.
+  The sign-in / create-account card, rendered on its own for an `HX-Request`
+  and embedded in `auth_page.html` otherwise.
+
+  The root is a `<div>`, not the form, because the card can hold *two* forms —
+  the email-and-password one and the hidden one Google's button submits — and
+  HTML forbids nesting them. `hx-target` therefore names the id rather than
+  `this`, so a failed submit still swaps the whole card, error and all; with
+  JavaScript disabled the plain POST re-renders the whole page instead, which
+  is why nothing here depends on htmx.
 -#}
-<form id="auth-form" class="card form" method="post" action="{{ action }}"
-      hx-post="{{ action }}" hx-target="this" hx-swap="outerHTML">
+<div id="auth-form" class="card form">
   <h1>{{ heading }}</h1>
 {%- if registration_closed %}
   {#- A warning, not the refusal: `auth::register_account` is what actually
@@ -19,35 +22,63 @@
 {%- if let Some(error) = error.as_deref() %}
   <p class="error" role="alert">{{ error }}</p>
 {%- endif %}
-  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <form method="post" action="{{ action }}"
+        hx-post="{{ action }}" hx-target="#auth-form" hx-swap="outerHTML">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
 {%- if let Some(link) = link.as_deref() %}
-  {#- The desktop sign-in this form is part of, so approving it survives the
-      round trip through login or registration. A uuid, re-rendered from the
-      parsed value rather than echoed from the query string. -#}
-  <input type="hidden" name="link" value="{{ link }}">
+    {#- The desktop sign-in this form is part of, so approving it survives the
+        round trip through login or registration. A uuid, re-rendered from the
+        parsed value rather than echoed from the query string. -#}
+    <input type="hidden" name="link" value="{{ link }}">
 {%- endif %}
-  <label for="email">Email</label>
-  <input id="email" name="email" type="email" value="{{ email }}"
-         autocomplete="username" required autofocus>
-  <label for="password">Password</label>
-  <input id="password" name="password" type="password"
-         autocomplete="{{ password_autocomplete }}" required>
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" value="{{ email }}"
+           autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="{{ password_autocomplete }}" required>
 {%- if let Some(hint) = password_hint %}
-  <p class="hint">{{ hint }}</p>
+    <p class="hint">{{ hint }}</p>
 {%- endif %}
 {%- if let Some(key) = captcha_key.as_deref() %}
-  {#- reCAPTCHA v3: no widget and nothing to click. `/assets/captcha.js`
-      fills this in from the two data attributes and re-mints after every
-      swap, since a v3 token is single-use and expires in two minutes.
-      Empty on arrival — with JavaScript off it stays empty and the submit
-      is refused with a message saying so. -#}
-  <input type="hidden" name="captcha_token"
-         data-captcha-key="{{ key }}" data-captcha-action="{{ captcha_action }}">
+    {#- reCAPTCHA v3: no widget and nothing to click. `/assets/captcha.js`
+        fills this in from the two data attributes and re-mints after every
+        swap, since a v3 token is single-use and expires in two minutes.
+        Empty on arrival — with JavaScript off it stays empty and the submit
+        is refused with a message saying so. -#}
+    <input type="hidden" name="captcha_token"
+           data-captcha-key="{{ key }}" data-captcha-action="{{ captcha_action }}">
 {%- endif %}
-  <button class="button" type="submit">{{ submit }}</button>
+    <button class="button" type="submit">{{ submit }}</button>
+  </form>
+{%- if let Some(client_id) = google_client_id.as_deref() %}
+  {#- Google Identity Services. The button itself is drawn by Google's own
+      script into `#google-button`; `/assets/google.js` initializes it from
+      these data attributes and, on a credential, fills in the hidden field
+      below and submits the form beside it.
+
+      That form posts to *our* origin, so it carries the ordinary CSRF token
+      and needs no second scheme — see `web::google`. It is a sibling of the
+      password form, never a child: nested forms are invalid HTML and the
+      inner one would simply not submit. -#}
+  <p class="or"><span>or</span></p>
+  <form method="post" action="/auth/google" id="google-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+{%- if let Some(link) = link.as_deref() %}
+    <input type="hidden" name="link" value="{{ link }}">
+{%- endif %}
+    <input type="hidden" name="credential" id="google-credential">
+  </form>
+  <div class="google-signin" id="google-button"
+       data-google-client-id="{{ client_id }}" data-google-text="{{ google_text }}"></div>
+  <noscript>
+    <p class="hint">Signing in with Google needs JavaScript. The email and
+    password form above does not.</p>
+  </noscript>
+{%- endif %}
 {%- if let Some(link) = link.as_deref() %}
   <p class="alt">{{ alt_prompt }} <a href="{{ alt_href }}?link={{ link }}">{{ alt_link }}</a></p>
 {%- else %}
   <p class="alt">{{ alt_prompt }} <a href="{{ alt_href }}">{{ alt_link }}</a></p>
 {%- endif %}
-</form>
+</div>

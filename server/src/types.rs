@@ -148,6 +148,9 @@ pub struct Config {
     pub static_dir: PathBuf,
     /// Google OAuth client ids (web/desktop/mobile) accepted as ID-token
     /// audiences; empty means Google sign-in is disabled.
+    ///
+    /// **The first one is also the website's**, rendered into its sign-in
+    /// button — see `store::google::GoogleIdTokenVerifier::web_client_id`.
     pub google_client_ids: Vec<String>,
     /// Trust proxy-set client-address headers. Defaults to `false` (fail
     /// closed): when the listener is reachable directly, those headers are
@@ -261,15 +264,25 @@ pub(crate) struct Window {
 // hardening — the middleware's configuration and its one response marker
 // ---------------------------------------------------------------------------
 
-/// Response marker asking for [`crate::hardening::CSP_CAPTCHA`] instead of
-/// [`crate::hardening::CSP`].
+/// Response marker naming the third-party widgets a page actually rendered,
+/// which is what [`crate::hardening::policy`] turns into one of the four
+/// policies.
 ///
 /// A response extension rather than a path match, so the decision stays with
-/// the handler that knows whether it actually rendered a captcha — and so
-/// that layer, which is the outermost one and therefore the last to touch the
-/// headers, is still the only place a CSP is written.
-#[derive(Debug, Clone, Copy)]
-pub struct RelaxedCsp;
+/// the handler that knows what it rendered — and so that layer, which is the
+/// outermost one and therefore the last to touch the headers, is still the
+/// only place a CSP is written. Only the two auth pages ever attach one, and
+/// they attach it **once**: a second insert would replace the first, so the
+/// flags are gathered before the response is built rather than or-ed into it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelaxedCsp {
+    /// reCAPTCHA v3 is on the page.
+    pub captcha: bool,
+    /// The Google Identity Services sign-in button is on the page. Also what
+    /// widens `Cross-Origin-Opener-Policy`, since the button signs in through
+    /// a popup that has to keep talking to its opener.
+    pub google: bool,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SecurityHeaders {

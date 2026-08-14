@@ -272,6 +272,18 @@ pub struct AuthForm {
     /// all. Filled in by `AuthForm::with_captcha`, never by the two
     /// constructors, so the action and the key can't be set out of step.
     pub(crate) captcha_key: Option<String>,
+    /// The **public** Google OAuth client id the sign-in button is rendered
+    /// with, or `None` when this deployment has no web client — which is what
+    /// the template reads to decide whether to render the button, the hidden
+    /// credential form and the two scripts at all. Filled in by
+    /// `AuthForm::with_google` from the id-token verifier, so the page can
+    /// only offer a button the server is able to check.
+    pub(crate) google_client_id: Option<String>,
+    /// Which wording Google puts on its own button (`signin_with` /
+    /// `signup_with`). Fixed per form, like `captcha_action`, and cosmetic:
+    /// both buttons do exactly the same thing, since a Google sign-in creates
+    /// the account when there isn't one.
+    pub(crate) google_text: &'static str,
     /// Whether an administrator has closed registration. Only the register
     /// form ever sets it (via `AuthForm::with_registration_closed`), and it is
     /// a *warning above a form that still renders*: the refusal itself is
@@ -305,6 +317,22 @@ pub struct Credentials {
     /// sentence about JavaScript instead of a form-parse rejection.
     #[serde(default)]
     pub(crate) captcha_token: String,
+}
+
+/// The hidden form the Google button submits: an ID token minted in the page
+/// by Google Identity Services, plus the device link the visitor arrived with.
+///
+/// Posted to our *own* origin, which is what keeps this form under the
+/// ordinary [`CsrfForm`] double-submit check — the browser attaches the CSRF
+/// cookie because nothing about the request is cross-site.
+#[derive(Deserialize)]
+pub struct GoogleCredential {
+    /// Defaulted rather than required: an empty one has to reach the handler
+    /// to be turned into a sentence, the same way `captcha_token` does.
+    #[serde(default)]
+    pub(crate) credential: String,
+    #[serde(default)]
+    pub(crate) link: Option<String>,
 }
 
 /// `?link=<uuid>` on the two auth pages.

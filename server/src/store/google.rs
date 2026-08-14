@@ -110,6 +110,25 @@ impl IdTokenVerifier for GoogleIdTokenVerifier {
             email_verified: claims.email_verified,
         })
     }
+
+    /// The **first** configured client id, which is the one the website's own
+    /// sign-in button is rendered with.
+    ///
+    /// It is a convention rather than a check, because nothing in a client id
+    /// says what *kind* of OAuth client it belongs to — only Google knows
+    /// that, and it finds out at sign-in time. A deployment listing a native
+    /// client first therefore renders a button Google itself refuses; the fix
+    /// is to put the Web-application id first, and it is documented next to
+    /// the variable. A dedicated `ASKRYPT_GOOGLE_WEB_CLIENT_ID` would not
+    /// catch the mistake either — it would only move it — so there isn't one.
+    ///
+    /// Taking it from this list rather than from a variable of its own also
+    /// makes the invariant free: the id the button mints tokens for is by
+    /// construction an accepted audience, so a token from our own page cannot
+    /// fail verification for a wrong `aud`.
+    fn web_client_id(&self) -> Option<&str> {
+        self.client_ids.first().map(String::as_str)
+    }
 }
 
 #[async_trait]
@@ -130,6 +149,16 @@ mod tests {
             verifier.verify("not-a-jwt").await,
             Err(IdTokenError::Invalid(_))
         ));
+    }
+
+    /// The website's button is rendered with the first audience, and a
+    /// deployment with none has no button at all.
+    #[test]
+    fn the_website_button_uses_the_first_client_id() {
+        let verifier = GoogleIdTokenVerifier::new(vec!["web.apps".into(), "phone.apps".into()]);
+        assert_eq!(verifier.web_client_id(), Some("web.apps"));
+        assert_eq!(GoogleIdTokenVerifier::new(vec![]).web_client_id(), None);
+        assert_eq!(NotConfiguredIdTokenVerifier.web_client_id(), None);
     }
 
     #[tokio::test]

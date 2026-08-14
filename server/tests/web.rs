@@ -640,7 +640,13 @@ async fn htmx_gets_the_fragment_and_a_plain_request_gets_the_page() {
     let fragment = send(&app, request).await.2;
 
     assert!(!fragment.contains("<!doctype"), "fragment was a full page");
-    assert!(fragment.trim_start().starts_with("<form"), "{fragment}");
+    // One element, and the one the form's `hx-target` names: the card, which
+    // holds the password form and — where Google sign-in is configured — the
+    // hidden form its button submits.
+    assert!(
+        fragment.trim_start().starts_with("<div id=\"auth-form\""),
+        "{fragment}"
+    );
     assert!(fragment.contains("invalid email or password"));
 }
 

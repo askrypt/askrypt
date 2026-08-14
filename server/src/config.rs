@@ -8,7 +8,7 @@
 //! | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data directory           |
 //! | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite`/`memory` |
 //! | `ASKRYPT_STATIC_DIR` | `server/static`  | Assets served at `/assets` (CSS + htmx) |
-//! | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids accepted as ID-token audiences; empty disables Google sign-in |
+//! | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids accepted as ID-token audiences; empty disables Google sign-in. **The first is the one the website's own sign-in button is rendered with**, so it must be a Web-application client (see [`crate::store::google`]) |
 //! | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For` for the client address. Only when a reverse proxy is the *only* way to reach the listener |
 //! | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security`. Enable once TLS terminates in front |
 //! | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60`   | Per-request handler timeout (`0` disables) |
@@ -382,6 +382,10 @@ fn recaptcha_from(
     }))
 }
 
+/// Builds the two Google sign-in settings from a variable lookup: the accepted
+/// ID-token audiences, and the client id the website's own button is rendered
+/// with.
+///
 /// A plain text variable, trimmed, where blank means unset. The compose file
 /// passes several of these through as `"${VAR:-}"`, so "set to the empty
 /// string" and "never set" have to mean the same thing.

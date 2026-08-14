@@ -111,9 +111,9 @@ namespacing), 2 (auth: register, login, Google sign-in), 3 (profile API), 4
 foundations, 7.2 browser sessions/CSRF, 7.3 profile pages, 7.4 vault file
 manager), 8 (roles + the admin Users page), 9 (the paid storage tier), 10
 (the browser device link that signs desktop apps in), 11 (reCAPTCHA v3 on
-the website's auth forms) and 12 (server settings + the registration switch)
-are done. Still open: Phase 6
-(CI/CD) and browser Google sign-in.
+the website's auth forms), 12 (server settings + the registration switch) and
+13 ("Sign in with Google" on the website) are done. Still open: Phase 6
+(CI/CD).
 Self-hosting is documented in **`server/DEPLOY.md`**.
 
 **Types live apart from behaviour.** Every struct, enum and type alias the
@@ -154,6 +154,30 @@ so an approval nobody collects leaves no live session — and **the claim is one
 atomic store call**, so two polls racing cannot both mint one. `src/` keeps the
 old `ServerClient::login` form and is unaffected.
 
+**Google sign-in has two surfaces, one set of rules.** `POST
+/api/v1/auth/google` takes an ID token a native client minted; the website's
+own button (`server/src/web/google.rs`, Phase 13) posts one to `/auth/google`.
+Both verify through the `IdTokenVerifier` seam and then call
+`auth::upsert_google_account`, which is where creating, linking, the
+registration switch and the ban check live — **never re-implement any of it in
+`web/`**. Three things are specific to the browser half. The credential is
+minted **in the page** by Google Identity Services and posted **same-origin**,
+so the form is covered by the site's ordinary `CsrfForm` double-submit check
+rather than by Google's `g_csrf_token`; a redirect-mode POST would arrive
+cross-site with no `SameSite=Lax` cookie attached, which is what would force a
+second CSRF scheme onto the one endpoint that hands out sessions. It costs one
+relaxed header, `Cross-Origin-Opener-Policy: same-origin-allow-popups` — a
+popup cannot answer its opener under plain `same-origin`, and it fails
+silently. And **whether there is a button is the verifier's answer**
+(`IdTokenVerifier::web_client_id`, the mirror of `CaptchaVerifier::site_key`),
+not the config's, so a page can only offer a button whose credential this
+server can check. That id is **the first of `ASKRYPT_GOOGLE_CLIENT_IDS`** —
+there is deliberately no variable of its own, since taking it from the
+audience list makes "the id the button mints for is an accepted audience" true
+by construction. The cost is a convention to document: list the
+Web-application client first, because nothing in a client id says what kind it
+is and a native one there renders a button Google itself refuses.
+
 **Roles and the first account.** The `roles` table is seeded by the migration
 with two roles at fixed uuids, so both backends name the same rows: `ADMIN`
 (the Users page) and `PAYMENT_USER` (the paid storage tier — it grants
@@ -193,7 +217,11 @@ next request.
   generations — with `vaults_dir()` created at startup so a backup script
   never tars a path no upload has made yet; the
   Google verifier is real when `ASKRYPT_GOOGLE_CLIENT_IDS` is set, else
-  `NotConfiguredIdTokenVerifier` (501), and the mailer is a real `SmtpMailer`
+  `NotConfiguredIdTokenVerifier` (501) — configured means the *website*
+  renders a sign-in button too, so `google.js` joins the startup asset check
+  and the id that button will carry is logged as `website_button=`, which is
+  where an operator sees they listed their Android client first — and the
+  mailer is a real `SmtpMailer`
   when `ASKRYPT_SMTP_HOST` is set, else `MemoryMailer` behind a `warn!` (built
   once for both backends, before the `AppState` match, so a bad relay or
   sender address aborts startup rather than the first send). The captcha is a
@@ -256,7 +284,9 @@ next request.
   `ASKRYPT_BACKEND` (`sqlite` default | `memory`), `ASKRYPT_STATIC_DIR`
   (default `server/static`, i.e. `cargo run` from the workspace root),
   `ASKRYPT_GOOGLE_CLIENT_IDS` (comma-separated ID-token audiences; empty
-  disables Google sign-in), plus the Phase 5 knobs `ASKRYPT_TRUST_PROXY`
+  disables Google sign-in, and the **first** is also what the website's own
+  sign-in button is rendered with), plus the Phase 5 knobs
+  `ASKRYPT_TRUST_PROXY`
   (default **false** — fail closed), `ASKRYPT_HSTS` (default false),
   `ASKRYPT_REQUEST_TIMEOUT_SECS` (60), `ASKRYPT_MAX_CONCURRENT` (256),
   `ASKRYPT_MAX_BODY_BYTES` (64 KiB) and `ASKRYPT_LOG_FORMAT` (`text`|`json`).
@@ -333,15 +363,28 @@ next request.
   `concurrency_limit` (`Semaphore::try_acquire_owned` → 503 + `Retry-After`,
   `/healthz` exempt). **The `CSP` is a commitment to Phase 7**: no inline
   `<script>`/`<style>`, no `hx-on:`, no `js:`-prefixed htmx attributes.
-  `CSP_CAPTCHA` is the one documented exception — a *second* policy naming
-  `www.google.com`/`www.gstatic.com` and allowing inline **styles** (for
-  reCAPTCHA's injected badge stylesheet; `script-src` stays free of
-  `'unsafe-inline'`), sent only by `/login` and `/register` and only when
-  reCAPTCHA is configured. A page opts in with the `RelaxedCsp` **response
-  extension**, read by `security_headers` — the same trick `web`'s
-  `ErrorInfo` uses, and necessary because this layer is the outermost one and
-  would otherwise overwrite anything an inner layer set. Google's alternative
-  is a per-request nonce, which would make the policy a per-response value.
+  The documented exceptions are the other three policies, sent only by
+  `/login` and `/register` and only for the widget the page actually
+  rendered: `CSP_CAPTCHA` (naming `www.google.com`/`www.gstatic.com` and
+  allowing inline **styles**, for reCAPTCHA's injected badge stylesheet),
+  `CSP_GOOGLE` (the sign-in button — *tighter*, because Google publishes a
+  path-scoped source list for `accounts.google.com/gsi/`, so `style-src`
+  keeps `'self'` and **no** `'unsafe-inline'` appears) and
+  `CSP_CAPTCHA_GOOGLE`, their union. `script-src` is free of
+  `'unsafe-inline'` in all four, and `POLICIES` + the unit tests hold every
+  new one to that. `policy()` is the whole selection; a page opts in with the
+  `RelaxedCsp` **response extension** — now two flags rather than a marker,
+  so a captcha page is not handed the sign-in host or the other way round —
+  read by `security_headers`, the same trick `web`'s `ErrorInfo` uses and
+  necessary because this layer is the outermost one and would otherwise
+  overwrite anything an inner layer set. Google's alternative is a
+  per-request nonce, which would make the policy a per-response value. The
+  `google` flag also swaps `Cross-Origin-Opener-Policy` to
+  `same-origin-allow-popups`: the sign-in popup answers its opener, and under
+  plain `same-origin` it silently cannot. **Attach `RelaxedCsp` once per
+  response** — a second insert replaces the first, which is why
+  `web::auth::AuthForm::relaxed_csp` gathers both flags before anything is
+  built.
 - **`server/src/clientip.rs`** — Shared client-address resolution for
   `ratelimit` and `audit`. Proxy headers are trusted only under
   `ASKRYPT_TRUST_PROXY` (installed as a `ClientIpPolicy` request extension),
@@ -546,6 +589,8 @@ next request.
   each module below re-exports its own. `mod.rs` builds the HTML router and holds `rate_limit`, an
   HTML-rendering twin of `ratelimit::middleware` sharing the *same*
   `RateLimiter` instances as `/api/v1/auth` and the `/api/v1/me` mutations,
+  `relax_csp` (attaches `hardening::RelaxedCsp`, once per response — it lives
+  here rather than in `captcha` because two features now widen the policy),
   plus `htmx_error_fragment`, the outermost layer: htmx refuses to swap a
   4xx/5xx, so an error page answering an `hx-post` is received and thrown
   away and the visitor watches the form do nothing. The layer re-renders any
@@ -588,11 +633,12 @@ next request.
   `authenticate`/`register_account`, since keeping a flood of guesses from
   buying an argon2 hash each is the whole point; one generic sentence to the
   visitor whatever went wrong, the real reason to the log and to
-  `audit::CAPTCHA_FAILED`; a `CaptchaError::Backend` fails **closed**), and
-  `relax_csp`, which attaches `hardening::RelaxedCsp`. The two exceptions to
-  the website's own rules live here and nowhere else: with a site key
-  configured these forms **need JavaScript** (a v3 token can only be minted in
-  the page) and send `CSP_CAPTCHA`. `AuthForm` carries `captcha_action` +
+  `audit::CAPTCHA_FAILED`; a `CaptchaError::Backend` fails **closed**).
+  `relax_csp` used to live here and is now `web::relax_csp`, since two
+  features need it. The exceptions to the website's own rules live on these
+  two pages and nowhere else: with a site key configured these forms **need
+  JavaScript** (a v3 token can only be minted in the page) and send
+  `CSP_CAPTCHA`. `AuthForm` carries `captcha_action` +
   `captcha_key`, the key filled by the chained `with_captcha(&state)` so the
   action and the key cannot be set out of step; a refused submit re-renders
   the field **empty**, because a v3 token is single-use and the spent one
@@ -600,6 +646,20 @@ next request.
   native clients cannot mint a token, and the desktop's browser sign-in
   already lands on `/login`; the JSON endpoints keep the rate limiter alone,
   which is a known bypass for anything willing to post JSON;
+  `google.rs` the website's "Sign in with Google" (Phase 13):
+  `POST /auth/google` on the *same* limiter as the two forms, taking an ID
+  token Google Identity Services minted in the page and handing it to
+  `IdTokenVerifier` then `auth::upsert_google_account` — see "Google sign-in
+  has two surfaces" above for why the credential is posted same-origin, and
+  `hardening` for the two headers that widen. It re-renders the *sign-in*
+  form on every refusal whichever page the button was on (Google already knows
+  the address, so a register form has nothing left to collect), splitting a
+  refusal-with-a-sentence from a backend failure on the same
+  `is_backend_failure` predicate `web::vaults::refused` uses. There is
+  deliberately **no `GET`**: a sign-in a link can trigger is one a prefetcher
+  can trigger. `AuthForm` carries `google_client_id` (chained on by
+  `with_google(&state)`, from the verifier, so a page cannot offer a button
+  the server would refuse) + the cosmetic `google_text`;
   `devicelink.rs` the `/link/{id}` page, where
   **visiting while signed in approves** (no confirm button — the flow is "open
   the page, come back signed in") next to the device label, the code and a
@@ -677,7 +737,10 @@ next request.
   the atomic `claim` and the `delete_expired` sweep),
   `VaultMetaStore`, `VaultVersionStore`, `VaultBlobStore`,
   `Mailer`,
-  `IdTokenVerifier`, `CaptchaVerifier` (+ `StoreError`/`MailerError`/
+  `IdTokenVerifier` (`verify`, plus the defaulted `web_client_id` the website
+  reads to decide whether to render a Google button — `None` never disables
+  the JSON API, which only needs an audience), `CaptchaVerifier` (+
+  `StoreError`/`MailerError`/
   `IdTokenError`/`CaptchaError`, all
   `#[non_exhaustive]`, and the `ADMIN_ROLE`/`PAYMENT_USER_ROLE` name
   constants — the stores themselves are name-generic, so a new role needs no
@@ -812,7 +875,18 @@ next request.
   actually refuses — the browser form still rendering but answering 200 with
   the refusal, the JSON API answering 403 `registration_disabled`, Google
   refused for a *new* address but still linking to an existing one, and
-  password sign-in untouched on both surfaces). Middleware needing a slow
+  password sign-in untouched on both surfaces) and
+  `google_signin.rs` (the Phase 13 gate, 15 tests, both halves at once because
+  the page has to offer a button the handler will accept a credential from:
+  the client id, both scripts and the credential form on the two pages, the
+  two forms as *siblings* inside one card, the widened CSP and opener policy
+  on exactly those pages and only with a button configured, then create →
+  sign in again reusing the account → link to an existing password account
+  with the password still working → a device link surviving the round trip,
+  and the refusals — no credential (advice about JavaScript), an unverifiable
+  one, an unverified Google address, a banned account, a closed server for
+  *new* addresses only, a missing and a forged CSRF token, and `GET` answered
+  405). Middleware needing a slow
   or parked handler (timeout, shedding) is unit-tested inside
   `src/hardening.rs` instead. The `last_admin` guard is unreachable through
   the website — only the sole administrator can act on themselves, and the
@@ -830,14 +904,20 @@ next request.
   the binary;
   every page template carries a `chrome: Chrome` field because `layout.html`
   reads it, and each fragment is a self-contained element with an id its
-  forms name as `hx-target`. `layout.html`'s `{% block head %}` exists for
+  forms name as `hx-target`. `auth_form` is the exception that proves the
+  rule: its root is a `<div id="auth-form">` rather than the form, because
+  the card holds *two* forms — the password one and the hidden one the Google
+  button submits — and HTML forbids nesting them; `hx-target` names the id.
+  `layout.html`'s `{% block head %}` exists for
   exactly one caller: `auth_page.html` loading Google's `api.js` plus
-  `/assets/captcha.js` when a site key is configured — both **external**, since
-  even the widened CSP forbids inline script, which is why the site key
-  reaches the helper as a `data-` attribute on the hidden field. Confirmation steps are `<details>` disclosures,
+  `/assets/captcha.js` when a site key is configured, and `/assets/google.js`
+  plus `accounts.google.com/gsi/client` when a web client id is — all
+  **external**, since
+  even the widened CSP forbids inline script, which is why the site key and
+  the client id reach the helpers as `data-` attributes. Confirmation steps are `<details>` disclosures,
   not scripted dialogs — the CSP forbids the inline handler. `static/` holds
-  just `style.css`, the vendored `htmx.min.js` (2.0.10) and `captcha.js`,
-  served at
+  just `style.css`, the vendored `htmx.min.js` (2.0.10), `captcha.js` and
+  `google.js`, served at
   `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN.
   `captcha.js` keeps the hidden field **freshly populated** rather than
   minting on submit: htmx serializes the form synchronously and
@@ -846,6 +926,11 @@ next request.
   minutes) and on `htmx:afterSwap` (a refused submit spends its token *and*
   replaces the whole form) — the listener is on `document` precisely because
   the form it would otherwise bind to is the element htmx replaces.
+  `google.js` is the same shape and there for the same reason: it initializes
+  Google Identity Services from the container's `data-` attributes, draws the
+  button, and on a credential fills the hidden field and submits the form
+  beside it. It re-draws on `htmx:afterSwap` (a refused submit replaces the
+  whole card) and polls briefly for the library, which is deferred like it is.
 - **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts.
   **Containers are the only supported deployment** — there is no systemd unit
   and no backup wrapper script; `server/DEPLOY.md` drives everything through

@@ -137,7 +137,7 @@ Configuration via environment variables (all optional):
 | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data dir (SQLite db, vault blobs)|
 | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite` or `memory`    |
 | `ASKRYPT_STATIC_DIR` | `server/static`  | Assets served at `/assets` (CSS + htmx)  |
-| `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids; empty disables Google sign-in |
+| `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids; empty disables Google sign-in. The **first** is the one the website's own sign-in button uses, so list your Web-application client first |
 | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For`; only behind a reverse proxy |
 | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security` (enable once TLS is in front) |
 | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60`   | Handler timeout (`0` disables)           |

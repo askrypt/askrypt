@@ -22,10 +22,7 @@
 //! that distinguished "no token" from "score too low" would be a tuning
 //! signal handed straight to whoever is probing.
 
-use axum::response::Response;
-
 use crate::audit::{self, ClientInfo};
-use crate::hardening::RelaxedCsp;
 use crate::state::AppState;
 use crate::store::CaptchaError;
 
@@ -79,17 +76,4 @@ pub async fn check(
             Err(UNAVAILABLE)
         }
     }
-}
-
-/// Marks a response as needing the captcha-widened CSP, when there is a
-/// captcha on it at all.
-///
-/// See [`RelaxedCsp`]: the header itself is still written in one place, by
-/// [`crate::hardening::security_headers`], which is the outermost layer and
-/// so the last word on headers.
-pub fn relax_csp(mut response: Response, enabled: bool) -> Response {
-    if enabled {
-        response.extensions_mut().insert(RelaxedCsp);
-    }
-    response
 }

@@ -203,6 +203,10 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         info!(
             client_ids = config.google_client_ids.len(),
+            // The website's button is rendered with the first one, so naming
+            // it is what turns a misconfiguration ("that's my Android
+            // client") into something an operator can see at startup.
+            website_button = config.google_client_ids[0],
             "google sign-in enabled"
         );
         Arc::new(GoogleIdTokenVerifier::new(config.google_client_ids.clone()))
@@ -296,9 +300,13 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // and the vendored htmx are loose files, served at /assets. `captcha.js`
     // joins them when reCAPTCHA is on — and matters more than the others,
     // since without it no token is minted and *nobody* can sign in.
+    // `google.js` likewise: without it the sign-in button never renders.
     let mut assets = vec!["style.css", "htmx.min.js"];
     if config.recaptcha.is_some() {
         assets.push("captcha.js");
+    }
+    if !config.google_client_ids.is_empty() {
+        assets.push("google.js");
     }
     for asset in assets {
         if !config.static_dir.join(asset).is_file() {

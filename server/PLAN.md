@@ -337,7 +337,7 @@ askrypt/
   - Gate: CI green on push.
 
 - **Phase 7 — Website: server-rendered HTML + htmx.** ✅ *(7.1–7.4 done;
-  browser Google sign-in deferred)*
+  browser Google sign-in deferred then shipped in Phase 13)*
   Rendered by the server itself (askama templates, htmx fragments) rather than
   by a client-side app. New deps as built: `askama`, `serde_urlencoded` and
   `axum`'s `multipart` feature — no cookie crate in the end (see 7.2).
@@ -420,20 +420,15 @@ askrypt/
     → the browser is signed out. Plus a test asserting no page carries an
     inline `<script>`, `<style>` or `hx-on:`, so the CSP can't drift.
 
-  **⏭ Deferred: browser Google sign-in.** The native
-  `POST /api/v1/auth/google` ID-token exchange is unchanged and still works;
-  what the *website* lacks is the redirect flow. It needs, none of which
-  exists today: a distinguished web client id and a client secret
-  (`ASKRYPT_GOOGLE_CLIENT_IDS` is only a list of accepted audiences), a
-  public base URL to build the `redirect_uri` from, an `OAuthCodeExchanger`
-  trait + in-memory fake for the token-endpoint call, PKCE verifier and
-  `state` parked in a short-lived cookie, and `nonce` validation (which
-  `store/google.rs` neither parses nor checks). The convergence point is
-  already in place: exchange the code, hand the `id_token` to the existing
-  `IdTokenVerifier`, then call `auth::upsert_google_account`. One caveat for
-  whoever builds it — the sign-in entry point must be a link, not a form
-  POST, because `form-action 'self'` blocks a redirect out to
-  `accounts.google.com` after a form submission.
+  **↪ Browser Google sign-in was deferred here and shipped in Phase 13**,
+  which is where the design and the reasoning live. It did *not* need the
+  authorization-code machinery this section once listed as prerequisites —
+  no client secret, no `redirect_uri`, no `OAuthCodeExchanger`, no PKCE — and
+  the caveat about `form-action 'self'` blocking a redirect out to
+  `accounts.google.com` does not apply either, because nothing redirects out.
+  Google Identity Services mints the ID token in the page and the credential
+  is posted to *our own* origin, which converges on exactly the seam this
+  section predicted: `IdTokenVerifier` then `auth::upsert_google_account`.
 
   - **7.3 — Profile pages.** ✅ *(done 2026-08-05)*
     - `/account`: current email, linked providers, change email, change/set
@@ -518,8 +513,9 @@ askrypt/
     with a missing/foreign/cross-origin token, and the oversize 413 page. The
     CSP-drift test now covers the signed-in pages too.
 
-  - **Phase gate (whole phase):** ✅ *(met 2026-08-05, except browser Google
-    sign-in)* the full product ships from `cargo build` with no JS toolchain;
+  - **Phase gate (whole phase):** ✅ *(met 2026-08-05; the deferred Google
+    button followed in Phase 13)* the full product ships from `cargo build`
+    with no JS toolchain;
     HTML routes covered by `server/tests/web.rs` (tower `oneshot`, asserting
     status, `Set-Cookie` attributes, CSRF rejection and key markup); every
     page usable with JavaScript disabled.
@@ -745,6 +741,68 @@ askrypt/
     refused for a new address but still linking to an existing one, and
     password sign-in untouched on both surfaces. `server/tests/settings.rs`
     (9 tests) plus unit tests in `src/settings.rs` and both store backends.
+
+- **Phase 13 — "Sign in with Google" on the website.** ✅ *(done 2026-08-14)*
+  The one thing Phase 7 deferred. `ASKRYPT_GOOGLE_CLIENT_IDS` turned on a JSON
+  endpoint native clients could post an ID token to, and nothing visible: the
+  website had no button, so an operator who configured Google sign-in saw no
+  difference anywhere they could look.
+
+  - **Google Identity Services, not the authorization-code flow.** GIS mints
+    the ID token *in the page*, so the server needs no client secret, no
+    `redirect_uri`, no token-endpoint call and no PKCE — and it verifies the
+    result with the `IdTokenVerifier` it already had. The whole feature
+    converges on `auth::upsert_google_account`, which is where creating,
+    linking, the registration switch and the ban check already live; nothing
+    about the account rules is re-implemented for the browser.
+  - **The credential is posted same-origin.** Google offers to POST it to us
+    directly (`ux_mode: redirect`), but that arrives cross-site, where none of
+    our `SameSite=Lax` cookies are sent — the CSRF token included. That form
+    would have to be exempted from `web::csrf` and re-protected with Google's
+    own `g_csrf_token`: a second CSRF scheme guarding the one endpoint that
+    hands out sessions. Signing in through a popup and posting the credential
+    to `/auth/google` keeps the site at one scheme, and this form goes through
+    the same `CsrfForm` as every other mutation.
+  - **Two headers widen, on two pages, for what the page actually loads.**
+    `RelaxedCsp` grew from a marker into two flags, so `hardening::policy`
+    picks among four written-out policies: a page with a captcha and no button
+    is not handed the sign-in host, and vice versa. `CSP_GOOGLE` is *tighter*
+    than the captcha's — Google publishes a path-scoped source list for this
+    library, so `style-src` keeps `'self'` and no `'unsafe-inline'` appears
+    anywhere. `Cross-Origin-Opener-Policy` relaxes to
+    `same-origin-allow-popups` only there: a popup cannot answer its opener
+    under plain `same-origin`, which is a silent failure rather than a
+    console error.
+  - **The verifier is asked whether there is a button**, not the config —
+    `IdTokenVerifier::web_client_id`, the mirror of
+    `CaptchaVerifier::site_key`. A page can therefore only ever offer a button
+    whose credential this server is able to check.
+  - **No new configuration.** The button is rendered with the **first** of
+    `ASKRYPT_GOOGLE_CLIENT_IDS`, so a deployment gets it by setting what it
+    already set. A variable of its own was written and then removed: it would
+    have needed a rule keeping the two in step (a web client id missing from
+    the audience list renders a button whose every sign-in is refused for a
+    wrong `aud`), and taking the id *from* that list makes the same invariant
+    free. It buys nothing else either — nothing in a client id says what kind
+    of OAuth client it belongs to, so neither spelling can catch the one real
+    mistake, which is naming a native client. That is a documented convention
+    instead: list the Web-application id first, and the startup log prints the
+    one the button will carry.
+  - **The card is a `<div>` now.** It holds two forms — the password one and
+    the hidden one the button submits — and HTML forbids nesting them, so
+    `hx-target` names `#auth-form` instead of `this`. The password form is
+    untouched and still works with scripts off.
+  - **Phase gate:** ✅ both pages carry the client id, the library, the helper
+    and the credential form; the two forms are siblings inside one card; the
+    widened CSP and opener policy land on exactly those two pages and only
+    with a button configured; a valid credential creates the account and signs
+    in; a second one reuses it; a matching address links to an existing
+    password account and leaves the password working; a device link survives
+    the round trip; and the refusals — no credential (advice about
+    JavaScript), an unverifiable one, an unverified Google address, a banned
+    account, a closed server (new addresses only), a missing or forged CSRF
+    token, and `GET` refused outright. `server/tests/google_signin.rs`
+    (15 tests) plus unit tests in `src/hardening.rs` and `src/config.rs`.
 
 ## Open decisions (not blocking)
 

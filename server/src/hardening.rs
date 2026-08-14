@@ -21,10 +21,13 @@
 //!   inline stylesheet for `htmx-indicator` unless the page sets
 //!   `<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>`.
 //!
-//! The one documented exception is [`CSP_CAPTCHA`], sent only by the two auth
-//! pages and only when reCAPTCHA is configured. It is a *second* policy, not
-//! a loosening of the first: every other route, including the rest of the
-//! website, still gets [`CSP`] byte for byte.
+//! The documented exceptions are [`CSP_CAPTCHA`], [`CSP_GOOGLE`] and
+//! [`CSP_CAPTCHA_GOOGLE`], sent only by the two auth pages and only for the
+//! widgets those pages actually rendered. They are *separate* policies, not a
+//! loosening of the first: every other route, including the rest of the
+//! website, still gets [`CSP`] byte for byte, and a page that renders one
+//! widget gives up nothing on account of the other. [`policy`] is the whole
+//! selection, and [`RelaxedCsp`] is how a handler opts in.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,6 +70,74 @@ connect-src 'self' https://www.google.com; font-src 'self'; object-src 'none'; \
 base-uri 'none'; form-action 'self'; frame-src https://www.google.com; \
 frame-ancestors 'none'";
 
+/// The policy the sign-in and registration pages send when the **Google
+/// Identity Services** button is configured, and reCAPTCHA is not.
+///
+/// Tighter than [`CSP_CAPTCHA`] despite naming the same vendor, because
+/// Google publishes an exact source list for this library and it is
+/// path-scoped: `accounts.google.com/gsi/client` is the only script, `gsi/`
+/// the only frame and XHR target, and `gsi/style` the only stylesheet — so
+/// `style-src` keeps `'self'` alone and **no `'unsafe-inline'` appears
+/// anywhere**. Nothing here is a wildcard and nothing else is widened.
+pub const CSP_GOOGLE: &str = "default-src 'self'; \
+script-src 'self' https://accounts.google.com/gsi/client; \
+style-src 'self' https://accounts.google.com/gsi/style; img-src 'self' data:; \
+connect-src 'self' https://accounts.google.com/gsi/; font-src 'self'; \
+object-src 'none'; base-uri 'none'; form-action 'self'; \
+frame-src https://accounts.google.com/gsi/; frame-ancestors 'none'";
+
+/// Both widgets on one page: the union of [`CSP_CAPTCHA`] and [`CSP_GOOGLE`],
+/// and nothing beyond it.
+///
+/// Written out rather than assembled at runtime so the policy a browser is
+/// sent stays a string that can be read in the source and asserted on in a
+/// test, exactly like the other three.
+pub const CSP_CAPTCHA_GOOGLE: &str = "default-src 'self'; \
+script-src 'self' https://www.google.com https://www.gstatic.com \
+https://accounts.google.com/gsi/client; \
+style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; \
+img-src 'self' data:; \
+connect-src 'self' https://www.google.com https://accounts.google.com/gsi/; \
+font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; \
+frame-src https://www.google.com https://accounts.google.com/gsi/; \
+frame-ancestors 'none'";
+
+/// Every policy this server sends, for the tests that assert on all of them
+/// at once. Adding one means adding it here.
+pub const POLICIES: [&str; 4] = [CSP, CSP_CAPTCHA, CSP_GOOGLE, CSP_CAPTCHA_GOOGLE];
+
+/// The policy for a response, given what it said it rendered.
+///
+/// The four are a cross product of two independent widgets, so a page with a
+/// captcha and no Google button must not be handed the Google hosts, and the
+/// other way round.
+pub fn policy(relaxed: Option<&RelaxedCsp>) -> &'static str {
+    match relaxed {
+        Some(RelaxedCsp {
+            captcha: true,
+            google: true,
+        }) => CSP_CAPTCHA_GOOGLE,
+        Some(RelaxedCsp { captcha: true, .. }) => CSP_CAPTCHA,
+        Some(RelaxedCsp { google: true, .. }) => CSP_GOOGLE,
+        _ => CSP,
+    }
+}
+
+/// Default `Cross-Origin-Opener-Policy`: this document gets its own browsing
+/// context group, so a window it opens — or one that opened it — cannot reach
+/// it through `window.opener`.
+const COOP: &str = "same-origin";
+
+/// The one relaxation, on the two auth pages when the Google button is there.
+///
+/// Google Identity Services signs in through a popup that posts the
+/// credential back to its opener. Under plain `same-origin` that reference is
+/// severed and the sign-in silently never completes. `same-origin-allow-popups`
+/// keeps this page unreachable from anything that opened *it* — the direction
+/// that matters for cross-origin attacks — while letting popups it opens
+/// itself answer back.
+const COOP_ALLOW_POPUPS: &str = "same-origin-allow-popups";
+
 const PERMISSIONS_POLICY: &str = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
 magnetometer=(), microphone=(), payment=(), usb=()";
 
@@ -102,10 +173,11 @@ pub async fn security_headers(
     next: Next,
 ) -> Response {
     let mut response = next.run(request).await;
-    let csp = if response.extensions().get::<RelaxedCsp>().is_some() {
-        CSP_CAPTCHA
-    } else {
-        CSP
+    let relaxed = response.extensions().get::<RelaxedCsp>().copied();
+    let csp = policy(relaxed.as_ref());
+    let coop = match relaxed {
+        Some(RelaxedCsp { google: true, .. }) => COOP_ALLOW_POPUPS,
+        _ => COOP,
     };
     let headers = response.headers_mut();
     headers.insert(
@@ -129,7 +201,7 @@ pub async fn security_headers(
     );
     headers.insert(
         HeaderName::from_static("cross-origin-opener-policy"),
-        HeaderValue::from_static("same-origin"),
+        HeaderValue::from_static(coop),
     );
     headers.insert(
         HeaderName::from_static("cross-origin-resource-policy"),
@@ -237,6 +309,44 @@ mod tests {
     use axum::routing::get;
     use tokio::sync::oneshot;
     use tower::ServiceExt;
+
+    /// Whatever a page opted into, the parts of the policy that are not about
+    /// third-party widgets stay identical. Written over every policy at once
+    /// so a fifth one cannot be added without meeting the same bar.
+    #[test]
+    fn every_policy_keeps_the_non_negotiable_directives() {
+        for csp in POLICIES {
+            assert!(csp.starts_with("default-src 'self'; "), "{csp}");
+            assert!(csp.contains("object-src 'none'"), "{csp}");
+            assert!(csp.contains("base-uri 'none'"), "{csp}");
+            assert!(csp.contains("form-action 'self'"), "{csp}");
+            assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+            assert!(csp.contains("img-src 'self' data:;"), "{csp}");
+            // Script is the one a widening would be worth most: no inline, no
+            // eval, and every host named rather than matched.
+            assert!(!csp.contains("script-src 'self' 'unsafe-inline'"), "{csp}");
+            assert!(!csp.contains("unsafe-eval"), "{csp}");
+            assert!(!csp.contains('*'), "{csp}");
+        }
+    }
+
+    /// The two widgets are independent, and a page that renders one must not
+    /// be handed the other's hosts.
+    #[test]
+    fn the_policy_matches_what_the_page_actually_rendered() {
+        let relaxed = |captcha, google| RelaxedCsp { captcha, google };
+        assert_eq!(policy(None), CSP);
+        assert_eq!(policy(Some(&relaxed(false, false))), CSP);
+        assert_eq!(policy(Some(&relaxed(true, false))), CSP_CAPTCHA);
+        assert_eq!(policy(Some(&relaxed(false, true))), CSP_GOOGLE);
+        assert_eq!(policy(Some(&relaxed(true, true))), CSP_CAPTCHA_GOOGLE);
+
+        // A captcha alone never names the sign-in host, and the button alone
+        // never buys reCAPTCHA's inline-style concession.
+        assert!(!CSP_CAPTCHA.contains("accounts.google.com"));
+        assert!(!CSP_GOOGLE.contains("'unsafe-inline'"));
+        assert!(!CSP_GOOGLE.contains("www.gstatic.com"));
+    }
 
     async fn status_of(app: &Router, path: &str) -> StatusCode {
         app.clone()

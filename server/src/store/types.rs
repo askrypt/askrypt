@@ -299,7 +299,9 @@ pub(crate) struct KeyCache {
 
 pub struct GoogleIdTokenVerifier {
     /// Accepted `aud` values: the Google OAuth client ids of the web,
-    /// desktop and mobile apps.
+    /// desktop and mobile apps. The **first** is also the one the website's
+    /// own sign-in button uses — see
+    /// [`super::IdTokenVerifier::web_client_id`].
     pub(crate) client_ids: Vec<String>,
     pub(crate) jwks_url: String,
     pub(crate) http: reqwest::Client,
@@ -480,6 +482,11 @@ pub struct MemoryMailer {
 #[derive(Debug, Default)]
 pub struct FakeIdTokenVerifier {
     pub(crate) tokens: Mutex<HashMap<String, VerifiedIdToken>>,
+    /// What the website's button is rendered with, if a suite asked for one
+    /// via [`super::memory::FakeIdTokenVerifier::with_web_client_id`].
+    /// `None` by default, so a suite that says nothing about Google sees no
+    /// button and no widened CSP.
+    pub(crate) web_client_id: Option<String>,
 }
 
 /// Fake captcha: presents a site key (so the forms render exactly as they do

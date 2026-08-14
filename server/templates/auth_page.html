@@ -13,6 +13,15 @@
 <script src="https://www.google.com/recaptcha/api.js?render={{ key }}" defer></script>
 <script src="/assets/captcha.js" defer></script>
 {%- endif %}
+{#- Google Identity Services, only when a web client id is configured. Our
+    helper comes *first* and both are deferred, so it has defined the callback
+    and can drive `google.accounts.id` the moment the library is there — and
+    the client id likewise arrives on a `data-` attribute, since even the
+    widened CSP forbids the inline script that would set a variable. -#}
+{%- if form.google_client_id.is_some() %}
+<script src="/assets/google.js" defer></script>
+<script src="https://accounts.google.com/gsi/client" defer></script>
+{%- endif %}
 {% endblock %}
 
 {% block content %}
