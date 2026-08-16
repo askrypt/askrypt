@@ -315,6 +315,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
                 Some(state.entry.entry_type.clone()),
                 |choice| Message::Editor(Msg::TypeSelected(choice)),
             )
+            .width(Length::Fill)
             .text_size(13)
             .padding([4, 8])
             .into(),
