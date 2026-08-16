@@ -52,7 +52,11 @@ ENV ASKRYPT_BIND=0.0.0.0:8080 \
     # server/deploy/docker-compose.yml, which is the only route to the port.
     ASKRYPT_TRUST_PROXY=1 \
     ASKRYPT_HSTS=1 \
-    ASKRYPT_LOG_FORMAT=json \
+    # Human-readable by default: the usual way to read these is `docker logs`
+    # or `less` on a rotated file, and JSON is only worth it once something is
+    # actually ingesting it. Set `ASKRYPT_LOG_FORMAT=json` in the compose
+    # environment when a log shipper is.
+    ASKRYPT_LOG_FORMAT=text \
     # Daily files, two weeks kept. Both this and the data dir are set
     # explicitly rather than left to the WORKDIR-relative defaults, so moving
     # the working directory cannot quietly move the state; set it empty to log

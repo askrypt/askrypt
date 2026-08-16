@@ -63,6 +63,10 @@ services:
       # rather than inheriting the CPU count.
       ASKRYPT_ARGON2_PARALLELISM: "${ASKRYPT_ARGON2_PARALLELISM:-}"
       RUST_LOG: "${RUST_LOG:-askrypt_server=info,info}"
+      # Human-readable lines. Set to `json` when something ingests the logs;
+      # an empty value is rejected at startup, so this defaults to `text`
+      # rather than passing the .env through unset.
+      ASKRYPT_LOG_FORMAT: "${ASKRYPT_LOG_FORMAT:-text}"
     volumes:
       # Bind mounts, not named volumes: the state is meant to be visible on
       # the host, in the deployment directory. The paths match on both sides,
