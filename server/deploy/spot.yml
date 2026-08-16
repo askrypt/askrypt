@@ -13,8 +13,9 @@
 # The state is /home/askrypt-server/data (database + vault blobs) and
 # /home/askrypt-server/logs, bind-mounted into the container at the same
 # paths. Together with the .env they are the only things in that directory
-# worth keeping: the compose file, the Caddyfile and run.sh are overwritten
-# from git on every deploy, and the image tarball is deleted after loading.
+# worth keeping: the compose file, the Caddyfile, run.sh and backup.sh are
+# overwritten from git on every deploy, and the image tarball is deleted after
+# loading.
 #
 # Fill in the real host/user values below (placeholders ship in git).
 # Copy destinations are sftp paths; absolute paths are used as-is (sftp does not expand ~).
@@ -71,16 +72,22 @@ tasks:
       - name: upload run script
         copy: {src: "run.sh", dst: "/home/askrypt-server/run.sh"}
 
+      # Nothing here runs it — it is what cron calls on the server. Shipping it
+      # with every deploy is only how the copy on the host stays current.
+      - name: upload backup script
+        copy: {src: "backup.sh", dst: "/home/askrypt-server/backup.sh"}
+
       - name: load image
         script: "gunzip -c /home/askrypt-server/askrypt-image.tar.gz | docker load"
         on_exit: "rm -f /home/askrypt-server/askrypt-image.tar.gz"
 
       # run.sh prepares the bind-mounted data/logs directories and then brings
       # the stack up; it is the same script one would type on the server. The
-      # chmod is here because the upload above does not carry the mode.
+      # chmod covers both uploaded scripts because a copy does not carry the
+      # mode — backup.sh would otherwise land unexecutable for cron.
       - name: run
         script: |
-          chmod +x /home/askrypt-server/run.sh
+          chmod +x /home/askrypt-server/run.sh /home/askrypt-server/backup.sh
           /home/askrypt-server/run.sh
 
       - name: verify running

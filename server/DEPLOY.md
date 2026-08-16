@@ -511,6 +511,41 @@ $COMPOSE start askrypt-server
 
 Without that, the inconsistency window is one HTTP request wide.
 
+### The deployed helper
+
+`server/deploy/backup.sh` is uploaded to `/home/askrypt-server/backup.sh` and
+made executable on every deploy. Nothing in the playbook runs it — it is what
+to point cron at, as root (the data directory is mode `0700`, owned by uid
+`10001`):
+
+```sh
+0 3 * * * /home/askrypt-server/backup.sh >> /var/log/askrypt-backup.log 2>&1
+```
+
+It archives the **whole** deployment directory — the vault blobs, the logs,
+the `.env`, the compose file and the Caddyfile — not just the state. The
+database inside it is the `VACUUM INTO` snapshot: the script runs
+
+```sh
+docker exec askrypt-server askrypt-server backup /home/askrypt-server/data/snap-<stamp>.db
+```
+
+first (`exec` ignores the image's `ENTRYPOINT`, so the binary is named twice;
+it runs as uid 10001, the only user who may write in `data/`), lets `cp -a`
+pick the snapshot up through the bind mount, and then deletes
+`askrypt.db`, `askrypt.db-wal` and `askrypt.db-shm` **from the copy**. So the
+archive holds one database, `data/snap-<stamp>.db`, and restoring it is the
+section below with that file as the source:
+
+```sh
+cp <unpacked>/data/snap-20260816_030000.db $DATA/askrypt.db
+```
+
+Two things it deliberately does not do: it prunes nothing, so old archives
+pile up at the destination; and `/tmp` must hold a full copy plus its tarball,
+roughly twice the deployment directory. It also fails rather than backing up a
+torn database when the container is not running.
+
 ### Restore
 
 The data directory is on the host, so this is plain file work with the server
@@ -599,8 +634,8 @@ docker volume rm askrypt_askrypt-data askrypt_askrypt-logs
       --dry` runs clean before the first real deploy.
 - [ ] `RUST_LOG` keeps `askrypt_server` at `info` or lower; logs are shipped
       somewhere durable.
-- [ ] The backup commands above run on a timer and their output lands
-      off-host.
+- [ ] The backup commands above run on a timer — `backup.sh` from cron, or the
+      snapshot pair by hand — and their output lands off-host.
 - [ ] A restore has actually been performed into a scratch directory.
 - [ ] `ASKRYPT_ARGON2_PARALLELISM` fits the box's RAM (~19 MiB each).
 - [ ] **You registered the first account**, and `/admin/users` loads for it —

@@ -942,8 +942,8 @@ next request.
   beside it. It re-draws on `htmx:afterSwap` (a refused submit replaces the
   whole card) and polls briefly for the library, which is deferred like it is.
 - **`server/Dockerfile` + `server/deploy/`** — Self-hosting artifacts.
-  **Containers are the only supported deployment** — there is no systemd unit
-  and no backup wrapper script; `server/DEPLOY.md` drives everything through
+  **Containers are the only supported deployment** — there is no systemd unit;
+  `server/DEPLOY.md` drives everything through
   `docker compose`. Multi-stage image (build from the **repo root** — cargo
   validates every workspace member's target paths, and `sqlx::migrate!`
   embeds `server/migrations/`); `docker-build.sh` is the one that gets that
@@ -986,7 +986,15 @@ next request.
   `askrypt-server backup` (a `VACUUM INTO` snapshot) **before** tarring the
   blobs — uploads write bytes then metadata, so that order can only orphan a
   blob — with the server stopped when an exact snapshot matters. The snapshot
-  does not archive the log files.
+  does not archive the log files. `backup.sh` is the cron-side convenience the
+  playbook uploads (and `chmod +x`es) next to `run.sh` but never runs: it takes
+  that snapshot through `docker exec` into the running container, **into the
+  data directory** so the bind mount hands it to the host at the same path,
+  then `cp -a`s the whole `/home/askrypt-server` directory — logs, `.env`,
+  compose file and all — tars it through `/tmp` and drops the archive in the
+  off-host spool. The live `askrypt.db` and its `-wal`/`-shm` are deleted from
+  the *copy*, so the archive carries exactly one database and it is the
+  consistent one.
 
 ### Key Dependencies
 
