@@ -3,10 +3,8 @@
 //! session list + revocation, and account deletion cascading to the vault
 //! stores. Runs against the in-memory fakes.
 
-use std::path::Path;
 use std::sync::Arc;
 
-use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::memory::FakeIdTokenVerifier;
@@ -19,6 +17,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
+
+mod common;
 
 struct TestApp {
     app: Router,
@@ -33,12 +33,8 @@ fn test_app() -> TestApp {
         id_verifier: verifier.clone(),
         ..AppState::in_memory()
     };
-    let config = Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    };
     TestApp {
-        app: router(state.clone(), &config),
+        app: router(state.clone(), &common::password_api_config()),
         state,
         verifier,
     }

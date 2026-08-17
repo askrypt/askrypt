@@ -11,6 +11,7 @@
 //! | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids accepted as ID-token audiences; empty disables Google sign-in. **The first is the one the website's own sign-in button is rendered with**, so it must be a Web-application client (see [`crate::store::google`]) |
 //! | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For` for the client address. Only when a reverse proxy is the *only* way to reach the listener |
 //! | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security`. Enable once TLS terminates in front |
+//! | `ASKRYPT_PASSWORD_API` | `false`        | Expose `POST /api/v1/auth/{register,login}`. No shipped client uses them, and they are the one password surface reCAPTCHA cannot cover — leave off in production; the test suite and `scripts/server-roundtrip.sh` turn it on |
 //! | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60`   | Per-request handler timeout (`0` disables) |
 //! | `ASKRYPT_MAX_CONCURRENT` | `256`        | In-flight requests before shedding with 503 (`0` disables) |
 //! | `ASKRYPT_MAX_BODY_BYTES` | `65536`      | Request body limit outside `/api/v1/vaults` (vault routes keep their own 10 MiB limit) |
@@ -68,6 +69,7 @@ pub const ENV_STATIC_DIR: &str = "ASKRYPT_STATIC_DIR";
 pub const ENV_GOOGLE_CLIENT_IDS: &str = "ASKRYPT_GOOGLE_CLIENT_IDS";
 pub const ENV_TRUST_PROXY: &str = "ASKRYPT_TRUST_PROXY";
 pub const ENV_HSTS: &str = "ASKRYPT_HSTS";
+pub const ENV_PASSWORD_API: &str = "ASKRYPT_PASSWORD_API";
 pub const ENV_REQUEST_TIMEOUT: &str = "ASKRYPT_REQUEST_TIMEOUT_SECS";
 pub const ENV_MAX_CONCURRENT: &str = "ASKRYPT_MAX_CONCURRENT";
 pub const ENV_MAX_BODY_BYTES: &str = "ASKRYPT_MAX_BODY_BYTES";
@@ -119,6 +121,7 @@ impl Default for Config {
             google_client_ids: Vec::new(),
             trust_proxy: false,
             hsts: false,
+            password_api: false,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -208,6 +211,7 @@ impl Config {
             google_client_ids,
             trust_proxy: parse_bool(ENV_TRUST_PROXY, defaults.trust_proxy)?,
             hsts: parse_bool(ENV_HSTS, defaults.hsts)?,
+            password_api: parse_bool(ENV_PASSWORD_API, defaults.password_api)?,
             request_timeout: Duration::from_secs(parse_num(
                 ENV_REQUEST_TIMEOUT,
                 defaults.request_timeout.as_secs(),
@@ -434,6 +438,9 @@ mod tests {
         assert!(!config.trust_proxy);
         // HSTS off until TLS is confirmed in front.
         assert!(!config.hsts);
+        // The JSON password routes are opt-in: nothing that ships calls them,
+        // and they bypass the captcha the website's forms carry.
+        assert!(!config.password_api);
         assert_eq!(config.backend, Backend::Sqlite);
         assert_eq!(config.log_format, LogFormat::Text);
         // File logging is on out of the box; only an explicitly empty

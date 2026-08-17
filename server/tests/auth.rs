@@ -3,10 +3,8 @@
 //! cookies), against the in-memory store fakes. Google sign-in (new account
 //! and link-to-existing) runs against the fake `IdTokenVerifier`.
 
-use std::path::Path;
 use std::sync::Arc;
 
-use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::VerifiedIdToken;
@@ -17,6 +15,8 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+mod common;
 
 struct TestApp {
     app: Router,
@@ -29,12 +29,8 @@ fn test_app() -> TestApp {
         id_verifier: verifier.clone(),
         ..AppState::in_memory()
     };
-    let config = Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    };
     TestApp {
-        app: router(state, &config),
+        app: router(state, &common::password_api_config()),
         verifier,
     }
 }
@@ -380,4 +376,47 @@ async fn auth_endpoints_are_rate_limited() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// The JSON password routes are opt-in, and a server that has not opted in
+/// must not merely refuse them — they must not be *there*. Everything else
+/// under `/api/v1/auth` keeps working: the desktop calls logout, and a Google
+/// credential is not a password anyone can guess.
+///
+/// The `404` is the standard JSON envelope from the `/api/v1` fallback, so a
+/// prober cannot tell "disabled here" from "this server has no such route".
+#[tokio::test]
+async fn the_password_routes_are_absent_unless_enabled() {
+    let config = common::config();
+    assert!(!config.password_api, "the default must be off");
+    let app = router(AppState::in_memory(), &config);
+
+    for uri in ["/api/v1/auth/register", "/api/v1/auth/login"] {
+        let (status, body) = send(
+            &app,
+            post_json(
+                uri,
+                json!({"email": "a@example.com", "password": "correct horse"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri} answered {status}");
+        assert_eq!(body["error"]["code"], "not_found", "{uri}: {body}");
+    }
+
+    // Still routed, still behind the same limiter.
+    let (status, _) = send(
+        &app,
+        Request::post("/api/v1/auth/logout")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send(
+        &app,
+        post_json("/api/v1/auth/google", json!({"id_token": "x"})),
+    )
+    .await;
+    assert_ne!(status, StatusCode::NOT_FOUND);
 }

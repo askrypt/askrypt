@@ -140,6 +140,7 @@ Configuration via environment variables (all optional):
 | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated Google OAuth client ids; empty disables Google sign-in. The **first** is the one the website's own sign-in button uses, so list your Web-application client first |
 | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For`; only behind a reverse proxy |
 | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security` (enable once TLS is in front) |
+| `ASKRYPT_PASSWORD_API` | `false`        | Expose `POST /api/v1/auth/{register,login}`. No shipped client uses them and they bypass the website's reCAPTCHA — testing only |
 | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60`   | Handler timeout (`0` disables)           |
 | `ASKRYPT_MAX_CONCURRENT` | `256`        | In-flight requests before 503 (`0` disables) |
 | `ASKRYPT_MAX_BODY_BYTES` | `65536`      | Body limit outside the vault routes (those allow 10 MiB) |

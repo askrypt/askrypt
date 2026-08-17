@@ -71,6 +71,15 @@ pub fn preflight(report: &mut Report, ctx: &mut Ctx) -> bool {
                 "device_label": "server_roundtrip",
             }),
         )?;
+        // The route is opt-in and off by default. Every group here seeds its
+        // accounts through it, so say what to set rather than letting the run
+        // fail as a bare 404 twenty checks deep.
+        if resp.status == 404 {
+            return Err("POST /api/v1/auth/login is not exposed — start the \
+                        server with ASKRYPT_PASSWORD_API=1 (scripts/server-roundtrip.sh \
+                        does this for you)"
+                .to_string());
+        }
         resp.expect(200)?;
         let body = resp.json();
         let token = body

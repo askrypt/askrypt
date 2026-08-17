@@ -6,10 +6,8 @@
 //! suites, and each test builds its own `app()` so the shared rate-limit bucket
 //! never leaks between them.
 
-use std::path::Path;
 use std::sync::Arc;
 
-use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::{Account, DeviceLink, DeviceLinkStatus, DeviceLinkStore, NewAccount};
@@ -21,6 +19,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod common;
+
 const HOST: &str = "askrypt.test";
 const PASSWORD: &str = "hunter2hunter2";
 
@@ -29,11 +29,7 @@ fn state() -> AppState {
 }
 
 fn app_with(state: AppState) -> Router {
-    let config = Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    };
-    router(state, &config)
+    router(state, &common::config())
 }
 
 fn app() -> Router {

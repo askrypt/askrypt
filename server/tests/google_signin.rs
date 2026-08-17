@@ -14,10 +14,8 @@
 //! address, a banned account, a closed server, a missing CSRF token — and
 //! finally that a server without a web client id is completely unchanged.
 
-use std::path::Path;
 use std::sync::Arc;
 
-use askrypt_server::config::Config;
 use askrypt_server::hardening::{CSP, CSP_GOOGLE};
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
@@ -30,6 +28,8 @@ use chrono::Utc;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+mod common;
+
 const HOST: &str = "askrypt.test";
 const PASSWORD: &str = "hunter2hunter2";
 const CLIENT_ID: &str = "web-client-id.apps.googleusercontent.com";
@@ -40,13 +40,6 @@ struct TestApp {
     verifier: Arc<FakeIdTokenVerifier>,
     accounts: Arc<MemoryAccountStore>,
     state: AppState,
-}
-
-fn config() -> Config {
-    Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    }
 }
 
 /// A server whose website offers the Google button. The stores are kept so a
@@ -61,7 +54,7 @@ fn app_with_google() -> TestApp {
         ..AppState::in_memory()
     };
     TestApp {
-        app: router(state.clone(), &config()),
+        app: router(state.clone(), &common::config()),
         verifier,
         accounts,
         state,
@@ -71,7 +64,7 @@ fn app_with_google() -> TestApp {
 /// The default wiring: Google configured for the JSON API's sake, or not at
 /// all — either way the website has no button.
 fn app_without_google() -> Router {
-    router(AppState::in_memory(), &config())
+    router(AppState::in_memory(), &common::config())
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {
@@ -496,12 +489,19 @@ async fn a_credential_without_a_csrf_token_is_refused() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
+    // Flip the last character to one it certainly is not. Appending a fixed
+    // digit would leave the token unchanged whenever it already ended in that
+    // digit — a 1-in-16 chance per run on a hex token, and a "forgery" equal
+    // to the real thing is accepted, which made this test flaky.
+    let mut forged = csrf.clone();
+    let last = forged.pop().expect("a non-empty csrf token");
+    forged.push(if last == '0' { '1' } else { '0' });
     let (status, _, _) = send(
         &t.app,
         post_form(
             "/auth/google",
             &cookies,
-            &format!("csrf={}0&credential=tok", &csrf[..csrf.len() - 1]),
+            &format!("csrf={forged}&credential=tok"),
         ),
     )
     .await;

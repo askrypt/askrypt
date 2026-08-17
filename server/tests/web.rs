@@ -9,9 +9,6 @@
 //! keys the same client, and the auth limiter allows 20 per minute. Each
 //! test therefore builds its own `app()`, as the other suites do.
 
-use std::path::Path;
-
-use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use axum::Router;
@@ -21,15 +18,13 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
+mod common;
+
 const HOST: &str = "askrypt.test";
 const PASSWORD: &str = "hunter2hunter2";
 
 fn app() -> Router {
-    let config = Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    };
-    router(AppState::in_memory(), &config)
+    router(AppState::in_memory(), &common::password_api_config())
 }
 
 /// Sends a request, keeping the headers — cookies and `Location` are half of

@@ -9,10 +9,8 @@
 //! carry the site key and the widened CSP, and that a server without a
 //! configured captcha is completely unchanged.
 
-use std::path::Path;
 use std::sync::Arc;
 
-use askrypt_server::config::Config;
 use askrypt_server::hardening::{CSP, CSP_CAPTCHA};
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
@@ -23,18 +21,13 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+mod common;
+
 const HOST: &str = "askrypt.test";
 const PASSWORD: &str = "hunter2hunter2";
 const SITE_KEY: &str = "test-site-key";
 const GOOD_LOGIN_TOKEN: &str = "login-token";
 const GOOD_REGISTER_TOKEN: &str = "register-token";
-
-fn config() -> Config {
-    Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    }
-}
 
 /// A server with a captcha, and a handle on the fake so a test can mint more
 /// tokens. Both auth actions get one good token up front, since most tests
@@ -47,13 +40,13 @@ fn app_with_captcha() -> (Router, Arc<FakeCaptchaVerifier>) {
         captcha: Arc::clone(&captcha) as _,
         ..AppState::in_memory()
     };
-    (router(state, &config()), captcha)
+    (router(state, &common::password_api_config()), captcha)
 }
 
 /// A server with no captcha configured — the default wiring, and what every
 /// other suite runs against.
 fn app_without_captcha() -> Router {
-    router(AppState::in_memory(), &config())
+    router(AppState::in_memory(), &common::password_api_config())
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {

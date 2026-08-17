@@ -160,6 +160,17 @@ pub struct Config {
     /// Send `Strict-Transport-Security`. Off by default so plain-HTTP local
     /// runs don't pin a browser to HTTPS for a year.
     pub hsts: bool,
+    /// Expose `POST /api/v1/auth/{register,login}`. Defaults to `false`
+    /// (fail closed) because **no client in this repo calls either one** —
+    /// the desktop signs in through the browser device link, the mobile app
+    /// has no server code, and the website's own forms call
+    /// [`crate::auth::authenticate`]/[`crate::auth::register_account`]
+    /// directly. What they *do* offer is a password surface that reCAPTCHA
+    /// cannot cover: a v3 token can only be minted in a page, so these two
+    /// routes were a documented way around the check on the forms (see
+    /// [`crate::web::captcha`]). Enable it for the test suite and the
+    /// conformance runner, which use them to obtain a bearer token.
+    pub password_api: bool,
     /// Per-request handler timeout; `Duration::ZERO` disables it.
     pub request_timeout: Duration,
     /// In-flight request ceiling; `0` disables shedding.

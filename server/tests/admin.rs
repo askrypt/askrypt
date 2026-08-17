@@ -9,9 +9,6 @@
 //! Integration tests are separate binaries and cannot share `web.rs`'s
 //! helpers, so the handful this needs are repeated here.
 
-use std::path::Path;
-
-use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use axum::Router;
@@ -20,16 +17,14 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+mod common;
+
 const HOST: &str = "askrypt.test";
 const PASSWORD: &str = "hunter2hunter2";
 const USERS: &str = "/admin/users";
 
 fn app() -> Router {
-    let config = Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    };
-    router(AppState::in_memory(), &config)
+    router(AppState::in_memory(), &common::password_api_config())
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {

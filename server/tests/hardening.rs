@@ -9,8 +9,6 @@
 //! load shedding) are unit-tested inside `src/hardening.rs` instead, where
 //! a purpose-built router can provide one.
 
-use std::path::Path;
-
 use askrypt_server::config::Config;
 use askrypt_server::hardening::CSP;
 use askrypt_server::routes::router;
@@ -23,15 +21,10 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-fn test_config() -> Config {
-    Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    }
-}
+mod common;
 
 fn app() -> Router {
-    router(AppState::in_memory(), &test_config())
+    router(AppState::in_memory(), &common::password_api_config())
 }
 
 fn app_with(config: Config) -> Router {
@@ -124,7 +117,7 @@ async fn security_headers_ride_every_response_shape() {
 async fn hsts_is_sent_when_configured() {
     let app = app_with(Config {
         hsts: true,
-        ..test_config()
+        ..common::password_api_config()
     });
     let (_, headers, _) =
         send_raw(&app, Request::get("/healthz").body(Body::empty()).unwrap()).await;
@@ -194,7 +187,7 @@ async fn api_responses_are_not_cached_but_vault_downloads_stay_revalidatable() {
 #[tokio::test]
 async fn body_limit_is_small_for_the_api_and_large_for_vault_uploads() {
     let app = app();
-    let config = test_config();
+    let config = common::password_api_config();
 
     // The global limit applies to ordinary API routes...
     let oversized = "x".repeat(config.max_body_bytes * 2);
@@ -283,7 +276,7 @@ async fn forged_forwarded_for_cannot_split_rate_limit_buckets() {
 async fn trusted_forwarded_for_gives_each_client_its_own_bucket() {
     let app = app_with(Config {
         trust_proxy: true,
-        ..test_config()
+        ..common::password_api_config()
     });
     // The proxy appends, so the *last* element is the observed address —
     // a client forging a leading entry still shares one bucket per real IP.

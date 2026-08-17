@@ -73,11 +73,22 @@ pub fn router(state: AppState, config: &Config) -> Router {
             Arc::clone(&device_limiter),
             ratelimit::middleware,
         ));
-    let auth_api = Router::new()
-        .route("/register", post(auth::register))
-        .route("/login", post(auth::login))
+    // `/register` and `/login` are opt-in (`ASKRYPT_PASSWORD_API`). Not
+    // registering them at all, rather than answering 403 from a stub: the
+    // `/api/v1` fallback already renders a JSON 404 in the standard envelope,
+    // and a route that is simply absent tells a prober nothing about how the
+    // server is configured. `/google` and `/logout` stay — the desktop calls
+    // logout, and a Google credential is not a guessable password.
+    let mut auth_api = Router::new()
         .route("/google", post(auth::google_login))
-        .route("/logout", post(auth::logout))
+        .route("/logout", post(auth::logout));
+    if config.password_api {
+        auth_api = auth_api
+            .route("/register", post(auth::register))
+            .route("/login", post(auth::login));
+    }
+    // Layered after the conditional routes, so the limiter covers all four.
+    let auth_api = auth_api
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&auth_limiter),
             ratelimit::middleware,

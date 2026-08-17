@@ -96,6 +96,7 @@ ASKRYPT_BIND="127.0.0.1:$PORT" \
 ASKRYPT_BACKEND="$BACKEND" \
 ASKRYPT_DATA_DIR="$DATA_DIR/data" \
 ASKRYPT_LOG_DIR= \
+ASKRYPT_PASSWORD_API=1 \
 RUST_LOG="${RUST_LOG:-warn}" \
   cargo run -q -p askrypt-server >"$LOG" 2>&1 &
 SERVER_PID=$!

@@ -3,9 +3,6 @@
 //! concurrency, per-account isolation, the size/quota limits, and the
 //! version history a save leaves behind. Runs against the in-memory fakes.
 
-use std::path::Path;
-
-use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use askrypt_server::store::{PAYMENT_USER_ROLE, VaultMeta};
@@ -20,6 +17,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
+
+mod common;
 
 const VAULT_V1: &[u8] = b"PK\x03\x04 pretend vault v1";
 const VAULT_V2: &[u8] = b"PK\x03\x04 pretend vault v2, a bit longer";
@@ -63,12 +62,8 @@ struct TestApp {
 
 fn test_app() -> TestApp {
     let state = AppState::in_memory();
-    let config = Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    };
     TestApp {
-        app: router(state.clone(), &config),
+        app: router(state.clone(), &common::password_api_config()),
         state,
     }
 }

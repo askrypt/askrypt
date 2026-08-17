@@ -5,9 +5,6 @@
 //! The website's own routes live in `web.rs`; this file covers the API
 //! namespacing and the boundary between the two.
 
-use std::path::Path;
-
-use askrypt_server::config::Config;
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
 use axum::Router;
@@ -16,12 +13,10 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+mod common;
+
 fn app() -> Router {
-    let config = Config {
-        static_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("static"),
-        ..Config::default()
-    };
-    router(AppState::in_memory(), &config)
+    router(AppState::in_memory(), &common::config())
 }
 
 async fn body_json(response: axum::response::Response) -> serde_json::Value {

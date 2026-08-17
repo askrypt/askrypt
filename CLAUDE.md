@@ -290,6 +290,8 @@ next request.
   (default **false** — fail closed), `ASKRYPT_HSTS` (default false),
   `ASKRYPT_REQUEST_TIMEOUT_SECS` (60), `ASKRYPT_MAX_CONCURRENT` (256),
   `ASKRYPT_MAX_BODY_BYTES` (64 KiB) and `ASKRYPT_LOG_FORMAT` (`text`|`json`).
+  `ASKRYPT_PASSWORD_API` (default **false** — fail closed) exposes
+  `POST /api/v1/auth/{register,login}`; see `routes.rs` for why they are off.
   File logging is `log_dir: Option<PathBuf>` — `ASKRYPT_LOG_DIR`, default
   `logs` (gitignored, a *sibling* of the data dir so backups don't sweep it
   up), an explicitly empty value meaning console-only — plus
@@ -340,6 +342,21 @@ next request.
   mounted at `/assets` (`tower-http` `ServeDir`, under `hardening::revalidate`
   so an edited `style.css` can't linger in a browser cache); and an HTML 404
   fallback.
+  **`POST /api/v1/auth/{register,login}` are opt-in** (`ASKRYPT_PASSWORD_API`,
+  default off) and are *not registered* when disabled rather than answering
+  from a stub — the `/api/v1` fallback already renders a JSON 404 in the
+  standard envelope, and an absent route tells a prober nothing. Three facts
+  make this free: no client in this repo calls either one (the desktop signs
+  in through the browser device link, mobile has no server code), the
+  website's own forms call `auth::authenticate`/`auth::register_account`
+  directly rather than going through the JSON handlers, and those two routes
+  were the one password surface reCAPTCHA cannot cover, since a v3 token can
+  only be minted in a page. `/google` and `/logout` stay on unconditionally —
+  the desktop calls logout, and a Google credential is not a guessable
+  password — and the conditional routes are added **before** `route_layer`,
+  so all four share the 20/min limiter. The test suites and
+  `scripts/server-roundtrip.sh` turn the flag on, since they take their bearer
+  tokens from `/login`.
   The Phase 1 SPA fallback (`index.html` for every unknown path) is gone. The
   vault routes carry a raised `DefaultBodyLimit` sized to `MAX_VAULT_BYTES`, which
   overrides the outer global limit because it is layered *inside* it (the
@@ -646,8 +663,12 @@ next request.
   the field **empty**, because a v3 token is single-use and the spent one
   would only fail again. **`/api/v1/auth/*` is deliberately not captcha'd** —
   native clients cannot mint a token, and the desktop's browser sign-in
-  already lands on `/login`; the JSON endpoints keep the rate limiter alone,
-  which is a known bypass for anything willing to post JSON;
+  already lands on `/login`; the JSON endpoints keep the rate limiter alone.
+  That used to be a standing bypass for anything willing to post JSON, and it
+  is closed the only way it can be: the password half of that tree is off
+  unless `ASKRYPT_PASSWORD_API` says otherwise (see `routes.rs`), leaving
+  `/google` (which needs a Google-signed credential) and `/logout`. **Turning
+  that flag on in production re-opens the bypass** — it is for tests;
   `google.rs` the website's "Sign in with Google" (Phase 13):
   `POST /auth/google` on the *same* limiter as the two forms, taking an ID
   token Google Identity Services minted in the page and handing it to
@@ -820,10 +841,22 @@ next request.
   `QUIT`, since the pooled transport keeps the socket rather than closing it.
   **`MemoryMailer` is not "email off"** — it logs the full body, tokens
   included, which is why `main` warns when it is selected.
-- **`server/tests/`** — HTTP-level tests (tower `oneshot`, no socket):
+- **`server/tests/`** — HTTP-level tests (tower `oneshot`, no socket).
+  `common/mod.rs` is the one thing every suite shares (each integration test
+  is its own crate, so it is compiled once per suite — hence its blanket
+  `dead_code` allowance): `common::config()` is the defaults pointed at the
+  real `server/static/`, and `common::password_api_config()` adds
+  `password_api: true`. Everything else — `send`, the request builders, the
+  sign-in helpers — is deliberately still per-suite. The suites:
   `http.rs` (routing/static), `auth.rs` (the Phase 2 gate: register →
   login → `/me` → logout, Google new-account + link-to-existing against the
-  fake verifier, validation, rate limiting), `profile.rs` (the Phase 3
+  fake verifier, validation, rate limiting, plus the one test that runs with
+  `password_api` at its default and asserts the two routes are **absent**
+  rather than refused, while `/google` and `/logout` stay routed —
+  every other suite here builds its router from
+  `common::password_api_config()`, because that is where their bearer tokens
+  come from),
+  `profile.rs` (the Phase 3
   gate: providers, email update, change/set password, session list/revoke,
   account-delete cascade incl. the vault stores), `vaults.rs` (the Phase 4
   gate: upload → list → download → rename → delete, ETag conflict behavior,

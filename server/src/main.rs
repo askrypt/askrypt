@@ -324,6 +324,19 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     if config.trust_proxy {
         info!("trusting X-Real-IP/X-Forwarded-For — the listener must not be reachable directly");
     }
+    if config.password_api {
+        // A `warn!`, unlike the other opt-ins: this one re-opens a password
+        // surface no captcha can cover, and it is meant for test runs.
+        tracing::warn!(
+            "POST /api/v1/auth/{{register,login}} enabled (ASKRYPT_PASSWORD_API); \
+             these bypass the reCAPTCHA on the website's forms — for testing only"
+        );
+    } else {
+        info!(
+            "JSON password auth disabled; sign-in is the website's forms and the \
+             device link (set ASKRYPT_PASSWORD_API=1 to expose it for tests)"
+        );
+    }
 
     // Kept from the state before it moves into the router: the startup notice
     // sends through the same relay the account emails do.

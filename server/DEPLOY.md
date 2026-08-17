@@ -46,6 +46,7 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated OAuth client ids accepted as ID-token audiences. Empty disables Google sign-in (501). **The first is also the website's own "Sign in with Google" button**, so it must be a *Web application* client whose authorized JavaScript origins include `https://<your domain>`; list the native ones after it |
 | `ASKRYPT_TRUST_PROXY` | `false` | Believe `X-Real-IP` / `X-Forwarded-For`. **Only when the proxy is the sole route in** |
 | `ASKRYPT_HSTS` | `false` | Send `Strict-Transport-Security`. Enable once TLS is confirmed |
+| `ASKRYPT_PASSWORD_API` | `false` | Expose `POST /api/v1/auth/{register,login}`. Leave off: nothing that ships calls them, and they are the one password surface reCAPTCHA cannot cover |
 | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60` | Handler timeout (`0` disables) |
 | `ASKRYPT_MAX_CONCURRENT` | `256` | In-flight requests before shedding with 503 (`0` disables) |
 | `ASKRYPT_MAX_BODY_BYTES` | `65536` | Body limit outside the vault routes |
@@ -650,10 +651,14 @@ docker volume rm askrypt_askrypt-data askrypt_askrypt-logs
 ```sh
 curl -si https://askrypt.example.com/healthz | head -20
 curl -s  https://askrypt.example.com/api/v1/about
-curl -si -X POST https://askrypt.example.com/api/v1/auth/register \
-     -H 'content-type: application/json' \
-     -d '{"email":"you@example.com","password":"correct horse battery"}'
 ```
+
+Register the first account **in a browser**, at
+`https://askrypt.example.com/register` — `POST /api/v1/auth/register` is not
+exposed unless `ASKRYPT_PASSWORD_API=1`, and it should stay that way: the
+browser form is the one carrying reCAPTCHA. Whoever registers first becomes
+the administrator (`admin::bootstrap_first_admin`); `askrypt-server
+grant-admin <email>` is the way back in if that is missed.
 
 Then confirm the audit log shows `register.ok` with the **real** client IP,
 not the proxy's — if it shows the proxy's address, `ASKRYPT_TRUST_PROXY` is
