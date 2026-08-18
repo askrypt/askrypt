@@ -485,6 +485,26 @@ impl Vault<Unlocked> {
         self
     }
 
+    /// Adopt a vault re-read from its home after someone else wrote it.
+    ///
+    /// Everything derived from the bytes is replaced — including the master
+    /// key, which is the one the *other* device preserved through its own save
+    /// and therefore the key these entries are actually under. The answers and
+    /// the home stay: they still open it (that is what made this a `Reloaded`
+    /// rather than a `Rekeyed`), and the home holds the very storage instance
+    /// that did the reading, whose revision is now current.
+    pub fn reloaded(mut self, reloaded: Reloaded) -> Self {
+        self.file = reloaded.file;
+        self.state.questions_data = reloaded.questions_data;
+        self.state.entries = reloaded.entries;
+        self.state.master = reloaded.master;
+        // These entries came off the backend, so there is nothing local left
+        // to write. Anything the user had typed was discarded by their own
+        // choice before this ran.
+        self.state.modified = false;
+        self
+    }
+
     /// What the worker needs to arm Smart Lock.
     pub fn smart_lock_inputs(&self) -> SmartLockInputs {
         SmartLockInputs {
@@ -892,6 +912,88 @@ impl VaultState {
         }
     }
 
+    /// Everything a worker needs to re-read this vault from its home, or
+    /// `None` when there is nothing to follow — no vault, or one that has
+    /// never been written anywhere.
+    ///
+    /// The state decides how much can be re-opened without asking the user:
+    /// a locked vault only needs the bytes, while an unlocked one still holds
+    /// every answer and so can be rebuilt outright.
+    pub fn reload_inputs(&self) -> Option<ReloadInputs> {
+        let storage = self.home()?.storage().clone();
+        let keys = match self {
+            VaultState::None => return None,
+            VaultState::Locked(_) | VaultState::Smart(_) => ReloadKeys::None,
+            VaultState::Partial(vault) => ReloadKeys::First(vault.state.answer0.clone()),
+            VaultState::Unlocked(vault) => ReloadKeys::All {
+                answer0: vault.state.answer0.clone(),
+                answers: vault.state.answers.clone(),
+            },
+        };
+        Some(ReloadInputs { storage, keys })
+    }
+
+    /// New bytes for a vault that had nothing decrypted to invalidate.
+    pub fn apply_refreshed(&mut self, file: AskryptFile) -> bool {
+        match self {
+            VaultState::Locked(vault) => {
+                vault.file = file;
+                true
+            }
+            VaultState::Smart(vault) => {
+                // The answer bundle is keyed off itself, not off the file, so
+                // it survives new bytes. Should the other device have changed
+                // the questions, the smart unlock fails at `get_questions_data`
+                // and falls back to a full one — the existing behaviour.
+                vault.file = file;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// New bytes whose question list the held first answer still opens.
+    pub fn apply_requestioned(&mut self, file: AskryptFile, questions_data: QuestionsData) -> bool {
+        match self {
+            VaultState::Partial(vault) => {
+                vault.file = file;
+                vault.state.questions_data = questions_data;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// New bytes, re-decrypted with the answers already held.
+    pub fn apply_reloaded(&mut self, reloaded: Reloaded) -> bool {
+        match std::mem::take(self) {
+            VaultState::Unlocked(vault) => {
+                *self = VaultState::Unlocked(vault.reloaded(reloaded));
+                true
+            }
+            other => {
+                *self = other;
+                false
+            }
+        }
+    }
+
+    /// Drop to [`Locked`] on *new* bytes: the vault was re-read but the held
+    /// answers no longer open it, so it has to be unlocked from scratch.
+    ///
+    /// Distinct from [`lock`](Self::lock), which keeps the bytes it had.
+    pub fn relock_with(&mut self, file: AskryptFile) -> bool {
+        if matches!(self, VaultState::None) {
+            return false;
+        }
+        self.lock();
+        if let VaultState::Locked(vault) = self {
+            vault.file = file;
+            return true;
+        }
+        false
+    }
+
     /// Wipe the secrets and drop back to the first question, keeping the bytes
     /// and the home so unlocking again is local.
     pub fn lock(&mut self) {
@@ -1126,6 +1228,125 @@ impl std::fmt::Debug for Built {
                 &format_args!("<{} redacted>", self.entries.len()),
             )
             .finish_non_exhaustive()
+    }
+}
+
+/// What the current state can contribute towards re-opening freshly read bytes.
+///
+/// A reload asks the user for nothing: whatever the vault already holds is
+/// exactly what it needs, and a state that holds nothing simply takes the
+/// bytes and stays locked.
+enum ReloadKeys {
+    /// Locked or Smart-locked: nothing was decrypted, so nothing is stale.
+    None,
+    /// Partially unlocked: the first answer, to re-read the question list.
+    First(Zeroizing<String>),
+    /// Unlocked: every answer, to rebuild the entries outright.
+    All {
+        answer0: Zeroizing<String>,
+        answers: Zeroizing<Vec<String>>,
+    },
+}
+
+/// Inputs for re-reading a vault that changed where it is stored.
+///
+/// Holds answers, so it is secret material — the `Zeroizing` inside
+/// [`ReloadKeys`] wipes them. Deliberately **no** `Drop` impl of its own:
+/// `run` destructures `keys`, and a `Drop` type cannot be destructured
+/// (E0509), the same constraint `SecretEntry`'s `CardFields` documents.
+pub struct ReloadInputs {
+    storage: Arc<dyn VaultStorage>,
+    keys: ReloadKeys,
+}
+
+impl ReloadInputs {
+    /// **Worker-thread only.** A backend round trip, then up to two
+    /// 600k-iteration derivations.
+    ///
+    /// Reads through the storage instance the vault was opened with — never a
+    /// fresh one — so the backend also learns the revision it just fetched and
+    /// the next save is conflict-checked against *that* rather than against
+    /// the version this reload replaced.
+    pub fn run(self) -> Result<ReloadOutcome, VaultError> {
+        let file = self
+            .storage
+            .load_vault()
+            .map_err(|e| VaultError::log("Failed to re-read vault", &e))?;
+
+        match self.keys {
+            ReloadKeys::None => Ok(ReloadOutcome::Refreshed(Box::new(file))),
+            ReloadKeys::First(answer0) => match file.get_questions_data(answer0.to_string()) {
+                Ok(questions_data) => Ok(ReloadOutcome::Requestioned {
+                    file: Box::new(file),
+                    questions_data,
+                }),
+                Err(_) => Ok(ReloadOutcome::Rekeyed(Box::new(file))),
+            },
+            ReloadKeys::All { answer0, answers } => {
+                let Ok(questions_data) = file.get_questions_data(answer0.to_string()) else {
+                    return Ok(ReloadOutcome::Rekeyed(Box::new(file)));
+                };
+                match file.decrypt_with_master(&questions_data, answers.to_vec()) {
+                    Ok((entries, master)) => Ok(ReloadOutcome::Reloaded(Box::new(Reloaded {
+                        file,
+                        questions_data,
+                        entries,
+                        master,
+                    }))),
+                    Err(_) => Ok(ReloadOutcome::Rekeyed(Box::new(file))),
+                }
+            }
+        }
+    }
+}
+
+/// How far a reload got. Every variant means the bytes were fetched — a
+/// backend failure is the `Err` half of [`ReloadInputs::run`].
+#[derive(Debug, Clone)]
+pub enum ReloadOutcome {
+    /// Bytes only; the vault had nothing decrypted to replace.
+    Refreshed(Box<AskryptFile>),
+    /// The held first answer still opens the new question list.
+    Requestioned {
+        file: Box<AskryptFile>,
+        questions_data: QuestionsData,
+    },
+    /// Re-decrypted in full with the answers already held.
+    Reloaded(Box<Reloaded>),
+    /// The bytes arrived but the held answers no longer open them — the other
+    /// device changed the questions or the answers (or, far less likely, the
+    /// file is damaged). Carries the new bytes so the vault can relock onto
+    /// them and ask afresh, rather than sitting on a version known to be
+    /// superseded.
+    Rekeyed(Box<AskryptFile>),
+}
+
+/// What a successful reload of an unlocked vault recovered.
+#[derive(Clone)]
+pub struct Reloaded {
+    file: AskryptFile,
+    questions_data: QuestionsData,
+    entries: Vec<SecretEntry>,
+    master: MasterSecret,
+}
+
+// Rides inside a `Message`, and every `Message` derives `Debug`. `SecretEntry`
+// and `QuestionsData` both print their contents, so this must not.
+impl std::fmt::Debug for Reloaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reloaded")
+            .field(
+                "entries",
+                &format_args!("<{} redacted>", self.entries.len()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl Reloaded {
+    /// The re-read bytes, for the write stamp that says who saved them.
+    pub fn file(&self) -> &AskryptFile {
+        &self.file
     }
 }
 
@@ -1622,5 +1843,179 @@ mod tests {
                 "Smart Locked"
             ]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Following the stored vault
+    // -----------------------------------------------------------------------
+
+    /// A vault open from shared storage, as the app has it after an unlock.
+    fn unlocked_on(storage: Arc<MemoryStorage>) -> VaultState {
+        let built = build_new(vec![entry("GitHub")]);
+        let home = VaultHome::new(VaultLocation::LocalFile("/dev/null".into()), storage);
+        let vault = Vault::created(built, Some(home));
+        // Write it out so the backend holds the same bytes the vault does.
+        let request = vault.save_request();
+        let saved =
+            write_vault(request, vault.home().unwrap().clone()).expect("the vault should save");
+        VaultState::Unlocked(vault.saved(saved))
+    }
+
+    /// Stand in for another device: rebuild the vault with different entries
+    /// and write it straight to the shared backend.
+    fn write_from_elsewhere(
+        storage: &Arc<MemoryStorage>,
+        entries: Vec<SecretEntry>,
+        master: Option<&MasterSecret>,
+    ) {
+        let file = AskryptFile::create(
+            questions(),
+            answers(),
+            entries,
+            Some(ITERATIONS),
+            false,
+            master,
+        )
+        .expect("the vault should build");
+        storage.save_vault(&file).expect("the write should land");
+    }
+
+    #[test]
+    fn reloading_picks_up_what_another_device_wrote() {
+        let storage = Arc::new(MemoryStorage::default());
+        let mut state = unlocked_on(storage.clone());
+        let master = state.unlocked().unwrap().master().clone();
+
+        write_from_elsewhere(
+            &storage,
+            vec![entry("GitHub"), entry("Bank")],
+            Some(&master),
+        );
+
+        let outcome = state
+            .reload_inputs()
+            .expect("an open vault with a home is followable")
+            .run()
+            .expect("the re-read should succeed");
+
+        let reloaded = match outcome {
+            ReloadOutcome::Reloaded(reloaded) => reloaded,
+            other => panic!("expected Reloaded, got {:?}", other),
+        };
+        assert!(state.apply_reloaded(*reloaded));
+
+        let vault = state.unlocked().expect("still unlocked");
+        assert_eq!(vault.entries().len(), 2);
+        assert_eq!(vault.entries()[1].name, "Bank");
+        // The entries came off the backend, so there is nothing left to write.
+        assert!(!vault.is_modified());
+    }
+
+    #[test]
+    fn a_reload_does_not_ask_the_user_for_anything() {
+        // The point of holding the answers in `Unlocked`: re-opening freshly
+        // written bytes needs no typing. Covered by the fact that
+        // `reload_inputs` takes no arguments and the reload above succeeded —
+        // asserted here as the absence of a home being the only way to fail.
+        let storage = Arc::new(MemoryStorage::default());
+        let state = unlocked_on(storage);
+        assert!(state.reload_inputs().is_some());
+
+        // A vault that has never been written anywhere has nothing to follow.
+        let homeless = VaultState::Unlocked(Vault::created(build_new(vec![]), None));
+        assert!(homeless.reload_inputs().is_none());
+    }
+
+    #[test]
+    fn changed_questions_come_back_as_rekeyed_rather_than_as_an_error() {
+        let storage = Arc::new(MemoryStorage::default());
+        let mut state = unlocked_on(storage.clone());
+
+        // The other device changed the security answers, so ours no longer
+        // open the file — the master key is preserved but unreachable.
+        let file = AskryptFile::create(
+            vec!["First pet?".to_string(), "First street?".to_string()],
+            vec!["Fido".to_string(), "Elm Street".to_string()],
+            vec![entry("GitHub")],
+            Some(ITERATIONS),
+            false,
+            None,
+        )
+        .expect("the vault should build");
+        storage.save_vault(&file).expect("the write should land");
+
+        let outcome = state
+            .reload_inputs()
+            .expect("followable")
+            .run()
+            .expect("the bytes should still be fetched");
+
+        let new_file = match outcome {
+            ReloadOutcome::Rekeyed(file) => file,
+            other => panic!("expected Rekeyed, got {:?}", other),
+        };
+
+        // The entries in memory are untouched until something is applied — a
+        // failed reload must never be a silent lock.
+        assert!(state.is_unlocked());
+
+        // Relocking lands on the *new* bytes, not the superseded ones.
+        assert!(state.relock_with(*new_file.clone()));
+        assert!(matches!(state, VaultState::Locked(_)));
+        assert_eq!(state.file(), Some(&*new_file));
+    }
+
+    #[test]
+    fn a_locked_vault_reloads_without_decrypting_anything() {
+        let storage = Arc::new(MemoryStorage::default());
+        let mut state = unlocked_on(storage.clone());
+        let master = state.unlocked().unwrap().master().clone();
+        state.lock();
+
+        write_from_elsewhere(&storage, vec![entry("Bank")], Some(&master));
+
+        let outcome = state
+            .reload_inputs()
+            .expect("a locked vault still has a home")
+            .run()
+            .expect("the re-read should succeed");
+
+        match outcome {
+            ReloadOutcome::Refreshed(file) => assert!(state.apply_refreshed(*file)),
+            other => panic!("expected Refreshed, got {:?}", other),
+        }
+        assert!(matches!(state, VaultState::Locked(_)));
+    }
+
+    #[test]
+    fn an_apply_arriving_in_the_wrong_state_is_dropped() {
+        let storage = Arc::new(MemoryStorage::default());
+        let mut state = unlocked_on(storage.clone());
+        let master = state.unlocked().unwrap().master().clone();
+
+        write_from_elsewhere(&storage, vec![entry("Bank")], Some(&master));
+        let outcome = state.reload_inputs().unwrap().run().unwrap();
+        let reloaded = match outcome {
+            ReloadOutcome::Reloaded(reloaded) => reloaded,
+            other => panic!("expected Reloaded, got {:?}", other),
+        };
+
+        // The user locked the vault while the worker ran. The result is about
+        // a state that no longer exists and must not resurrect it.
+        state.lock();
+        assert!(!state.apply_reloaded(*reloaded));
+        assert!(matches!(state, VaultState::Locked(_)));
+    }
+
+    #[test]
+    fn refreshing_is_refused_from_a_state_that_has_decrypted_entries() {
+        let storage = Arc::new(MemoryStorage::default());
+        let mut state = unlocked_on(storage.clone());
+        let file = state.file().expect("open").clone();
+
+        // `apply_refreshed` swaps bytes and nothing else, so an unlocked vault
+        // must reject it — the entries would silently describe another file.
+        assert!(!state.apply_refreshed(file));
+        assert!(state.is_unlocked());
     }
 }

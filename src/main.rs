@@ -14,6 +14,7 @@
 #![windows_subsystem = "windows"]
 
 mod data;
+mod follow;
 mod icon;
 mod link;
 mod manager;
@@ -50,6 +51,21 @@ pub const SEARCH_INPUT_ID: &str = "GUI_SEARCH";
 /// How long a copied secret stays on the clipboard when
 /// `AppSettings::clear_clipboard` is on.
 const CLIPBOARD_LIFETIME: Duration = Duration::from_secs(30);
+
+/// A blocking yes/no, for a destructive thing the user just asked for.
+///
+/// Blocking is fine *because* it is user-initiated — which is exactly why the
+/// follow probe, which fires with nobody at the keyboard, may never open one.
+fn rfd_confirm(title: &str, description: &str) -> bool {
+    matches!(
+        rfd::MessageDialog::new()
+            .set_title(title)
+            .set_description(description)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show(),
+        rfd::MessageDialogResult::Yes
+    )
+}
 
 pub fn main() -> iced::Result {
     // The window is built before `boot` runs, so its remembered geometry is
@@ -167,6 +183,10 @@ pub enum Message {
     /// Leave the current pane for whatever the vault's state calls for.
     ReturnToDefaultPane,
     Vault(VaultMsg),
+    /// A button on the "changed where it is stored" banner. Not a pane
+    /// message: the banner sits above the working area, over whichever pane
+    /// happens to be showing.
+    Follow(follow::Msg),
     Unlock(panes::unlock::Msg),
     Wizard(panes::wizard::Msg),
     /// Signing in to a server through the browser. Not a pane message: the
@@ -202,6 +222,28 @@ pub enum GlobalMsg {
     ProbeWindow,
     /// That answer.
     WindowMaximized(bool),
+    /// Time to ask the backend whether the open vault is still the one we
+    /// have. Passive: following is not the user doing something.
+    FollowTick,
+    /// What the backend said.
+    Followed(Box<follow::Reply>),
+    /// A re-read of the stored vault finished.
+    ///
+    /// Boxed for the reason [`GlobalMsg::Saved`] is: the payload carries a
+    /// whole `AskryptFile`, and every variant of this enum pays for the
+    /// largest.
+    Reloaded {
+        intent: follow::Intent,
+        /// The revision the backend was on when this reload started.
+        ///
+        /// Re-reading moves the backend onto the version it just fetched,
+        /// which is right when the result is applied and wrong when it is not:
+        /// a declined reload would otherwise leave the conflict check pointing
+        /// at a version this app never adopted, and the next save would
+        /// silently overwrite the other device.
+        from: Option<askrypt::Revision>,
+        result: Box<Result<manager::ReloadOutcome, VaultError>>,
+    },
 }
 
 pub struct App {
@@ -226,6 +268,9 @@ pub struct App {
     editor: Option<panes::entry_editor::State>,
     /// What to do once the save the user just agreed to has landed.
     after_save: Option<PendingAction>,
+    /// A follow probe is in flight. One at a time: a slow link must not pile
+    /// requests up behind each other once a minute.
+    following: bool,
     /// The geometry the window last reported, before it is known whether it was
     /// maximized at the time. Committed to `settings.window` by
     /// [`App::commit_geometry`].
@@ -257,6 +302,7 @@ impl App {
             pending_delete: None,
             editor: None,
             after_save: None,
+            following: false,
             window_size: window.size,
             window_position: window.position,
             probe_window: false,
@@ -329,6 +375,18 @@ impl App {
             subs.push(
                 time::every(Duration::from_secs(30))
                     .map(|_| Message::Global(GlobalMsg::InactivityTick)),
+            );
+        }
+
+        // Watch the stored copy while there is one worth watching. The
+        // predicate is deliberately the *stable* half only: `busy` and a probe
+        // already in flight are checked when the tick arrives, because those
+        // flip several times a second and iced rebuilds a subscription set
+        // whenever its shape changes.
+        if self.can_follow() {
+            subs.push(
+                time::every(follow::FOLLOW_INTERVAL)
+                    .map(|_| Message::Global(GlobalMsg::FollowTick)),
             );
         }
 
@@ -545,6 +603,16 @@ impl App {
                     | GlobalMsg::SpinnerTick
                     | GlobalMsg::ProbeWindow
                     | GlobalMsg::WindowMaximized(_)
+                    // Following runs on a timer with nobody at the keyboard.
+                    // Stamping activity here would hold the idle lock open
+                    // forever, and clearing messages would wipe whatever the
+                    // user's last action had to say.
+                    | GlobalMsg::FollowTick
+                    | GlobalMsg::Followed(_)
+                    | GlobalMsg::Reloaded {
+                        intent: follow::Intent::Follow,
+                        ..
+                    }
             ) | Message::ClearClipboard
         );
         if !passive {
@@ -664,6 +732,7 @@ impl App {
             },
             Message::ReturnToDefaultPane => self.return_to_default(),
             Message::Vault(msg) => self.update_vault(msg),
+            Message::Follow(msg) => self.update_follow(msg),
             Message::Unlock(msg) => panes::unlock::update(&mut self.unlock, &mut self.session, msg),
             Message::Wizard(msg) => panes::wizard::update(&mut self.wizard, &mut self.session, msg),
             Message::Link(msg) => link::update(&mut self.session, msg),
@@ -827,6 +896,354 @@ impl App {
         ))
     }
 
+    // -----------------------------------------------------------------------
+    // Following the stored vault
+    // -----------------------------------------------------------------------
+
+    /// Whether the open vault is one worth watching: it has a home, and that
+    /// backend can tell one version of the bytes from another.
+    ///
+    /// A backend that answers no revision is *unfollowable*, which is not the
+    /// same as unchanged — so it is left alone rather than assumed still.
+    fn can_follow(&self) -> bool {
+        !self.session.follow_stopped
+            && self
+                .session
+                .vault
+                .home()
+                .is_some_and(|home| home.storage().revision().is_some())
+    }
+
+    /// Unsaved work the dirty flag does not cover.
+    ///
+    /// An entry open in the editor and a question list open in the questions
+    /// editor are both edits the user has not committed; a reload would throw
+    /// either away without ever setting `modified`.
+    fn has_draft(&self) -> bool {
+        self.editor.is_some() || (self.pane == Pane::Questions && self.session.vault.is_open())
+    }
+
+    /// Whether the open vault lives on a server, for wording alone.
+    fn vault_is_remote(&self) -> bool {
+        self.session
+            .vault
+            .location()
+            .is_some_and(VaultLocation::is_server)
+    }
+
+    /// Ask the backend what it holds, unless there is a reason not to.
+    fn start_follow(&mut self) -> Action {
+        // A save or an unlock is running: it will move the revision itself,
+        // and a probe racing it could only report a version already stale.
+        if self.session.busy || self.following || !self.can_follow() {
+            return Action::None;
+        }
+        let Some(home) = self.session.vault.home() else {
+            return Action::None;
+        };
+        let Some(revision) = home.storage().revision() else {
+            return Action::None;
+        };
+
+        self.following = true;
+        // Deliberately *not* behind `session.busy`: this is a background
+        // courtesy, and raising the spinner would make every minute look like
+        // the app was working.
+        Action::Run(follow::probe(home.storage().clone(), revision))
+    }
+
+    /// Act on what the backend said.
+    fn finish_follow(&mut self, reply: follow::Reply) -> Action {
+        self.following = false;
+
+        // The revision we asked about is not the one we are on any more: a
+        // save or a reload landed while the request was in flight, so this
+        // answer is about a version nobody holds.
+        let current = self
+            .session
+            .vault
+            .home()
+            .and_then(|h| h.storage().revision());
+        if current.as_ref() != Some(&reply.probed) {
+            return Action::None;
+        }
+
+        let probe = match reply.result {
+            Ok(probe) => probe,
+            Err(VaultError::Auth) => {
+                // The token is dead. Stop pretending we are signed in, and stop
+                // asking once a minute.
+                self.session.sign_out();
+                self.session.follow_stopped = true;
+                self.session.follow = Some(follow::Notice::signed_out(self.vault_is_remote()));
+                return Action::None;
+            }
+            // A blip is normal and says nothing about the stored copy. It was
+            // already logged on the worker; the next tick tries again.
+            Err(_) => return Action::None,
+        };
+
+        match follow::decide(
+            &self.session.vault,
+            self.has_draft(),
+            self.vault_is_remote(),
+            self.session.dismissed_revision.as_ref(),
+            probe,
+        ) {
+            follow::Follow::Idle => Action::None,
+            follow::Follow::Reload => self.start_reload(follow::Intent::Follow),
+            follow::Follow::Ask(notice) => {
+                self.session.follow = Some(notice);
+                Action::None
+            }
+            follow::Follow::Stop(notice) => {
+                self.session.follow_stopped = true;
+                self.session.follow = Some(notice);
+                Action::None
+            }
+        }
+    }
+
+    /// Re-read the vault through the backend it was opened with.
+    fn start_reload(&mut self, intent: follow::Intent) -> Action {
+        if self.session.busy {
+            return Action::None;
+        }
+        let Some(inputs) = self.session.vault.reload_inputs() else {
+            return Action::None;
+        };
+
+        // Behind `busy` whichever way it started. The *probe* is the part that
+        // runs every minute and must stay invisible; a reload only happens
+        // when something actually changed, and for that second the app really
+        // is re-decrypting. It also has to block a save: reading moves the
+        // backend onto the version being fetched, so a save squeezed in
+        // between would inherit that revision and replace the other device's
+        // work without the banner ever appearing.
+        self.session.begin_work("Reloading…");
+        let from = self
+            .session
+            .vault
+            .home()
+            .and_then(|home| home.storage().revision());
+        Action::Run(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || inputs.run())
+                    .await
+                    .expect("reload task panicked")
+            },
+            move |result| {
+                Message::Global(GlobalMsg::Reloaded {
+                    intent,
+                    from: from.clone(),
+                    result: Box::new(result),
+                })
+            },
+        ))
+    }
+
+    /// Install what a reload came back with.
+    fn finish_reload(
+        &mut self,
+        intent: follow::Intent,
+        from: Option<askrypt::Revision>,
+        result: Result<manager::ReloadOutcome, VaultError>,
+    ) -> Action {
+        self.session.finish_work();
+
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // Only say so when the user is waiting for an answer; a failed
+                // background reload stays quiet and tries again next tick.
+                if intent == follow::Intent::Forced {
+                    self.session.report_vault_error("reload", &error);
+                }
+                // Nothing was read, so nothing moved.
+                return Action::None;
+            }
+        };
+
+        let (applied, action) = self.install_reload(intent, outcome);
+        if !applied {
+            // The read moved the backend onto the version it fetched. We did
+            // not take that version, so put the conflict check back where it
+            // was — otherwise the next save would replace another device's
+            // work without ever raising the question.
+            if let (Some(revision), Some(home)) = (from, self.session.vault.home()) {
+                home.storage().adopt_revision(&revision);
+            }
+        }
+        action
+    }
+
+    /// Apply one reload outcome, reporting whether the vault actually took it.
+    fn install_reload(
+        &mut self,
+        intent: follow::Intent,
+        outcome: manager::ReloadOutcome,
+    ) -> (bool, Action) {
+        let remote = self.vault_is_remote();
+        match outcome {
+            manager::ReloadOutcome::Refreshed(file) => {
+                let line = follow::reload_line(&file, remote);
+                let applied = self.session.vault.apply_refreshed(*file);
+                if applied {
+                    self.session.follow = None;
+                    self.session.last_reload = Some(line);
+                }
+                (applied, Action::None)
+            }
+            manager::ReloadOutcome::Requestioned {
+                file,
+                questions_data,
+            } => {
+                let line = follow::reload_line(&file, remote);
+                let applied = self.session.vault.apply_requestioned(*file, questions_data);
+                if applied {
+                    self.session.follow = None;
+                    self.session.last_reload = Some(line);
+                }
+                (applied, Action::None)
+            }
+            manager::ReloadOutcome::Reloaded(reloaded) => {
+                // A background reload holds no lock on the UI — deliberately,
+                // so the app stays usable through a two-derivation wait. That
+                // leaves a window in which the user starts editing, and taking
+                // these entries now would silently discard what they typed. It
+                // is the same change the banner exists for, so ask instead.
+                if intent == follow::Intent::Follow
+                    && (self.session.vault.is_modified() || self.has_draft())
+                {
+                    // Captured before the caller rolls the backend back: this
+                    // is the version *Save mine* would be replacing, and after
+                    // the rollback nothing else remembers it.
+                    let landed = self
+                        .session
+                        .vault
+                        .home()
+                        .and_then(|home| home.storage().revision());
+                    self.session.follow = Some(follow::Notice::diverged_after_read(
+                        reloaded.file(),
+                        landed,
+                        remote,
+                    ));
+                    return (false, Action::None);
+                }
+
+                let line = follow::reload_line(reloaded.file(), remote);
+                if !self.session.vault.apply_reloaded(*reloaded) {
+                    return (false, Action::None);
+                }
+                // The entry list is a different list now, so every index into
+                // it is meaningless. Left alone, the editor's stale index turns
+                // the next edit into a silent duplicate.
+                self.editor = None;
+                self.pending_delete = None;
+                self.reselect_after_reload();
+
+                self.session.follow = None;
+                self.session.dismissed_revision = None;
+                self.session.last_reload = Some(line);
+                (true, Action::None)
+            }
+            manager::ReloadOutcome::Rekeyed(file) => {
+                // The bytes are current but the answers held no longer open
+                // them. Dropping the user out of their session unasked is a
+                // decision, not a refresh — so a background reload asks.
+                if intent == follow::Intent::Follow {
+                    self.session.follow = Some(follow::Notice::rekeyed(remote));
+                    return (false, Action::None);
+                }
+                if self.session.vault.relock_with(*file) {
+                    self.clear_secret_panes();
+                    self.session.reset_follow();
+                    self.session.status_message = Some(
+                        "The security questions changed where this vault is stored — \
+                         unlock it again."
+                            .into(),
+                    );
+                    return (
+                        true,
+                        Action::pane_run(
+                            Pane::Unlock,
+                            operation::focus(panes::unlock::focus_target()),
+                        ),
+                    );
+                }
+                (false, Action::None)
+            }
+        }
+    }
+
+    /// Keep the selection on the same entry across a reload, when it is still
+    /// there. Identity is the name and type, since the index certainly moved
+    /// and the vault format carries no per-entry id.
+    fn reselect_after_reload(&mut self) {
+        let previous = self
+            .selected
+            .and_then(|index| self.session.entries().get(index))
+            .map(|entry| (entry.name.clone(), entry.entry_type.clone()));
+
+        self.selected = previous.and_then(|(name, entry_type)| {
+            self.session
+                .entries()
+                .iter()
+                .position(|entry| entry.name == name && entry.entry_type == entry_type)
+        });
+        self.revealed = false;
+        self.cvv_revealed = false;
+        self.reconcile_selection();
+    }
+
+    /// A button on the banner.
+    fn update_follow(&mut self, msg: follow::Msg) -> Action {
+        let Some(notice) = self.session.follow.clone() else {
+            return Action::None;
+        };
+
+        match msg {
+            follow::Msg::SaveMine => {
+                let Some(revision) = notice.revision.clone() else {
+                    return Action::None;
+                };
+                if !rfd_confirm(
+                    "Replace the stored vault",
+                    "The copy where this vault is stored is newer than the one open here. \
+                     Saving will replace it, and the other device's changes will be lost.\n\n\
+                     Save anyway?",
+                ) {
+                    return Action::None;
+                }
+                // Say, explicitly, which version we mean to replace. Without
+                // this the write is refused as the accidental clobber the
+                // conflict check exists to catch — and going around that check
+                // any other way would disarm it for every later save too.
+                if let Some(home) = self.session.vault.home() {
+                    home.storage().adopt_revision(&revision);
+                }
+                self.session.follow = None;
+                self.session.dismissed_revision = None;
+                self.save_now()
+            }
+            follow::Msg::DiscardAndReload => {
+                // The draft goes first: it is the work the user just chose to
+                // give up, and leaving it open would let it be saved back over
+                // the copy they asked for.
+                self.editor = None;
+                self.pending_delete = None;
+                self.session.follow = None;
+                self.session.dismissed_revision = None;
+                self.start_reload(follow::Intent::Forced)
+            }
+            follow::Msg::Dismiss => {
+                self.session.dismissed_revision = notice.revision.clone();
+                self.session.follow = None;
+                Action::None
+            }
+        }
+    }
+
     /// Ask before quitting outright. Quitting is one click away in the rail and
     /// in the tray, and it wipes the decrypted vault from memory, so an
     /// unmodified vault still deserves the question.
@@ -887,6 +1304,9 @@ impl App {
                 let label = self.session.vault.lock_label();
                 self.session.vault.lock();
                 self.clear_secret_panes();
+                // The edits the banner was asking about are gone, so the
+                // question is answered; the vault is still worth following.
+                self.session.settle_follow();
                 self.session.status_message =
                     Some(format!("{label}ed — secrets wiped from memory"));
                 Action::pane_run(
@@ -985,6 +1405,7 @@ impl App {
                 } else if self.session.smart_lock_timed_out() {
                     self.session.vault.lock();
                     self.clear_secret_panes();
+                    self.session.settle_follow();
                     self.session.status_message =
                         Some("Smart Lock expired — the vault is fully locked".into());
                     Action::Pane(Pane::Unlock)
@@ -1042,6 +1463,10 @@ impl App {
                     Ok(saved) => {
                         self.session.vault.apply_saved(saved);
                         self.session.remember_vault();
+                        // The backend is on our revision again, so a standing
+                        // divergence — and the dismissal that let it stand —
+                        // are both spent.
+                        self.session.settle_follow();
                         self.session.success_message = Some("Vault saved successfully".into());
                         if let Err(e) = self.session.settings.save() {
                             eprintln!("WARNING: Failed to save settings: {}", e);
@@ -1060,6 +1485,13 @@ impl App {
                     }
                 }
             }
+            GlobalMsg::FollowTick => self.start_follow(),
+            GlobalMsg::Followed(reply) => self.finish_follow(*reply),
+            GlobalMsg::Reloaded {
+                intent,
+                from,
+                result,
+            } => self.finish_reload(intent, from, *result),
             GlobalMsg::ProbeWindow => {
                 self.probe_window = false;
                 Action::Run(
@@ -1139,6 +1571,9 @@ impl App {
                 }
                 action
             }
+            // Coming back to the window is the moment a stale vault is most
+            // likely and most worth catching, and it costs one request.
+            Event::Window(window::Event::Focused) => self.start_follow(),
             Event::Window(window::Event::Moved(position)) => {
                 self.record_geometry(Some(position), None)
             }
@@ -1218,6 +1653,12 @@ impl App {
         // Searching a vault that is not open would be searching nothing.
         if self.effective_pane() == Pane::Items {
             root = root.push(self.search_bar());
+        }
+
+        // Above the working area rather than inside a pane: the vault it
+        // concerns is open whichever pane happens to be showing.
+        if let Some(banner) = follow::view(&self.session) {
+            root = root.push(banner);
         }
 
         let status = self.session.status_line();

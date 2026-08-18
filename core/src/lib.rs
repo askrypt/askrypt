@@ -77,7 +77,9 @@ pub mod types;
 pub use storage::{
     BrowserLogin, BrowserLoginStatus, RemoteVault, ServerClient, ServerStorage, normalize_base_url,
 };
-pub use storage::{LocalFileStorage, MemoryStorage, StorageError, VaultStorage};
+pub use storage::{
+    LocalFileStorage, MemoryStorage, RemoteRevision, Revision, StorageError, VaultStorage,
+};
 pub use types::*;
 
 use aes::Aes256;

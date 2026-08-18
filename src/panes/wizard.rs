@@ -307,6 +307,10 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                 Ok(opened) => {
                     let name = opened.home.location().display_name();
                     session.vault.open(opened);
+                    // A different vault at a different revision: everything the
+                    // old one's follow state described is now about a file that
+                    // is no longer open.
+                    session.reset_follow();
                     session.status_message = Some(format!("Opened {name}"));
                     Action::Run(Task::done(Message::Vault(crate::VaultMsg::Unlock)))
                 }

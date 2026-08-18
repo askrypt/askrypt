@@ -25,7 +25,7 @@
 //! # Ok::<(), askrypt::StorageError>(())
 //! ```
 
-use super::{StorageError, VaultStorage};
+use super::{RemoteRevision, Revision, StorageError, VaultStorage};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -632,6 +632,42 @@ impl VaultStorage for ServerStorage {
     fn location(&self) -> String {
         format!("{} @ {}", self.name, self.client.host())
     }
+
+    fn revision(&self) -> Option<Revision> {
+        self.remote
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|remote| Revision(remote.etag.clone()))
+    }
+
+    fn current_revision(&self) -> Result<Option<RemoteRevision>, StorageError> {
+        // Deliberately not `resolve()`: that caches whatever it finds, and the
+        // cached ETag is precisely what the next write sends as `If-Match`.
+        // Adopting the server's current version here would turn the probe into
+        // a silent licence to overwrite the very edit it just detected.
+        //
+        // The listing already carries the write stamp, so naming who saved it
+        // and when costs no extra request.
+        Ok(self
+            .client
+            .list()?
+            .into_iter()
+            .find(|vault| vault.name == self.name)
+            .map(|vault| RemoteRevision {
+                revision: Revision(vault.etag),
+                host: vault.host,
+                saved_at: vault.saved_at,
+            }))
+    }
+
+    fn adopt_revision(&self, revision: &Revision) {
+        // Only the ETag moves: the vault is the same one, and an id we have
+        // not learned yet is not something a revision can teach us.
+        if let Some(remote) = self.remote.lock().unwrap().as_mut() {
+            remote.etag = revision.0.clone();
+        }
+    }
 }
 
 /// A connection-pooling agent that reports HTTP error statuses as ordinary
@@ -1096,6 +1132,124 @@ mod tests {
         // goes out quoted the way the server expects.
         assert_eq!(update.header("if-match"), Some("\"fresh-etag\""));
         assert_eq!(update.body, b"PK\x03\x04updated");
+    }
+
+    #[test]
+    fn probing_reports_the_listing_etag_and_the_write_stamp() {
+        let server = FakeServer::new(|_| {
+            Reply::json(
+                200,
+                &format!(
+                    r#"[{{"id":"{VAULT_ID}","name":"{VAULT_NAME}","size":42,"etag":"theirs",
+                          "updated_at":"2026-08-18T14:05:00Z","host":"ubuntu@work-pc",
+                          "saved_at":"2026-08-18T14:04:58Z"}}]"#
+                ),
+            )
+        });
+
+        let seed = RemoteVault {
+            id: VAULT_ID.to_string(),
+            name: VAULT_NAME.to_string(),
+            size: 7,
+            etag: "ours".to_string(),
+            updated_at: "2026-08-07T10:00:00Z".to_string(),
+            host: None,
+            saved_at: None,
+        };
+        let storage = ServerStorage::existing(server.client(), &seed);
+
+        let found = storage
+            .current_revision()
+            .expect("probe failed")
+            .expect("vault is missing");
+
+        assert_eq!(found.revision, Revision("theirs".to_string()));
+        // The listing already knows who wrote it, so naming them in the notice
+        // costs no second request.
+        assert_eq!(found.host.as_deref(), Some("ubuntu@work-pc"));
+        assert_eq!(found.saved_at.as_deref(), Some("2026-08-18T14:04:58Z"));
+    }
+
+    #[test]
+    fn probing_leaves_the_conflict_check_armed() {
+        // The regression this whole design turns on: a probe that adopted what
+        // it found would make the next save overwrite the very edit it just
+        // detected, silently.
+        let server = FakeServer::new(|request| match request.method.as_str() {
+            "GET" => Reply::json(
+                200,
+                &format!(
+                    r#"[{{"id":"{VAULT_ID}","name":"{VAULT_NAME}","size":42,"etag":"theirs",
+                          "updated_at":"2026-08-18T14:05:00Z","host":null,"saved_at":null}}]"#
+                ),
+            ),
+            _ => Reply::json(200, &vault_json("newer")),
+        });
+
+        let seed = RemoteVault {
+            id: VAULT_ID.to_string(),
+            name: VAULT_NAME.to_string(),
+            size: 7,
+            etag: "ours".to_string(),
+            updated_at: "2026-08-07T10:00:00Z".to_string(),
+            host: None,
+            saved_at: None,
+        };
+        let storage = ServerStorage::existing(server.client(), &seed);
+
+        storage.current_revision().expect("probe failed");
+
+        // Neither what we are on nor what the next write will claim has moved.
+        assert_eq!(storage.revision(), Some(Revision("ours".to_string())));
+        storage.write(b"PK\x03\x04mine").expect("write failed");
+        let update = server
+            .requests()
+            .into_iter()
+            .find(|request| request.method == "PUT")
+            .expect("no PUT");
+        assert_eq!(update.header("if-match"), Some("\"ours\""));
+    }
+
+    #[test]
+    fn adopting_a_revision_is_what_lets_a_write_replace_it() {
+        let server = FakeServer::new(|_| Reply::json(200, &vault_json("newer")));
+
+        let seed = RemoteVault {
+            id: VAULT_ID.to_string(),
+            name: VAULT_NAME.to_string(),
+            size: 7,
+            etag: "ours".to_string(),
+            updated_at: "2026-08-07T10:00:00Z".to_string(),
+            host: None,
+            saved_at: None,
+        };
+        let storage = ServerStorage::existing(server.client(), &seed);
+
+        storage.adopt_revision(&Revision("theirs".to_string()));
+        storage.write(b"PK\x03\x04mine").expect("write failed");
+
+        let update = &server.requests()[0];
+        assert_eq!(update.method, "PUT");
+        // The deliberate overwrite: we named the version we meant to replace.
+        assert_eq!(update.header("if-match"), Some("\"theirs\""));
+    }
+
+    #[test]
+    fn a_vault_absent_from_the_listing_probes_as_gone() {
+        let server = FakeServer::new(|_| Reply::json(200, "[]"));
+
+        let seed = RemoteVault {
+            id: VAULT_ID.to_string(),
+            name: VAULT_NAME.to_string(),
+            size: 7,
+            etag: "ours".to_string(),
+            updated_at: "2026-08-07T10:00:00Z".to_string(),
+            host: None,
+            saved_at: None,
+        };
+        let storage = ServerStorage::existing(server.client(), &seed);
+
+        assert!(matches!(storage.current_revision(), Ok(None)));
     }
 
     #[test]

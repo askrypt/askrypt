@@ -146,6 +146,20 @@ pub struct Session {
     pub spinner_label: &'static str,
     /// When the current background decryption started (for the timing message)
     pub decrypt_started: Option<Instant>,
+    /// A standing message about the stored copy of the open vault — it changed
+    /// under us, or it is gone. **Sticky**: `clear_messages` leaves it alone,
+    /// because it asks a question the next keystroke does not answer.
+    pub follow: Option<crate::follow::Notice>,
+    /// The revision the user waved away with "Keep editing". A *further*
+    /// change mints a new one and so raises the banner again.
+    pub dismissed_revision: Option<askrypt::Revision>,
+    /// The line describing the last reload — who wrote the bytes we took, and
+    /// when. Sticky for the same reason: a reload the user did not ask for is
+    /// worth still seeing a keystroke later.
+    pub last_reload: Option<String>,
+    /// Whether following has given up on this vault (it is gone, or the token
+    /// died). Reset when a vault is opened, locked or closed.
+    pub follow_stopped: bool,
 }
 
 impl Session {
@@ -182,6 +196,10 @@ impl Session {
             spinner_frame: 0,
             spinner_label: "Decrypting…",
             decrypt_started: None,
+            follow: None,
+            dismissed_revision: None,
+            last_reload: None,
+            follow_stopped: false,
         }
     }
 
@@ -218,6 +236,13 @@ impl Session {
             .or(self.status_message.as_ref())
         {
             return message.clone();
+        }
+
+        // Below the transient three, above the vault's own line: a background
+        // reload has something to say, but never over a message about what the
+        // user just did.
+        if let Some(line) = self.last_reload.as_ref() {
+            return line.clone();
         }
 
         let dirty = if self.vault.is_modified() { "*" } else { "" };
@@ -279,10 +304,43 @@ impl Session {
         }
     }
 
+    /// Forget the outstanding *question* about the stored copy, but keep
+    /// following.
+    ///
+    /// For the edges that resolve a divergence rather than end it: a save, or
+    /// a lock that drops the very edits the banner was asking about. The
+    /// dismissal has to go with them — it was permission to ignore one change
+    /// while editing, and once the editing is over the change is worth taking.
+    ///
+    /// Following resumes too. A save proves the backend is reachable and now
+    /// holds our bytes, so whatever stopped it — the vault had been deleted,
+    /// the token had died — is over; a Save As onto a fresh location is the
+    /// way back from exactly that. A lock re-checks once and stops again if
+    /// the vault really is still gone, which costs one notice.
+    pub fn settle_follow(&mut self) {
+        self.follow = None;
+        self.dismissed_revision = None;
+        self.last_reload = None;
+        self.follow_stopped = false;
+    }
+
+    /// Forget everything about the *stored* copy of the vault that was open.
+    ///
+    /// Called wherever the vault itself changes identity or state — opened,
+    /// locked, closed — because every one of these fields describes a
+    /// particular vault at a particular revision and none of them survives it.
+    pub fn reset_follow(&mut self) {
+        self.follow = None;
+        self.dismissed_revision = None;
+        self.last_reload = None;
+        self.follow_stopped = false;
+    }
+
     /// The full close: forget the vault entirely, and stop reopening it.
     pub fn close_vault(&mut self) {
         self.vault.close();
         self.settings.last_opened_file = None;
+        self.reset_follow();
     }
 
     /// Update user activity timestamp (for auto Smart Lock after inactivity)

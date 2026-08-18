@@ -86,6 +86,38 @@ impl From<std::io::Error> for StorageError {
     }
 }
 
+/// An opaque token naming one particular version of a vault's bytes.
+///
+/// Backends mint these however they like — the server uses the ETag (a
+/// content hash), a local file uses its modification time and length — and
+/// nothing outside the backend may interpret one. Two revisions comparing
+/// unequal is the *only* meaning: the bytes are not the ones we last saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revision(pub String);
+
+impl std::fmt::Display for Revision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// What a backend reports about the bytes it holds *right now*.
+///
+/// The two stamp halves are a convenience, not a promise: they are whatever
+/// the backend already knew, so asking for them costs nothing. The server
+/// lifts them off the stored bytes and hands them back in its listing; a
+/// local file would have to be opened and parsed, so `LocalFileStorage`
+/// answers `None` for both. Like every use of the write stamp they are
+/// unauthenticated display text — a hint, never evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteRevision {
+    pub revision: Revision,
+    /// The machine that wrote it (`os@host`), per the vault's own stamp.
+    pub host: Option<String>,
+    /// When the file itself says it was saved (RFC 3339).
+    pub saved_at: Option<String>,
+}
+
 /// Where vault bytes are read from and written to.
 ///
 /// Object-safe and `Send + Sync` so a `Box<dyn VaultStorage>` can be moved
@@ -117,6 +149,39 @@ pub trait VaultStorage: Send + Sync {
             .map_err(|e| StorageError::Format(e.to_string()))?;
         self.write(&bytes)
     }
+
+    /// The revision of the bytes *this instance* last read or wrote.
+    ///
+    /// Cheap: no I/O, just what the backend already remembers. `None` means
+    /// this backend cannot tell one version from another, and a caller that
+    /// follows a vault for outside changes must treat such a vault as
+    /// unfollowable rather than as unchanged.
+    fn revision(&self) -> Option<Revision> {
+        None
+    }
+
+    /// The revision the backend holds *now*, without reading the vault.
+    ///
+    /// **Worker-thread only** — this does I/O, and for a remote backend that
+    /// is a network round trip. `Ok(None)` means there is nothing there any
+    /// more: the vault was deleted, renamed or moved out from under us.
+    ///
+    /// Implementations must leave [`revision`](Self::revision) alone. The
+    /// whole point of asking is to compare the two, and a probe that adopted
+    /// what it found would disarm the conflict check that stops one device
+    /// overwriting another's save.
+    fn current_revision(&self) -> Result<Option<RemoteRevision>, StorageError> {
+        Ok(None)
+    }
+
+    /// Accept `revision` as the version the next [`write`](Self::write) may
+    /// replace.
+    ///
+    /// This is how a caller says "yes, I know that version is there, replace
+    /// it anyway" — the deliberate counterpart to the accidental overwrite
+    /// [`StorageError::Conflict`] exists to prevent. Nothing else may set it:
+    /// an intentional clobber and a stale handle must not look alike.
+    fn adopt_revision(&self, _revision: &Revision) {}
 }
 
 /// In-memory storage, mainly for tests and fakes.

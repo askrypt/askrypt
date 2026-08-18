@@ -21,6 +21,8 @@ invariants a redesign can quietly break. Keep it current.
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ search strip                    (only when unlocked)    │
+├─────────────────────────────────────────────────────────┤
+│ follow banner              (only when there is a choice)│
 ├────────────┬────────────────────────────────────────────┤
 │            │                                            │
 │  nav rail  │   working area                             │
@@ -38,8 +40,8 @@ invariants a redesign can quietly break. Keep it current.
 └─────────────────────────────────────────────────────────┘
 ```
 
-The outer `column![search, row![panes].height(Fill), status_bar]` is what keeps
-the status bar on the bottom edge. The root is *not* wrapped in a centering
+The outer `column![search, banner, row![panes].height(Fill), status_bar]` is
+what keeps the status bar on the bottom edge. The root is *not* wrapped in a centering
 container — the panes are full-bleed.
 
 ### Module map
@@ -47,14 +49,15 @@ container — the panes are full-bleed.
 | File | Holds |
 |---|---|
 | `main.rs` | `App`, `Section`, `Pane`, `Message`/`VaultMsg`/`GlobalMsg`, `PendingAction`, the `visible()`/`reconcile_selection()` filter pair, `default_pane()`/`effective_pane()`, the subscription, the tray and keyboard handling, and the root layout |
-| `manager.rs` | `Vault<S>` — the vault as a typestate — its four states, the `VaultState` enum that holds one, the worker-input/result types, `SaveRequest`/`OpenedVault`/`SavedVault` and `write_vault` |
+| `manager.rs` | `Vault<S>` — the vault as a typestate — its four states, the `VaultState` enum that holds one, the worker-input/result types, `SaveRequest`/`OpenedVault`/`SavedVault`/`ReloadInputs`/`ReloadOutcome` and `write_vault` |
 | `smartlock.rs` | the 2M-iteration `create`/`recover` pair over `manager::SmartLocked` |
-| `session.rs` | `Session` — the shell's own shared state (settings, tray, messages, spinner, sign-in) around one `vault: VaultState` — plus `VaultError` |
+| `session.rs` | `Session` — the shell's own shared state (settings, tray, messages, spinner, sign-in, and the **sticky** follow fields `follow`/`dismissed_revision`/`last_reload`) around one `vault: VaultState` — plus `VaultError` |
 | `settings.rs` | `VaultLocation`, `ServerSession`, `AppSettings`, `ThemeChoice`, `LockTimeout`, `WindowState` — the on-disk shapes |
 | `tray.rs` | `AppTray`/`TrayEvent`, polled from the subscription |
 | `theme.rs` | the styled-widget helpers plus pane styles, the spinner and layout constants |
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf` |
 | `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, the write stamp, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
+| `follow.rs` | following the stored vault: the probe, the `decide` policy, `Notice` and the banner. Not a pane, for `link.rs`'s reason — the banner sits above the working area, over whichever pane is showing |
 | `panes/mod.rs` | `Action` — the pane → shell navigation contract |
 | `panes/sidebar.rs` | the nav rail: filters, the vault actions, Quit, Settings |
 | `panes/list.rs`, `panes/detail.rs` | the item split |
@@ -155,6 +158,8 @@ what the user typed and hands it to the apply.
 | anything → `NoVault` ("Close Vault") | `guard(CloseVault)` → `close_vault()` → the wizard, armed |
 | idle → `SmartLocked`; 8 h → `Locked` | `auto_smart_lock` / `smart_lock_timed_out`, from `InactivityTick` |
 | save | `save_now()` → `write_vault` on a worker → `apply_saved()` |
+| the stored copy changed → reload | `FollowTick`/window focus → `follow::probe` → `follow::decide` → `ReloadInputs::run` → `apply_reloaded()` (or `apply_refreshed`/`apply_requestioned`, per state) |
+| the stored copy changed, but it no longer opens | same, → `ReloadOutcome::Rekeyed` → banner → `relock_with()` onto the *new* bytes |
 | save as / save to server | wizard → `Message::SaveTo(VaultLocation)` → same worker |
 
 Three lock *depths*, all kept: **Smart Lock** (one answer to return), **Lock**
@@ -324,6 +329,57 @@ only case `confirm()` acts on.
 
 ---
 
+### Following the stored vault
+
+A vault on a server — or in a synced folder — can be written by another device
+while it is open here. `follow.rs` checks every **60 s** (`FOLLOW_INTERVAL`) and
+again whenever the window regains focus, comparing what the backend holds now
+against what this app's storage instance is on. A backend that reports no
+revision is *unfollowable*, which is not the same as unchanged: it is left
+alone rather than assumed still.
+
+The probe is one `GET /api/v1/vaults` for a server vault and one `stat` for a
+file. It never reads the vault, never raises the spinner, never stamps user
+activity (that would hold the idle lock open forever), and is skipped while
+`session.busy` or while one is already in flight. The *reload* it may lead to
+is behind `busy` like any other work — it only runs when something actually
+changed, and it must block a save, since reading moves the backend onto the
+version being fetched and a save squeezed in between would inherit it. Failures are silent — a
+network blip says nothing about the stored copy — except an `Auth` failure,
+which signs out and stops following.
+
+`follow::decide` is the whole policy, kept a pure function so this table is
+testable without a UI or a network:
+
+| State | Unsaved work? | The stored copy changed |
+|---|---|---|
+| `Locked` | impossible | silent refresh of the bytes (`apply_refreshed`); the unlock pane re-renders `question0` |
+| `PartiallyUnlocked` | impossible | re-read, then re-run `get_questions_data(answer0)` → `apply_requestioned`; a failure means the questions moved, so `Rekeyed` |
+| `Unlocked` | no | silent reload — `Unlocked` still holds every answer, so nothing is asked (`apply_reloaded`) |
+| `Unlocked` | **yes** | **the banner**: *Save mine* / *Discard mine & reload* / *Keep editing*. Nothing is touched until a button is pressed |
+| `SmartLocked` | impossible (arming is gated on saving) | silent refresh; the answer bundle is keyed off itself, not off the file |
+
+"Unsaved work" is `is_modified()` **or** `App::has_draft()` — an entry open in
+the editor and the questions editor open both count, and neither sets the dirty
+flag.
+
+Three details carry the rest:
+
+- **Every reload writes a status line naming who wrote the bytes and when** —
+  `follow::reload_line` over `data::format_stamp`, off the vault's own
+  unencrypted `params.host`/`params.updated_at`. It lives in
+  `Session.last_reload`, which `clear_messages` deliberately spares: the
+  transient three are wiped by the next keystroke, and a reload nobody asked
+  for is worth still seeing afterwards. `status_line` reads it below
+  error/success/status and above the vault's own line.
+- **A dismissal is per revision.** *Keep editing* records
+  `Session.dismissed_revision`; a *further* change mints a new revision and so
+  raises the banner again. A save or a lock calls `Session::settle_follow`,
+  which spends the dismissal along with the edits it covered.
+- **Reloading uses the storage instance the vault was opened with**, never a
+  fresh one — the same reason a save does (invariant 1) — so the reload also
+  leaves the backend on the version it just took.
+
 ## 4. Invariants, and where they are enforced
 
 0. **A state's data lives in the state.** Most of the invariants below used to
@@ -392,11 +448,19 @@ only case `confirm()` acts on.
    `entry_editor::save` folds them back into the entry. `wizard::State` needs none —
    it has held no password since sign-in moved to the browser. Any new pane
    holding a typed answer or password needs the same.
-8. **The idle timeout must not destroy work.** An automatic Smart Lock wipes the
-   decrypted entries with nobody at the keyboard to be asked about it, so
-   `App::auto_smart_lock` saves first when the vault has a home — and declines
-   to lock at all when it does not, because a never-saved vault exists only in
-   this process.
+8. **A background event must not destroy work.** Two of them can: the idle
+   timeout and following the stored vault, both firing with nobody at the
+   keyboard to be asked.
+   - An automatic Smart Lock wipes the decrypted entries, so
+     `App::auto_smart_lock` saves first when the vault has a home — and
+     declines to lock at all when it does not, because a never-saved vault
+     exists only in this process.
+   - A reload replaces them, so `follow::decide` returns `Ask` rather than
+     `Reload` whenever `is_modified()` or `App::has_draft()` holds. `busy`
+     stops another *task* starting during the wait but not typing, so
+     `App::install_reload` **re-checks both at the moment of applying** and
+     raises the banner instead — editing during those two derivations is
+     otherwise exactly the window in which a reload eats what was typed.
 9. **A vault's master key is minted once and never rotated.** It is a property
    of the *vault*, not of a write, and it is what the coming file attachments
    will be encrypted under — rotating it per save would mean re-encrypting all
@@ -411,7 +475,16 @@ only case `confirm()` acts on.
    `changing_the_questions_keeps_the_master_key`. What is *not* preserved: the
    salts and the `data` IV rotate on every write, and the IV must — see
    `SPEC.md`, "Master key lifetime".
-10. **`settings.window` holds the geometry the window *unmaximizes* back to**,
+10. **A probe never disarms the conflict check.** The backend's remembered
+   revision is what the next save sends as `If-Match`, so
+   `VaultStorage::current_revision` is specified not to touch it, and
+   `probing_leaves_the_conflict_check_armed` guards that in `core`. Reading,
+   though, *does* move it — which is right when the reload is applied and wrong
+   when it is not, so `App::finish_reload` rolls it back with
+   `adopt_revision` on every path that declines. Deliberately replacing another
+   device's version is the one thing allowed to move it forward, and only from
+   the banner's *Save mine*.
+11. **`settings.window` holds the geometry the window *unmaximizes* back to**,
    never the maximized box, or a window maximized at exit would come back
    maximized and shrink to the whole screen. Iced reports moves and resizes but
    has no maximized event, so `App::record_geometry` parks what it saw and one
@@ -445,8 +518,9 @@ app it grew out of (`src/app.rs`, `src/message.rs`, `src/ui.rs` and
 `src/screens/`) is deleted. What it did not bring along:
 
 - A real per-item icon (see §5).
-- Reload-on-conflict: `VaultError::Conflict` currently only reports; there is no
-  "reload and merge" path.
+- Merging: a reload is all-or-nothing. When both sides changed, the user picks
+  one — there is no per-entry merge, and the vault format carries no per-entry
+  id to build one on.
 - `Session::new()` builds the tray and reads `server_session.json` inline, and
   `App::boot` opens the last vault inline — a server location therefore makes a
   network call before the window appears, which the app it replaced did too.
