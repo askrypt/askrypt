@@ -181,6 +181,52 @@ jobs:
           version="${{ needs.create-release.outputs.version }}"
           gh release upload "$version" ${{ env.ASSET }} ${{ env.ASSET_SUM }}
 
+  build-release-installer:
+    name: build-release-installer
+    needs: ["create-release"]
+    runs-on: windows-latest
+    env:
+      RUST_BACKTRACE: 1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --verbose --profile release --target x86_64-pc-windows-msvc
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DMyAppVersion=${{ needs.create-release.outputs.version }}" installer\windows\askrypt.iss
+
+      - name: Hash installer
+        shell: bash
+        run: |
+          version="${{ needs.create-release.outputs.version }}"
+          name="askrypt-$version-setup.exe"
+          cd target/installer
+          certutil -hashfile "$name" SHA256 > "$name.sha256"
+          echo "ASSET=target/installer/$name" >> $GITHUB_ENV
+          echo "ASSET_SUM=target/installer/$name.sha256" >> $GITHUB_ENV
+
+      - name: Upload release archive
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          version="${{ needs.create-release.outputs.version }}"
+          gh release upload "$version" ${{ env.ASSET }} ${{ env.ASSET_SUM }}
+
   build-release-deb:
     name: build-release-deb
     needs: ["create-release"]

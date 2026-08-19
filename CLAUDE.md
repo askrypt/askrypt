@@ -1088,6 +1088,7 @@ overrides when touching profiles.
 ### CI / Release
 
 - `.github/workflows/ci.yml` — Builds and tests on Ubuntu for every push.
-- `.github/workflows/release.yml` — Multi-platform release builds (Linux x86_64, macOS ARM64, Windows x86_64 MSVC).
+- `.github/workflows/release.yml` — Multi-platform release builds (Linux x86_64, macOS ARM64, Windows x86_64 MSVC + win-gnu zip, plus a Windows installer) and the `.deb` package.
 - Windows builds use static C runtime linking (configured in `.cargo/config.toml`).
 - `build.rs` embeds the Windows icon resource.
+- `installer/windows/askrypt.iss` — Inno Setup script for a Windows installer (`askrypt-<version>-setup.exe`), built by the `build-release-installer` job against the win-msvc target and uploaded to the GitHub release alongside the zip archives. Build locally with `iscc /DMyAppVersion=0.7.0 installer\windows\askrypt.iss` (needs [Inno Setup](https://jrsoftware.org/isinfo.php) installed; defaults to packaging `target\x86_64-pc-windows-msvc\release\askrypt.exe`). Per-user install (no admin rights), fixed `AppId` so re-running the installer upgrades in place, and leaves `%APPDATA%\askrypt\` (settings, vaults) untouched on uninstall.
