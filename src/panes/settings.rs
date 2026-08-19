@@ -5,10 +5,12 @@
 //! `session.settings`, which is persisted to `settings.json` on each change so a
 //! crash cannot lose a preference the user just set.
 
+use std::path::PathBuf;
+
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, rule, scrollable, text, text_input,
 };
-use iced::{Element, Length, alignment::Vertical};
+use iced::{Element, Length, Task, alignment::Vertical};
 
 use crate::panes::Action;
 use crate::session::Session;
@@ -22,6 +24,11 @@ pub enum Msg {
     MinimizeToTrayToggled(bool),
     ShowHiddenToggled(bool),
     ClearClipboardToggled(bool),
+    BackupToLocalDirToggled(bool),
+    /// Open the folder picker (the "Choose"/"Change" button).
+    ChooseBackupDir,
+    /// What the picker answered. `None` is a cancel.
+    BackupDirPicked(Option<PathBuf>),
     ServerUrlChanged(String),
     SignOut,
 }
@@ -33,6 +40,31 @@ pub fn update(session: &mut Session, message: Msg) -> Action {
         Msg::MinimizeToTrayToggled(value) => session.settings.minimize_to_tray = value,
         Msg::ShowHiddenToggled(value) => session.settings.show_hidden_by_default = value,
         Msg::ClearClipboardToggled(value) => session.settings.clear_clipboard = value,
+        // Turning it *on* has to end with a directory, or it means nothing —
+        // so the picker opens straight away when there is none remembered.
+        Msg::BackupToLocalDirToggled(value) => {
+            session.settings.backup_to_local_dir = value;
+            save(session);
+            if value && session.settings.backup_dir.is_none() {
+                return Action::Run(choose_dir());
+            }
+            return Action::None;
+        }
+        Msg::ChooseBackupDir => return Action::Run(choose_dir()),
+        Msg::BackupDirPicked(Some(dir)) => {
+            session.settings.backup_dir = Some(dir);
+            // Choosing a directory is also how the toggle is *confirmed*: the
+            // two are read as one pair, and a directory nobody asked for would
+            // be a setting the user never turned on.
+            session.settings.backup_to_local_dir = true;
+        }
+        // A cancelled first pick leaves the switch off rather than on with
+        // nowhere to write — "on" always means there is a directory.
+        Msg::BackupDirPicked(None) => {
+            if session.settings.backup_dir.is_none() {
+                session.settings.backup_to_local_dir = false;
+            }
+        }
         // Stored as typed. Signing out when the address changes would fire on
         // the first keystroke of an edit; the wizard reconciles a sign-in that
         // no longer matches when the server step is opened.
@@ -44,12 +76,30 @@ pub fn update(session: &mut Session, message: Msg) -> Action {
         }
     }
 
+    save(session);
+    Action::None
+}
+
+/// Persist on every change, so a crash cannot lose a preference just set.
+fn save(session: &mut Session) {
     if let Err(e) = session.settings.save() {
         eprintln!("WARNING: Failed to save settings: {}", e);
         session.error_message = Some("Could not save your settings".into());
     }
+}
 
-    Action::None
+/// The native folder picker. Off the main thread, like every other dialog here.
+fn choose_dir() -> Task<Message> {
+    Task::perform(
+        async {
+            rfd::AsyncFileDialog::new()
+                .set_title("Choose a folder for local backup copies")
+                .pick_folder()
+                .await
+                .map(|handle| handle.path().to_path_buf())
+        },
+        |picked| Message::Settings(Msg::BackupDirPicked(picked)),
+    )
 }
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -107,6 +157,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
             text("SETTINGS").size(11).style(text::secondary),
             group("Account"),
             account(app),
+            group("Backup"),
+            backup(app),
             group("Appearance"),
             appearance,
             group("Security"),
@@ -176,14 +228,61 @@ fn account(app: &App) -> Element<'_, Message> {
     theme::card(column![address, hairline(), sign_in]).into()
 }
 
+/// The local copy every cloud save leaves behind.
+///
+/// The folder row only appears once the switch is on: with it off there is
+/// nothing the directory would be used for, and the switch is what asks for
+/// one.
+fn backup(app: &App) -> Element<'_, Message> {
+    let settings = &app.session.settings;
+
+    let toggle = toggle_row(
+        "Keep a local copy of cloud saves",
+        "Every save to your Askrypt server is also written to a folder on this computer.",
+        settings.backup_to_local_dir,
+        Msg::BackupToLocalDirToggled,
+    );
+
+    if !settings.backup_to_local_dir {
+        return theme::card(toggle).into();
+    }
+
+    let (label, description, action): (&'static str, String, &'static str) =
+        match &settings.backup_dir {
+            Some(dir) => ("Backup folder", dir.display().to_string(), "Change"),
+            // Only reachable by hand-editing `settings.json`: cancelling the picker
+            // turns the switch back off. Still says what is missing rather than
+            // silently doing nothing on the next save.
+            None => (
+                "No folder chosen",
+                "Copies are not being made until you choose one.".to_string(),
+                "Choose",
+            ),
+        };
+
+    let folder = setting_row(
+        label,
+        description,
+        button(text(action).size(13))
+            .padding([6, 12])
+            .on_press(Message::Settings(Msg::ChooseBackupDir))
+            .into(),
+    );
+
+    theme::card(column![toggle, hairline(), folder]).into()
+}
+
 fn group<'a>(label: &'a str) -> Element<'a, Message> {
     text(label).size(13).font(theme::bold()).into()
 }
 
 /// A label + description on the left, a control flush right.
+///
+/// The description is a text fragment rather than a `&str` so a row can
+/// describe itself with a value it just built — the backup folder's path.
 fn setting_row<'a>(
     label: &'a str,
-    description: &'a str,
+    description: impl iced::widget::text::IntoFragment<'a>,
     control: Element<'a, Message>,
 ) -> Element<'a, Message> {
     container(

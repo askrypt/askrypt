@@ -60,10 +60,13 @@
 //! The answers never ride in a completion message: the pane already holds what
 //! the user typed, and hands it to the apply alongside the worker's result.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use askrypt::{AskryptFile, MasterSecret, QuestionsData, SecretEntry, VaultStorage};
+use askrypt::{
+    AskryptFile, LocalFileStorage, MasterSecret, QuestionsData, SecretEntry, VaultStorage,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::session::VaultError;
@@ -127,6 +130,14 @@ pub struct OpenedVault {
 pub struct SavedVault {
     pub file: AskryptFile,
     pub home: VaultHome,
+    /// What became of the local copy a cloud save leaves behind: where it
+    /// landed, or why it did not.
+    ///
+    /// `None` when none was asked for — the setting is off, or this vault is a
+    /// local file already. A failed copy is reported *here* rather than as an
+    /// error from the write, because the vault itself was saved and the session
+    /// must adopt the new bytes either way.
+    pub backup: Option<Result<PathBuf, String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1376,7 +1387,17 @@ impl Drop for SaveRequest {
 
 /// Re-encrypt the vault and write it. **Worker-thread only** — this runs two
 /// 600k-iteration key derivations plus (for a server vault) an HTTP round trip.
-pub fn write_vault(request: SaveRequest, home: VaultHome) -> Result<SavedVault, VaultError> {
+///
+/// `backup_dir` is the directory Settings asked for a local copy in
+/// ([`AppSettings::local_backup_dir`](crate::settings::AppSettings::local_backup_dir)).
+/// The copy is made only for a *server* vault — a local one is already a file
+/// on this machine — and only after the real save landed, so a vault is never
+/// backed up in a state the server never accepted.
+pub fn write_vault(
+    request: SaveRequest,
+    home: VaultHome,
+    backup_dir: Option<PathBuf>,
+) -> Result<SavedVault, VaultError> {
     let file = AskryptFile::create(
         request.questions.clone(),
         request.answers.clone(),
@@ -1391,7 +1412,63 @@ pub fn write_vault(request: SaveRequest, home: VaultHome) -> Result<SavedVault, 
         .save_vault(&file)
         .map_err(|e| VaultError::log("Failed to save vault", &e))?;
 
-    Ok(SavedVault { file, home })
+    let backup = backup_dir
+        .filter(|_| home.location().is_server())
+        .map(|dir| back_up_locally(&file, home.location(), &dir));
+
+    Ok(SavedVault { file, home, backup })
+}
+
+/// Write the just-saved bytes into the user's backup directory.
+///
+/// Errors come back as text rather than as a [`VaultError`]: the vault *was*
+/// saved, so this can only ever be a warning next to a success.
+fn back_up_locally(
+    file: &AskryptFile,
+    location: &VaultLocation,
+    dir: &Path,
+) -> Result<PathBuf, String> {
+    let path = dir.join(backup_file_name(location));
+
+    // The directory was picked in a file dialog, so it existed then — an
+    // unplugged drive or a since-deleted folder is what this covers.
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {}", dir.display(), e))?;
+
+    LocalFileStorage::new(path.clone())
+        .save_vault(file)
+        .map_err(|e| {
+            eprintln!("WARNING: Failed to write local backup copy: {}", e);
+            format!("{}: {}", path.display(), e)
+        })?;
+
+    Ok(path)
+}
+
+/// What the local copy is called.
+///
+/// A server vault's name is user text the *server* stores, so it is treated as
+/// untrusted here: it names a file in a directory of the user's choosing, and a
+/// separator or a `..` in it would put that file somewhere else entirely. Only
+/// the last component survives, control characters and separators go, and a
+/// name left with nothing usable falls back to a fixed one.
+fn backup_file_name(location: &VaultLocation) -> String {
+    let name = location.display_name();
+    let name: String = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let name = name.trim().trim_matches('.').trim();
+
+    if name.is_empty() {
+        return "vault.askrypt".to_string();
+    }
+    if name.to_ascii_lowercase().ends_with(".askrypt") {
+        return name.to_string();
+    }
+    format!("{}.askrypt", name)
 }
 
 #[cfg(test)]
@@ -1519,7 +1596,7 @@ mod tests {
         vault.adopt_built(build_new(vec![entry("GitHub")]));
 
         let request = vault.unlocked().unwrap().save_request();
-        let saved = write_vault(request, home.clone()).expect("the vault should be written");
+        let saved = write_vault(request, home.clone(), None).expect("the vault should be written");
         vault.apply_saved(saved);
 
         (vault, home)
@@ -1604,7 +1681,8 @@ mod tests {
         let request = vault.unlocked().unwrap().save_request();
         // The request carries the key it must re-wrap, not an absent one.
         assert_eq!(request.master, minted);
-        let saved = write_vault(request, home.clone()).expect("the vault should be written again");
+        let saved =
+            write_vault(request, home.clone(), None).expect("the vault should be written again");
         assert!(vault.apply_saved(saved));
         assert!(!vault.is_modified(), "a save clears the dirty flag");
         assert_eq!(vault.unlocked().unwrap().master(), &minted);
@@ -1650,7 +1728,7 @@ mod tests {
         let request = vault.unlocked().unwrap().save_request();
         assert_eq!(request.questions, vec!["New first?", "New second?"]);
         assert_eq!(request.answers, vec!["alpha", "beta"]);
-        let saved = write_vault(request, home.clone()).expect("the vault should be written");
+        let saved = write_vault(request, home.clone(), None).expect("the vault should be written");
         vault.apply_saved(saved);
 
         let reopened = home.storage().load_vault().expect("the vault should load");
@@ -1856,8 +1934,8 @@ mod tests {
         let vault = Vault::created(built, Some(home));
         // Write it out so the backend holds the same bytes the vault does.
         let request = vault.save_request();
-        let saved =
-            write_vault(request, vault.home().unwrap().clone()).expect("the vault should save");
+        let saved = write_vault(request, vault.home().unwrap().clone(), None)
+            .expect("the vault should save");
         VaultState::Unlocked(vault.saved(saved))
     }
 
@@ -2005,6 +2083,119 @@ mod tests {
         state.lock();
         assert!(!state.apply_reloaded(*reloaded));
         assert!(matches!(state, VaultState::Locked(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // The local copy of a cloud save
+    // -----------------------------------------------------------------------
+
+    fn server_home(storage: Arc<MemoryStorage>, name: &str) -> VaultHome {
+        VaultHome::new(
+            VaultLocation::Server {
+                base_url: "https://askrypt.example.com".to_string(),
+                email: "me@example.com".to_string(),
+                name: name.to_string(),
+            },
+            storage,
+        )
+    }
+
+    /// Each test gets its own directory: they run in parallel in one process.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("askrypt_backup_{}_{}", tag, std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the scratch directory should be created");
+        dir
+    }
+
+    #[test]
+    fn a_cloud_save_leaves_a_readable_copy_in_the_backup_directory() {
+        let dir = scratch_dir("copy");
+        let vault = Vault::created(
+            build_new(vec![entry("GitHub")]),
+            Some(server_home(Arc::new(MemoryStorage::default()), "MyVault")),
+        );
+
+        let saved = write_vault(
+            vault.save_request(),
+            vault.home().unwrap().clone(),
+            Some(dir.clone()),
+        )
+        .expect("the vault should save");
+
+        // The name carries no extension on the server; the copy is a file on
+        // disk, so it gets one.
+        let path = dir.join("MyVault.askrypt");
+        assert_eq!(saved.backup.as_ref().unwrap().as_ref().unwrap(), &path);
+
+        let copied = AskryptFile::load_from_file(&path).expect("the copy should be a vault");
+        let questions_data = copied
+            .get_questions_data(answers()[0].clone())
+            .expect("the copy should open with the same answers");
+        assert_eq!(questions_data.questions, questions()[1..]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_local_vault_is_not_copied_next_to_itself() {
+        let dir = scratch_dir("local");
+        let vault = Vault::created(build_new(vec![entry("GitHub")]), Some(home()));
+
+        let saved = write_vault(
+            vault.save_request(),
+            vault.home().unwrap().clone(),
+            Some(dir.clone()),
+        )
+        .expect("the vault should save");
+
+        assert!(saved.backup.is_none());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_failed_copy_does_not_fail_the_save() {
+        // A file where the directory should be: `create_dir_all` refuses it.
+        let dir = scratch_dir("blocked").join("wall");
+        std::fs::write(&dir, b"not a directory").expect("the blocker should be written");
+
+        let vault = Vault::created(
+            build_new(vec![entry("GitHub")]),
+            Some(server_home(Arc::new(MemoryStorage::default()), "MyVault")),
+        );
+
+        let saved = write_vault(
+            vault.save_request(),
+            vault.home().unwrap().clone(),
+            Some(dir.clone()),
+        )
+        .expect("the vault itself should still save");
+        assert!(saved.backup.unwrap().is_err());
+
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_backup_file_name_cannot_escape_the_chosen_directory() {
+        let named = |name: &str| {
+            backup_file_name(&VaultLocation::Server {
+                base_url: "https://askrypt.example.com".to_string(),
+                email: "me@example.com".to_string(),
+                name: name.to_string(),
+            })
+        };
+
+        assert_eq!(named("MyVault"), "MyVault.askrypt");
+        assert_eq!(named("MyVault.askrypt"), "MyVault.askrypt");
+        assert_eq!(named("MyVault.ASKRYPT"), "MyVault.ASKRYPT");
+        // The server stores whatever name it was given, so these are the ones
+        // that matter: nothing may name a directory of its own.
+        assert_eq!(named("../../etc/passwd"), "passwd.askrypt");
+        assert_eq!(named("..\\..\\secrets"), "secrets.askrypt");
+        assert_eq!(named(".."), "vault.askrypt");
+        assert_eq!(named("   "), "vault.askrypt");
     }
 
     #[test]

@@ -26,7 +26,7 @@ mod theme;
 mod tray;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -885,10 +885,19 @@ impl App {
             return Action::None;
         };
 
+        // Read the backup directory here, on the main thread, so the worker
+        // owns everything it needs — and so a setting changed mid-save does not
+        // apply to a write already in flight.
+        let backup_dir = self
+            .session
+            .settings
+            .local_backup_dir()
+            .map(Path::to_path_buf);
+
         self.session.begin_work("Saving…");
         Action::Run(Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || manager::write_vault(request, home))
+                tokio::task::spawn_blocking(move || manager::write_vault(request, home, backup_dir))
                     .await
                     .expect("save task panicked")
             },
@@ -1461,13 +1470,33 @@ impl App {
                 self.session.finish_work();
                 match *result {
                     Ok(saved) => {
+                        let backup = saved.backup.clone();
                         self.session.vault.apply_saved(saved);
                         self.session.remember_vault();
                         // The backend is on our revision again, so a standing
                         // divergence — and the dismissal that let it stand —
                         // are both spent.
                         self.session.settle_follow();
-                        self.session.success_message = Some("Vault saved successfully".into());
+                        // The vault is saved whatever happened to the local
+                        // copy. The status bar shows one line and an error
+                        // outranks a success, so the failure says both things
+                        // rather than replacing "saved" with a bare complaint.
+                        match backup {
+                            Some(Err(e)) => {
+                                self.session.error_message =
+                                    Some(format!("Vault saved, but the local copy failed — {}", e));
+                            }
+                            Some(Ok(path)) => {
+                                self.session.success_message = Some(format!(
+                                    "Vault saved successfully — copied to {}",
+                                    path.display()
+                                ));
+                            }
+                            None => {
+                                self.session.success_message =
+                                    Some("Vault saved successfully".into())
+                            }
+                        }
                         if let Err(e) = self.session.settings.save() {
                             eprintln!("WARNING: Failed to save settings: {}", e);
                         }

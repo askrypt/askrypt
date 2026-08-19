@@ -12,7 +12,7 @@ use iced::window::Position;
 use iced::{Point, Size};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -343,6 +343,17 @@ pub struct AppSettings {
     /// [`AppSettings::server_url`], which normalizes it the way `core` does.
     #[serde(default = "default_server_url")]
     pub server_url: String,
+    /// Whether a vault saved to the server also gets written to
+    /// [`Self::backup_dir`].
+    ///
+    /// Off by default, and meaningless without a directory — read the pair
+    /// through [`AppSettings::local_backup_dir`], never this flag alone.
+    #[serde(default)]
+    pub backup_to_local_dir: bool,
+    /// The directory those copies land in. Remembered even while the toggle is
+    /// off, so turning it back on does not ask again.
+    #[serde(default)]
+    pub backup_dir: Option<PathBuf>,
     /// Where the window was last seen. `None` on a first run and in any
     /// `settings.json` from a release before the window was remembered.
     #[serde(default)]
@@ -374,6 +385,8 @@ impl Default for AppSettings {
             // built in code needs it spelled out again or the app starts with
             // no server at all.
             server_url: default_server_url(),
+            backup_to_local_dir: false,
+            backup_dir: None,
             window: None,
         }
     }
@@ -389,6 +402,21 @@ impl AppSettings {
     /// vaults unopenable.
     pub fn server_url(&self) -> String {
         askrypt::normalize_base_url(&self.server_url)
+    }
+
+    /// Where a copy of every cloud save should also be written, or `None` for
+    /// "don't".
+    ///
+    /// The switch and the directory are read as one: a directory the user has
+    /// not chosen is not a place to write to, so the flag alone never turns the
+    /// copy on. The settings pane keeps the two in step (enabling it asks for a
+    /// directory, and cancelling that leaves the switch off), but a
+    /// hand-edited `settings.json` need not have.
+    pub fn local_backup_dir(&self) -> Option<&Path> {
+        if !self.backup_to_local_dir {
+            return None;
+        }
+        self.backup_dir.as_deref()
     }
 
     /// Load settings from the config file
@@ -633,7 +661,29 @@ mod tests {
         assert!(settings.minimize_to_tray);
         assert!(!settings.show_hidden_by_default);
         assert!(settings.clear_clipboard);
+        assert!(!settings.backup_to_local_dir);
+        assert_eq!(settings.backup_dir, None);
         assert_eq!(settings.window, None);
+    }
+
+    #[test]
+    fn the_local_backup_directory_needs_both_the_switch_and_a_folder() {
+        let mut settings = AppSettings::default();
+        assert_eq!(settings.local_backup_dir(), None);
+
+        // A folder alone is a remembered choice, not a request to copy.
+        settings.backup_dir = Some(PathBuf::from("/tmp/askrypt-copies"));
+        assert_eq!(settings.local_backup_dir(), None);
+
+        settings.backup_to_local_dir = true;
+        assert_eq!(
+            settings.local_backup_dir(),
+            Some(Path::new("/tmp/askrypt-copies"))
+        );
+
+        // And a switch alone has nowhere to write.
+        settings.backup_dir = None;
+        assert_eq!(settings.local_backup_dir(), None);
     }
 
     #[test]

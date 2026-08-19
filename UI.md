@@ -496,6 +496,24 @@ Three details carry the rest:
    `AppSettings::load().window` before the window is built; the `maximized`
    flag is re-asserted on `window::Event::Opened`, because some window managers
    drop the creation-time hint when a position is given with it.
+12. **The local copy of a cloud save is a copy, never the save.** With
+   `settings.backup_to_local_dir` on and `settings.backup_dir` chosen — read
+   them as one, through `AppSettings::local_backup_dir`, since a switch with
+   nowhere to write means nothing — `manager::write_vault` writes the bytes it
+   just saved into that directory as well. Three rules follow: it happens
+   **after** the real write lands, so no copy exists of a version the server
+   never accepted; it happens **only for a server vault**, a local one being a
+   file on this machine already; and it **cannot fail the save** — the outcome
+   rides back in `SavedVault.backup` and becomes a line in the status bar,
+   because the vault is saved either way and the session has to adopt the new
+   bytes. The file name comes from `manager::backup_file_name`, which treats
+   the vault's name as the untrusted server-stored text it is: only the last
+   path component survives, so nothing can name a file outside the directory
+   the user picked. → guarded by
+   `a_cloud_save_leaves_a_readable_copy_in_the_backup_directory`,
+   `a_local_vault_is_not_copied_next_to_itself`,
+   `a_failed_copy_does_not_fail_the_save` and
+   `a_backup_file_name_cannot_escape_the_chosen_directory`.
 
 ---
 
