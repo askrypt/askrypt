@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Askrypt is a cross-platform password manager. It authenticates users via security question answers (normalized and hashed with PBKDF2) rather than a master password, using AES-256-CBC encryption for vault data. The repository is a Cargo workspace holding a **desktop Rust app** plus a **pure-Dart Flutter mobile app** (`app/`) that re-implements the same vault format — see [Mobile app](#mobile-app-app) below.
+Askrypt is a cross-platform password manager. It authenticates users via security question answers (normalized and hashed with PBKDF2) rather than a master password, using AES-256-CBC encryption for vault data. The repository is a Cargo workspace holding a **desktop Rust app**, a **pure-Dart Flutter mobile app** (`app/`) and an **axum server** (`server/`) whose website carries a third client — the in-browser viewer at `/open`. The mobile app and the browser viewer each re-implement the same vault format, in Dart and in JavaScript — see [Mobile app](#mobile-app-app) and the server's `web/open.rs` below.
 
 **Warning**: The project is under active development and has not undergone extensive security testing.
 
@@ -20,7 +20,7 @@ Askrypt is a cross-platform password manager. It authenticates users via securit
 
 ## Architecture
 
-The crypto/format engine lives in the **`core/`** crate (`askrypt-core`, lib name `askrypt`) and is the source of truth for the vault format. The desktop Iced app in **`src/`** depends on it, and the Dart mobile core in **`app/lib/crypto/`** re-implements it (kept in lock-step by golden test vectors). Phase 0 extracted the engine into `core/`; older docs may still say it lives in `src/`.
+The crypto/format engine lives in the **`core/`** crate (`askrypt-core`, lib name `askrypt`) and is the source of truth for the vault format. The desktop Iced app in **`src/`** depends on it, and there are now **two re-implementations**, both kept in lock-step with it by the same golden test vectors and neither sharing a line of code with it: the Dart mobile core in **`app/lib/crypto/`** and the browser port in **`server/static/vault-format.js`**, which the server's `/open` page runs (Phase 14). A format change is therefore a change in three places plus `SPEC.md`, and the two parity gates — `cd app && flutter test` and `node scripts/vault-js-parity.mjs` — are what catch a missed one. Phase 0 extracted the engine into `core/`; older docs may still say it lives in `src/`.
 
 The dependency arrows only ever point one way: `askrypt` (desktop) → `askrypt-core`, and **`askrypt-server` depends on neither** — it stores vaults as opaque bytes and must never link the crypto core. The desktop crate talks to the server through `core`'s `server-storage` backend, which is a *client* of the HTTP API, so that rule is unaffected.
 
@@ -33,7 +33,7 @@ The dependency arrows only ever point one way: `askrypt` (desktop) → `askrypt-
     `begin_browser_login` is how the desktop signs in now: it opens a device link and returns a `BrowserLogin` carrying the URL to open, the code to display, and `poll`/`cancel` (`BrowserLoginStatus` = `Pending`/`Approved { client, email }`/`Denied`/`Expired`). Three details are load-bearing: its `Debug` **redacts the poll token**, which is bearer-equivalent for the session it will claim and rides inside UI message enums; the server's `verification_path` is **validated as a plain path** before a URL is built from it, because handing it to `open::that` makes a hostile server a redirect primitive; and the poll response is deserialized **flat**, so a status this build has never heard of degrades to "keep waiting" rather than a parse error. `login` (email + password) is still exported and unit-tested, but **no client in this repo calls it any more** — the desktop signs in through the browser link, and the old screen-per-step UI that used the password form is gone. `RemoteVault`, the listing row, carries the server's own `updated_at` **and** the file's `host`/`saved_at` — the unencrypted write stamp the server lifts off the bytes — both `Option` + `#[serde(default)]` so an unstamped file (nulls) and an older server (keys absent) parse alike. `normalize_base_url` is public for callers that must compare server URLs exactly (see `VaultLocation::Server`). Over `ureq` 3 (blocking, rustls/ring), **not** `reqwest::blocking` — the trait is sync and `reqwest::blocking` panics when built inside an async context, which is exactly where the desktop calls it from. The agent sets `http_status_as_error(false)` because the server's `{"error":{"code","message"}}` envelope lives in the body of a 4xx/5xx. ETags are stored unquoted and sent quoted; `read` records the ETag it saw and `write` sends it as `If-Match`, so **a `ServerStorage` instance must live as long as the open vault** — a fresh one would re-resolve the *current* ETag and clobber another device's edit. That invariant is what `Session.storage` exists to hold. `core/examples/server_roundtrip/` is the manual end-to-end gate against a running `askrypt-server` (an example, not a test, so no crate ever links both `askrypt-core` and `askrypt-server`) — see [Conformance runner](#conformance-runner--coreexamplesserver_roundtrip) below.
 - **`core/src/passgen.rs`** — Password generator with configurable character sets and length.
 - **`core/src/translit.rs`** — Russian/Ukrainian-to-English transliteration using BGN/PCGN romanization, QWERTY-only output. ё→yo, е→e, ъ/ь dropped, тс and ц both→ts. Ukrainian: ґ→g, є→ye, і→i, ї→yi.
-- **`core/examples/gen_vectors.rs`** — Emits golden test vectors to `app/test/fixtures/vectors.json` for the Dart parity tests. Regenerate whenever the format or normalization changes.
+- **`core/examples/gen_vectors.rs`** — Emits golden test vectors to `app/test/fixtures/vectors.json`. Read by **both** ports: the Dart parity tests and `scripts/vault-js-parity.mjs`, which imports `server/static/vault-format.js` unchanged under Node's built-in WebCrypto. Regenerate whenever the format or normalization changes, then run both gates.
 
 #### Conformance runner — `core/examples/server_roundtrip/`
 
@@ -112,9 +112,25 @@ foundations, 7.2 browser sessions/CSRF, 7.3 profile pages, 7.4 vault file
 manager), 8 (roles + the admin Users page), 9 (the paid storage tier), 10
 (the browser device link that signs desktop apps in), 11 (reCAPTCHA v3 on
 the website's auth forms), 12 (server settings + the registration switch) and
-13 ("Sign in with Google" on the website) are done. Still open: Phase 6
-(CI/CD).
+13 ("Sign in with Google" on the website) and 14 (the in-browser vault
+viewer) are done. Still open: Phase 6 (CI/CD).
 Self-hosting is documented in **`server/DEPLOY.md`**.
+
+**Phase 14 reversed a Phase 7 decision, and the reversal is the design.** The
+site used to say, on the landing page and in the footer, that it could not
+open a vault; `/open` now does, entirely in the visitor's browser over the Web
+Cryptography API. What did *not* change: the server still stores opaque bytes,
+still never sees an answer, a master key or a plaintext entry, and still does
+not link `askrypt-core` — the browser port is its own file. What is genuinely
+weaker than an app, and what the page says in as many words: the code is
+JavaScript **this server sent**, so a compromised or dishonest server could
+send different JavaScript, where a desktop or mobile app was installed once
+and the server has no say in it. Everything else is bounded on purpose — no
+CDN, no bundler, no dependency, no inline script, **no widened CSP** (the base
+`script-src 'self'` / `connect-src 'self'` already covers it, unlike the
+captcha and Google-button pages), and nothing persisted in the browser at all
+(no `localStorage`, no `sessionStorage`, no IndexedDB, no URL fragment, no
+console).
 
 **Types live apart from behaviour.** Every struct, enum and type alias the
 crate declares sits in a `types.rs` for its module tree — `server/src/types.rs`
@@ -229,7 +245,10 @@ next request.
   `DisabledCaptchaVerifier` behind an `info!` (not a `warn!` — a self-hosted
   server behind the rate limiter alone is legitimate, and it keeps the auth
   forms working without JavaScript); `captcha.js` joins the startup asset
-  check only then, since without it nobody can sign in at all. Serves with
+  check only then, since without it nobody can sign in at all. The two
+  viewer modules (`vault-format.js`, `vault-open.js`) are checked
+  **unconditionally** — `/open` is linked from the nav on every page, so
+  without them it is a page that does nothing. Serves with
   `ConnectInfo` so rate
   limiting and the audit log can key on peer IPs. `std::env::args()` is parsed
   *first* (so `--help` works whatever the environment says) into `Command`,
@@ -718,7 +737,9 @@ next request.
   nothing ever lands as `.askrypt.askrypt` — and `version_filename` normalizes
   through it before slotting the archival stamp in ahead of the extension.
   The JSON API sends no `Content-Disposition` at all and is unaffected: its
-  callers name the file themselves.
+  callers name the file themselves. Each row also links to
+  `/open?vault={id}`, the Phase 14 viewer, and `saved_stamp` is
+  `pub(crate)` so the viewer's own picker formats the pair identically.
   Plus `explain`, which turns the handful of reachable `ApiError`
   codes into sentences; `pages.rs` landing and the HTML 404; and `admin.rs`
   the Phase 8 Users page (`/admin/users` behind `AdminSession`, with per-row
@@ -745,9 +766,29 @@ next request.
   `with_captcha`, and only ever by the two register handlers), which draws a
   warning **above a form that still renders**: the refusal itself is
   `auth::register_account`'s, so the two cannot disagree if the switch is
-  flipped between the GET and the POST. Templates must
+  flipped between the GET and the POST. `open.rs` is the Phase 14 viewer's
+  **server half, and it is deliberately tiny**: `GET /open` renders the page
+  (offered to a signed-*out* visitor too — opening a `.askrypt` file off the
+  device needs no account, and that is the case the page is most useful in,
+  so `OpenPage.vaults` is an `Option`, where `None` means "nobody is signed
+  in" and `Some(empty)` means "an account with nothing stored") and
+  `GET /open/vaults` re-serves the picker fragment on its own. **There is no
+  POST in this module at all.** Reading a stored vault is `vaults::download`,
+  the cookie-authed route that already exists because a browser cannot set an
+  `Authorization` header; saving one is `POST /vaults/{id}/replace`, which
+  runs the same `If-Match`, quota, versioning and `check_upload` gates as the
+  file manager's own replace. A second write door would be a second place for
+  those rules to drift. Neither route carries a rate limiter — both are reads,
+  and neither is worth guessing at. The picker's rows are **buttons** carrying
+  `data-vault-id`/`-name`/`-etag`, since picking one starts an in-page flow
+  that never navigates; the ETag on the row is load-bearing, not decoration —
+  it is what the save sends as `If-Match`, which is why the fragment is
+  re-readable at all (a save moves the ETag, so the value the page was
+  rendered with would be refused for a conflict the visitor did not cause).
+  Rows are sorted newest change first, like the file manager's. Templates must
   not contain inline `<script>`/`<style>`, `hx-on:` or `js:` htmx
-  expressions — the CSP forbids them and `tests/web.rs` guards it.
+  expressions — the CSP forbids them and `tests/web.rs` guards it (`/open`
+  included, signed in and out).
 - **`server/src/state.rs`** — `AppState`: one `Arc<dyn Trait>` per backend
   seam; handlers can only reach the traits. Two of them are the same trait:
   `vault_blobs` (live files) and `vault_version_blobs` (archived generations,
@@ -865,7 +906,7 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate, 40 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 48 tests:
   template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
@@ -882,7 +923,15 @@ next request.
   wrong extension, a ZIP with no `askrypt.json` (which the API's magic check
   admits), and a refused *replace* leaving the stored bytes untouched — each
   asserting the file was not stored, since a readable message over a stored
-  file would be the worse bug) and
+  file would be the worse bug; and the six `/open` tests, which assert what
+  the *server* owes the viewer and nothing about the decrypting: the page
+  serves a signed-out visitor with a file input and no listing, an empty
+  account renders the list saying it is empty rather than omitting it, rows
+  carry the id/name/ETag the controller reads plus the CSRF token the save
+  posts with, the picker is re-readable as a bare fragment but not by a
+  signed-out visitor, the file manager deep-links each row to it, and a
+  hostile vault name cannot inject markup into the `data-` attribute it lands
+  in) and
   `admin.rs` (the Phase 8 gate, 11 tests: first-account-is-admin and the nav
   link that follows, 403-vs-redirect for non-admin and signed-out visitors,
   suspend → old session dies *and* a fresh JSON login is refused → lift
@@ -938,9 +987,14 @@ next request.
   only loose files. Templates (`layout.html`, `landing.html`,
   `auth_page.html`, `account.html`, `vaults.html`, `admin_users.html`,
   `admin_settings.html`,
-  `link.html` (the device-link page, in its four states), `error.html`, and
+  `link.html` (the device-link page, in its four states), `open.html` (the
+  Phase 14 viewer — six `hidden` `<section class="card">`s that
+  `vault-open.js` reveals a step at a time, plus a closing card stating what
+  the page can and cannot promise and linking its two scripts to be read),
+  `error.html`, and
   `fragments/` — `auth_form`, `email_form`, `password_form`, `devices`,
-  `delete_account`, `vault_upload`, `vault_list`, `user_list`,
+  `delete_account`, `vault_upload`, `vault_list`, `open_vault_list`,
+  `user_list`,
   `settings_form`,
   `error_notice` — the htmx twin of `error.html`, one element rather than a
   document, because it is swapped into `<main>`) compile into
@@ -951,17 +1005,61 @@ next request.
   rule: its root is a `<div id="auth-form">` rather than the form, because
   the card holds *two* forms — the password one and the hidden one the Google
   button submits — and HTML forbids nesting them; `hx-target` names the id.
-  `layout.html`'s `{% block head %}` exists for
-  exactly one caller: `auth_page.html` loading Google's `api.js` plus
+  `layout.html`'s `{% block head %}` has two callers now:
+  `auth_page.html` loading Google's `api.js` plus
   `/assets/captcha.js` when a site key is configured, and `/assets/google.js`
-  plus `accounts.google.com/gsi/client` when a web client id is — all
-  **external**, since
-  even the widened CSP forbids inline script, which is why the site key and
-  the client id reach the helpers as `data-` attributes. Confirmation steps are `<details>` disclosures,
+  plus `accounts.google.com/gsi/client` when a web client id is; and
+  `open.html` loading `/assets/vault-open.js` as `type="module"` (which defers
+  by itself and is what makes its static `import` of `vault-format.js`
+  resolve). All **external**, since
+  even the widened CSP forbids inline script, which is why the site key, the
+  client id and every value the viewer reads off a row reach the scripts as
+  `data-` attributes. Confirmation steps are `<details>` disclosures,
   not scripted dialogs — the CSP forbids the inline handler. `static/` holds
-  just `style.css`, the vendored `htmx.min.js` (2.0.10), `captcha.js` and
-  `google.js`, served at
-  `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN.
+  `style.css`, the vendored `htmx.min.js` (2.0.10), `captcha.js`,
+  `google.js` and the two viewer modules, served at
+  `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN,
+  and the viewer keeps it that way: it is two hand-written ES modules with no
+  dependencies and no build step.
+
+  **`vault-format.js`** is the browser port of the vault format — a port of
+  `core/src/lib.rs` + `core/src/types.rs`, following `app/lib/crypto/`
+  function for function, with `SPEC.md` normative. Every primitive the format
+  needs is native (PBKDF2-HMAC-SHA256, AES-256-CBC with PKCS#7, SHA-256 over
+  `crypto.subtle`; `DecompressionStream("deflate-raw")` for the ZIP), which is
+  why it is a few hundred lines rather than a wasm build of `core/`. It is
+  **pure by contract** — no DOM, no `fetch`, no globals, nothing persisted —
+  because `scripts/vault-js-parity.mjs` imports the shipped file *unchanged*
+  under Node, so a reach for `window` or `document` would break the gate.
+  It hardens two things the format leaves unauthenticated: `MAX_JSON_BYTES`
+  (1 MiB, matching `vaultfile`) caps what a crafted archive can inflate, and
+  `MAX_ITERATIONS` (5,000,000) caps the PBKDF2 work a crafted `params` can
+  demand — production is 600,000, and without the cap a hostile file could
+  park a phone in a derivation for the afternoon.
+
+  **`vault-open.js`** is the DOM around it and holds no crypto: pick (a stored
+  vault, or a local file that is never uploaded) → the first question → the
+  rest → the entry list with search/tags/hidden → one entry → save. A save
+  re-encrypts the whole vault in the page under the **same master key**
+  (re-wrapped, never rotated — `SPEC.md`, "Master key lifetime"), the same
+  answers, work factor and normalization setting, which is why the answers are
+  held for the life of the unlock. It stamps `params.host` as `<os>@web` — a
+  browser cannot know the machine's name — omitting the field entirely rather
+  than writing a dangling `@web` when the platform admits to nothing. Two
+  saves: to the account (multipart to `/vaults/{id}/replace`, CSRF part first
+  because `CsrfMultipart` verifies before buffering the file, `redirect:
+  "manual"` because on that route the *status* is the verdict — a 303 landed,
+  a 200 is `web::vaults::refused` re-rendering, whose sentence is lifted out
+  of the returned HTML rather than reinvented) and a downloaded copy (a
+  browser cannot write back over the file you picked). All rendered text goes
+  through `textContent`, never `innerHTML`: an entry name comes out of a file
+  anybody could have written. It locks on an explicit Lock, on 3 minutes idle
+  (matching the mobile app's `kInactivityTimeout`) and 60 s after the tab is
+  hidden — not instantly like the mobile app, because a browser fires the same
+  event when you merely switch tabs and locking there would make it impossible
+  to paste a password anywhere. Copies clear the clipboard after 30 s, like
+  `secure_clipboard.dart`. Locking drops every field of one state object;
+  there is nowhere else for a secret to be.
   `captcha.js` keeps the hidden field **freshly populated** rather than
   minting on submit: htmx serializes the form synchronously and
   `grecaptcha.execute` is a promise, so no hook can await one and still let
@@ -1060,7 +1158,8 @@ cargo build -p askrypt                       # the desktop app (src/)
 # Run it, optionally opening a vault straight away. CI's bare `cargo build`/
 # `cargo test` select only the root package, i.e. exactly this crate.
 cargo run -p askrypt -- ~/vaults/MyVault.askrypt
-# Regenerate Dart parity vectors after any format/normalization change:
+# Regenerate the golden parity vectors after any format/normalization change.
+# BOTH ports read them — run `flutter test` and the JS gate below afterwards:
 cargo run -p askrypt-core --example gen_vectors
 # Server (also covered by the --workspace commands above):
 cargo run -p askrypt-server      # then curl /healthz
@@ -1073,6 +1172,11 @@ cargo run -p askrypt-core --features server-storage --example server_roundtrip \
   -- http://localhost:8080 me@example.com correct-horse
 cargo run -p askrypt-server -- backup /path/snap.db   # VACUUM INTO snapshot
 docker build -f server/Dockerfile -t askrypt-server . # from the repo root
+# Byte-parity gate for the browser crypto the /open page runs, against the same
+# golden vectors the Dart port uses. Zero npm deps — Node's built-in WebCrypto
+# and DecompressionStream run the shipped file unchanged. Not in CI (there is no
+# Node anywhere in the build), so run it by hand like `flutter test`:
+node scripts/vault-js-parity.mjs
 
 # Mobile (Flutter) — SDK at /home/ruslan/Apps/flutter (add bin to PATH)
 cd app && flutter test       # crypto parity + session + passgen + widget tests

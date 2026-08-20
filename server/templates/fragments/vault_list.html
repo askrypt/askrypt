@@ -49,6 +49,7 @@
           <td>{% if let Some(saved) = vault.saved %}{{ saved }}{% else %}<span class="hint">Not recorded</span>{% endif %}</td>
           <td><code title="Content hash">{{ vault.short_etag }}</code></td>
           <td class="row-actions">
+            <a href="/open?vault={{ vault.id }}">Open</a>
             <a href="/vaults/{{ vault.id }}/download">Download</a>
             <details class="confirm">
               <summary>Replace</summary>

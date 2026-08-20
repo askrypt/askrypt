@@ -585,6 +585,50 @@ pub struct SettingsInput {
 }
 
 // ---------------------------------------------------------------------------
+// open — the in-browser vault viewer
+// ---------------------------------------------------------------------------
+
+/// The page at `/open`. Everything below the picker is inert markup that
+/// `vault-open.js` reveals a step at a time — the server renders no part of a
+/// decrypted vault, because it never has one.
+///
+/// `vaults` is `None` for a signed-out visitor, who can still open a file from
+/// the device. That is not the same as `Some(empty)`, which means an account
+/// with nothing stored.
+#[derive(Template)]
+#[template(path = "open.html")]
+pub(crate) struct OpenPage {
+    pub(crate) chrome: Chrome,
+    pub(crate) vaults: Option<OpenListing>,
+}
+
+/// The vault picker, which is also served on its own so the page can re-read
+/// it after a save without a reload — the ETags it carries are what the next
+/// save sends as `If-Match`.
+#[derive(Template)]
+#[template(path = "fragments/open_vault_list.html")]
+pub struct OpenListing {
+    pub(crate) vaults: Vec<OpenRow>,
+}
+
+/// One stored vault, as a button the controller reads through `data-`
+/// attributes. Same columns as the file manager's row, minus everything that
+/// mutates: this page picks a file, it does not manage files.
+pub(crate) struct OpenRow {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) size: String,
+    /// When this site last stored a change to the file.
+    pub(crate) updated: String,
+    /// The file's own account of where and when it was saved, out of the
+    /// unencrypted write stamp; `None` when it carries none.
+    pub(crate) saved: Option<String>,
+    /// The version this row was drawn with, carried into the save so the
+    /// overwrite goes through the same `If-Match` check the apps use.
+    pub(crate) etag: String,
+}
+
+// ---------------------------------------------------------------------------
 // vaults — the file manager
 // ---------------------------------------------------------------------------
 

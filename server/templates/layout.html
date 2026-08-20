@@ -25,6 +25,9 @@
 <header class="site">
   <a class="brand" href="/"><span class="lock">&#128274;</span> Askrypt</a>
   <nav>
+    {#- Offered signed-out too: opening a file from the device needs no
+        account, and that is the case the page is most useful in. -#}
+    <a href="/open">Open a vault</a>
 {%- if let Some(email) = chrome.email.as_deref() %}
     <a href="/vaults">Vaults</a>
 {%- if chrome.is_admin %}
@@ -50,8 +53,9 @@
 </main>
 <footer>
   <p>Askrypt stores your vaults as encrypted files. It never sees your
-  security answers or your keys, and it cannot open a vault &mdash; that
-  happens only in the desktop and mobile apps.</p>
+  security answers or your keys: a vault is opened on your device &mdash; in
+  the desktop and mobile apps, or in your own browser on
+  <a href="/open">Open a vault</a>.</p>
 </footer>
 </body>
 </html>

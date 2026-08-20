@@ -37,6 +37,7 @@ pub mod devicelink;
 pub mod error;
 pub mod flash;
 pub mod google;
+pub mod open;
 pub mod pages;
 pub mod render;
 pub mod session;
@@ -139,6 +140,13 @@ pub fn routes(
         )
         .route_layer(middleware::from_fn_with_state(profile_limiter, rate_limit));
 
+    // The in-browser viewer. Both are reads and neither is worth guessing at,
+    // so they carry no limiter — the same call the file manager's own page
+    // makes.
+    let open_routes = Router::new()
+        .route(open::OPEN_PATH, get(open::page))
+        .route("/open/vaults", get(open::vault_list));
+
     let vault_routes = Router::new()
         .route("/vaults", get(vaults::page).post(vaults::upload))
         .route("/vaults/{id}/replace", post(vaults::replace))
@@ -166,6 +174,7 @@ pub fn routes(
         .merge(link_routes)
         .merge(account_routes)
         .merge(admin_routes)
+        .merge(open_routes)
         .merge(vault_routes)
         // Pages are per-session by definition; none of them may sit in a
         // shared cache. `/assets` is mounted outside this router and keeps

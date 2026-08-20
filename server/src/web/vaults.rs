@@ -77,7 +77,7 @@ impl From<&VaultVersion> for HistoryRow {
 /// an unreadable timestamp still names its host — so each combination gets a
 /// sentence and a file that says nothing gets `None` rather than a row of
 /// placeholders.
-fn saved_stamp(host: Option<&str>, saved_at: Option<DateTime<Utc>>) -> Option<String> {
+pub(crate) fn saved_stamp(host: Option<&str>, saved_at: Option<DateTime<Utc>>) -> Option<String> {
     match (host, saved_at) {
         (Some(host), Some(at)) => Some(format!("{host} · {}", timestamp(at))),
         (Some(host), None) => Some(host.to_string()),

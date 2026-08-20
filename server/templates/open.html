@@ -1,0 +1,222 @@
+{% extends "layout.html" %}
+
+{% block title %}Open a vault &middot; Askrypt{% endblock %}
+
+{#-
+  The two modules that make this page work. External files, like every other
+  script on the site: the CSP is `script-src 'self'` here as everywhere else,
+  and this page deliberately does not widen it. `type="module"` defers by
+  itself, and covers the static import of `vault-format.js`.
+-#}
+{% block head %}
+<script type="module" src="/assets/vault-open.js"></script>
+{% endblock %}
+
+{% block content %}
+<h1>Open a vault</h1>
+<p class="lead">Unlock and edit a vault in this browser. The decryption happens
+on this device, in the page &mdash; your answers and your entries are never
+sent anywhere.</p>
+
+<noscript>
+  <p class="error" role="alert">This page needs JavaScript. Every other page on
+  the site works without it; this one cannot, because it is the JavaScript that
+  does the decrypting.</p>
+</noscript>
+
+<p class="error" role="alert" id="open-unsupported" hidden>This browser cannot
+run the Web Cryptography API. That usually means the page was loaded over plain
+HTTP rather than HTTPS, or the browser is an old one.</p>
+
+{#- The CSRF token for the save, which posts to `/vaults/{id}/replace` like
+    the file manager's own replace form does. -#}
+<input type="hidden" id="open-csrf" value="{{ chrome.csrf }}">
+
+<p class="status-line" role="status" id="open-status" hidden></p>
+
+<!-- 1. Where the vault comes from ------------------------------------- -->
+<section class="card" id="open-source">
+  <h2>Choose a vault</h2>
+{%- if let Some(listing) = vaults %}
+  {{ listing|safe }}
+  <p class="row-actions"><button class="linklike" type="button" id="open-refresh">Refresh
+  this list</button></p>
+{%- else %}
+  <p>You are not signed in, so there is nothing stored here to list.
+  <a href="/login">Sign in</a> to open a vault from your account, or open a file
+  from this device.</p>
+{%- endif %}
+
+  <div class="form wide">
+    <label for="open-file">Open a file from this device</label>
+    <input id="open-file" type="file" accept=".askrypt,application/zip">
+    <p class="hint">A <code>.askrypt</code> file your desktop or mobile app
+    saved. It is read in the page and never uploaded.</p>
+  </div>
+</section>
+
+<!-- 2. The first security question ------------------------------------ -->
+<section class="card" id="open-first" hidden>
+  <h2 id="open-first-title">Unlock</h2>
+  <form class="form wide" id="open-first-form">
+    <p class="hint" id="open-first-question"></p>
+    <label for="open-answer0">Your answer</label>
+    <input id="open-answer0" type="password" autocomplete="off"
+           autocapitalize="off" autocorrect="off" spellcheck="false" required>
+    <p class="hint">Answers ignore spaces, dashes and capitals, so type it
+    however you like.</p>
+    <button class="button" type="submit" id="open-first-submit">Continue</button>
+    <button class="linklike" type="button" data-action="cancel">Choose a different vault</button>
+  </form>
+</section>
+
+<!-- 3. The remaining questions ---------------------------------------- -->
+<section class="card" id="open-rest" hidden>
+  <h2>The rest of your questions</h2>
+  <form class="form wide" id="open-rest-form">
+    <div id="open-rest-fields"></div>
+    <button class="button" type="submit" id="open-rest-submit">Unlock</button>
+    <button class="linklike" type="button" data-action="cancel">Start over</button>
+  </form>
+</section>
+
+<!-- 4. The unlocked vault --------------------------------------------- -->
+<section class="card" id="open-vault" hidden>
+  <h2 id="open-vault-title">Entries</h2>
+
+  <div class="open-toolbar">
+    <label class="visually-hidden" for="open-search">Search</label>
+    <input id="open-search" type="search" placeholder="Search entries"
+           autocomplete="off" spellcheck="false">
+    <label class="visually-hidden" for="open-tag">Tag</label>
+    <select id="open-tag"><option value="">All tags</option></select>
+    <label class="open-check"><input id="open-hidden" type="checkbox"> Show hidden</label>
+  </div>
+
+  <ul class="pick-list" id="open-entries"></ul>
+  <p class="hint" id="open-empty" hidden>Nothing matches.</p>
+
+  <p class="row-actions">
+    <button class="button small" type="button" id="open-add">Add an entry</button>
+    <button class="linklike" type="button" id="open-lock">Lock</button>
+  </p>
+</section>
+
+<!-- 5. One entry ------------------------------------------------------- -->
+<section class="card" id="open-editor" hidden>
+  <h2 id="open-editor-title">Entry</h2>
+  <form class="form wide" id="open-editor-form">
+    <label for="entry-name">Name</label>
+    <input id="entry-name" type="text" autocomplete="off">
+
+    <label for="entry-type">Type</label>
+    <select id="entry-type">
+      <option value="Login">Login</option>
+      <option value="Card">Card</option>
+      <option value="Note">Note</option>
+    </select>
+
+    <div id="entry-login-fields">
+      <label for="entry-user">Username</label>
+      <input id="entry-user" type="text" autocomplete="off" spellcheck="false">
+
+      <label for="entry-secret">Secret</label>
+      <div class="reveal-row">
+        <input id="entry-secret" type="password" autocomplete="new-password"
+               autocapitalize="off" autocorrect="off" spellcheck="false">
+        <button class="linklike" type="button" data-reveal="entry-secret">Show</button>
+        <button class="linklike" type="button" data-copy="entry-secret">Copy</button>
+      </div>
+
+      <label for="entry-url">URL</label>
+      <input id="entry-url" type="text" autocomplete="off" spellcheck="false">
+    </div>
+
+    <div id="entry-card-fields" hidden>
+      <label for="entry-card-holder">Cardholder</label>
+      <input id="entry-card-holder" type="text" autocomplete="off">
+
+      <label for="entry-card-brand">Brand</label>
+      <input id="entry-card-brand" type="text" autocomplete="off" list="card-brands">
+      <datalist id="card-brands">
+        <option value="Visa"></option><option value="Mastercard"></option>
+        <option value="American Express"></option><option value="Discover"></option>
+        <option value="Maestro"></option><option value="Mir"></option>
+        <option value="JCB"></option><option value="UnionPay"></option>
+      </datalist>
+
+      <label for="entry-card-number">Number</label>
+      <div class="reveal-row">
+        <input id="entry-card-number" type="password" autocomplete="off"
+               inputmode="numeric" spellcheck="false">
+        <button class="linklike" type="button" data-reveal="entry-card-number">Show</button>
+        <button class="linklike" type="button" data-copy="entry-card-number">Copy</button>
+      </div>
+
+      <label for="entry-card-expiry">Expiry (MM/YY)</label>
+      <input id="entry-card-expiry" type="text" autocomplete="off" spellcheck="false">
+
+      <label for="entry-card-cvv">Security code</label>
+      <div class="reveal-row">
+        <input id="entry-card-cvv" type="password" autocomplete="off"
+               inputmode="numeric" spellcheck="false">
+        <button class="linklike" type="button" data-reveal="entry-card-cvv">Show</button>
+        <button class="linklike" type="button" data-copy="entry-card-cvv">Copy</button>
+      </div>
+
+      <label for="entry-card-pin">PIN</label>
+      <div class="reveal-row">
+        <input id="entry-card-pin" type="password" autocomplete="off"
+               inputmode="numeric" spellcheck="false">
+        <button class="linklike" type="button" data-reveal="entry-card-pin">Show</button>
+        <button class="linklike" type="button" data-copy="entry-card-pin">Copy</button>
+      </div>
+    </div>
+
+    <label for="entry-notes">Notes</label>
+    <textarea id="entry-notes" rows="4" spellcheck="false"></textarea>
+
+    <label for="entry-tags">Tags</label>
+    <input id="entry-tags" type="text" autocomplete="off" spellcheck="false"
+           placeholder="comma separated">
+
+    <label class="open-check"><input id="entry-hidden" type="checkbox"> Hidden</label>
+
+    <p class="hint" id="entry-stamp"></p>
+
+    <button class="button" type="submit">Apply</button>
+    <button class="linklike" type="button" id="entry-cancel">Cancel</button>
+    <button class="linklike danger" type="button" id="entry-delete">Delete this entry</button>
+  </form>
+</section>
+
+<!-- 6. Saving ---------------------------------------------------------- -->
+<section class="card" id="open-save" hidden>
+  <h2>Save</h2>
+  <p class="hint" id="open-save-state"></p>
+  <p class="row-actions">
+    <button class="button small" type="button" id="open-save-server" hidden>Save to
+    this account</button>
+    <button class="button small" type="button" id="open-save-download">Download a
+    copy</button>
+  </p>
+  <p class="hint">Saving re-encrypts the whole vault in this page under the same
+  master key and the same answers, then uploads only the encrypted file. A
+  downloaded copy is a new file &mdash; a browser cannot write back over the one
+  you picked.</p>
+</section>
+
+<section class="card">
+  <h2>What this page can and cannot promise</h2>
+  <p>The decrypting happens here, in your browser, over the Web Cryptography
+  API. Nothing this page decrypts is sent to the server, stored in the browser,
+  or kept after you lock it.</p>
+  <p>It is still JavaScript that this server sent you, so it cannot offer what
+  the desktop and mobile apps do: there, the code was installed once and the
+  server has no say in it. If that difference matters for your vault, use an
+  app. The two files this page runs are
+  <a href="/assets/vault-format.js">vault-format.js</a> and
+  <a href="/assets/vault-open.js">vault-open.js</a>, they have no dependencies,
+  and they are meant to be read.</p>
+</section>
+{% endblock %}

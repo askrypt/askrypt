@@ -135,7 +135,10 @@ p { margin: 0.6rem 0; }
 .form input[type="email"],
 .form input[type="password"],
 .form input[type="text"],
-.form input[type="file"] {
+.form input[type="search"],
+.form input[type="file"],
+.form select,
+.form textarea {
   width: 100%;
   margin-top: 0.3rem;
   padding: 0.6rem 0.7rem;
@@ -342,3 +345,94 @@ code {
   border-radius: 4px;
   padding: 0.1em 0.35em;
 }
+
+/* ---------- the in-browser vault viewer (/open) ---------- */
+
+/* One line of feedback for a page that does its work without navigating:
+   what it is deriving, what it saved, why it locked. `.error` takes over when
+   something went wrong. */
+.status-line {
+  margin: 1rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Rows you tap: stored vaults, then entries. Deliberately not a table — this
+   page is mostly opened on a phone, where a full-width target beats a row of
+   columns. */
+.pick-list { list-style: none; margin: 1rem 0; padding: 0; }
+.pick-list li { margin: 0 0 0.5rem; }
+.pick {
+  display: block;
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pick:hover { border-color: var(--accent); }
+.pick-name { display: block; font-weight: 500; }
+.pick-meta {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+/* Search, tag filter and the hidden toggle. Wraps to one control per line on
+   a narrow screen rather than shrinking all three. */
+.open-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin: 1rem 0;
+}
+.open-toolbar input[type="search"] {
+  flex: 1 1 12rem;
+  min-width: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+.open-toolbar select {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.open-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.open-toolbar .open-check { margin-top: 0; }
+
+/* A masked field with its Show and Copy buttons. The input keeps the width it
+   would have had on its own; the buttons sit beside it. */
+.reveal-row { display: flex; gap: 0.6rem; align-items: center; }
+.reveal-row input { flex: 1 1 auto; min-width: 0; }
+.reveal-row .linklike { color: var(--accent); white-space: nowrap; }
+
+/* The editor form ends in one primary action and two secondary ones; the
+   primary is full-width by the rule above, so the others need their own gap. */
+.form .linklike { margin-top: 0.9rem; margin-right: 1rem; }

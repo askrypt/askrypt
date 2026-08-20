@@ -301,7 +301,14 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // joins them when reCAPTCHA is on — and matters more than the others,
     // since without it no token is minted and *nobody* can sign in.
     // `google.js` likewise: without it the sign-in button never renders.
-    let mut assets = vec!["style.css", "htmx.min.js"];
+    // The two viewer modules are unconditional: `/open` is linked from the
+    // nav on every page, and without them it is a page that does nothing.
+    let mut assets = vec![
+        "style.css",
+        "htmx.min.js",
+        "vault-format.js",
+        "vault-open.js",
+    ];
     if config.recaptcha.is_some() {
         assets.push("captcha.js");
     }

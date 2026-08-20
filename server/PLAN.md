@@ -806,6 +806,67 @@ askrypt/
     token, and `GET` refused outright. `server/tests/google_signin.rs`
     (15 tests) plus unit tests in `src/hardening.rs` and `src/config.rs`.
 
+- **Phase 14 — the in-browser vault viewer.** ✅ *(done 2026-08-20)*
+  `/open` unlocks and edits a vault in the visitor's browser. It reverses a
+  decision this plan recorded twice — the landing page and the footer both
+  said the site could not open a vault — and the reversal is worth stating
+  plainly rather than burying.
+
+  - **What did not change.** The server stores opaque bytes, never sees an
+    answer, a master key or a plaintext entry, and still does not link
+    `askrypt-core`. Nothing about the account, quota, versioning or `If-Match`
+    rules moved: the page reads through `vaults::download` (cookie-authed
+    because a browser cannot set an `Authorization` header) and writes through
+    `POST /vaults/{id}/replace`, the file manager's own replace. `web/open.rs`
+    has **no POST at all**; a second write door would be a second place for
+    those rules to drift.
+  - **What is honestly weaker, and said on the page.** The code is JavaScript
+    *this server sent*, so a compromised or dishonest server could send
+    different JavaScript. A desktop or mobile app was installed once and the
+    server has no say in it. The page says so, names the trade, and links its
+    two scripts to be read.
+  - **Bounded everywhere else.** No CDN, no bundler, no dependency, no inline
+    script, and — unlike the captcha and Google-button pages — **no widened
+    CSP**: `script-src 'self'` and `connect-src 'self'` already cover it.
+    Nothing is persisted in the browser: no `localStorage`, no
+    `sessionStorage`, no IndexedDB, no URL fragment, no console. Locking drops
+    one state object and there is nowhere else for a secret to be.
+  - **A third implementation of the format, not a fourth trust boundary.**
+    `static/vault-format.js` is a port of `core/src/lib.rs` following
+    `app/lib/crypto/` function for function, over the Web Cryptography API —
+    PBKDF2-HMAC-SHA256, AES-256-CBC/PKCS#7, SHA-256, and
+    `DecompressionStream("deflate-raw")` for the ZIP — which is why it is a
+    few hundred lines rather than a wasm build of `core/`. It is pure by
+    contract (no DOM, no `fetch`, no globals) because
+    `scripts/vault-js-parity.mjs` imports the *shipped* file unchanged under
+    Node and checks it against the same golden vectors the Dart port uses.
+    Not wired into CI, for the reason this plan already gives about Node: run
+    it by hand alongside `flutter test`.
+  - **Two caps the format cannot enforce itself.** `params` is unauthenticated
+    (`SPEC.md`, "Integrity: not provided"), so the port bounds the inflated
+    JSON at 1 MiB, matching `vaultfile`, and `params.iterations` at 5,000,000
+    — production is 600,000, and without the cap a crafted file could park a
+    phone in a derivation for the afternoon.
+  - **Signed-out visitors get the page.** Opening a `.askrypt` file off the
+    device needs no account, and that is the case the page is most useful in
+    — someone on a borrowed phone with their vault on a memory stick. So
+    `OpenPage.vaults` is an `Option`: `None` is "nobody is signed in",
+    `Some(empty)` is "an account with nothing stored", and the two render
+    differently.
+  - **The picker is re-readable on its own** (`GET /open/vaults`), because a
+    save moves the file's ETag and the value the page was rendered with would
+    then be refused for a conflict the visitor did not cause. It also backs
+    Refresh, for the reason the desktop's wizard refetches every time it
+    opens: a listing cached per sign-in hides vaults saved since.
+  - **Phase gate:** ✅ the page serves a signed-out visitor with a file input
+    and no listing; an empty account renders the list saying it is empty
+    rather than omitting it; rows carry id, name and ETag plus the CSRF token
+    the save posts with; the picker is re-readable as a bare fragment and not
+    by a signed-out visitor; the file manager deep-links each row; a hostile
+    vault name cannot inject markup; and `/open` carries no inline script or
+    style, signed in or out. `server/tests/web.rs` (48 tests, six of them
+    `/open`) plus `scripts/vault-js-parity.mjs` (41 checks) for the crypto.
+
 ## Open decisions (not blocking)
 
 - ~~Client-side sync UX for **desktop**~~ — decided and built: manual
@@ -827,11 +888,16 @@ askrypt/
 - Multiple vaults per user vs a single primary vault (API assumes multiple).
 - More OAuth providers (Apple, GitHub) and a provider unlink flow — additive
   thanks to the `IdTokenVerifier` trait layer.
-- **In-browser vault unlock is out of scope** (decided with the Phase 7 stack:
-  the site never decrypts). Revisiting it means compiling `core/` to
-  `wasm32-unknown-unknown` and running PBKDF2 in a Web Worker — a genuinely
-  separate project, and one that would have to keep parity with the same
-  golden vectors as the Dart port. Not a reason to pick a JS framework now.
+- ~~In-browser vault unlock is out of scope~~ — **reversed and shipped in
+  Phase 14.** The estimate here was wrong in its premise: it assumed the only
+  route was compiling `core/` to `wasm32-unknown-unknown` and running PBKDF2
+  in a Web Worker, "a genuinely separate project". Every primitive the format
+  needs turned out to be native to the Web Cryptography API, so the port is a
+  few hundred lines of dependency-free JavaScript
+  (`server/static/vault-format.js`) rather than a wasm build — and it keeps
+  parity with the same golden vectors as the Dart port, exactly as this entry
+  said it would have to. Still no JS framework, no bundler and no Node in the
+  build.
 - ~~Web session cookie lifetime~~ — **decided in 7.2: 7 days**, against the
   API's 30. An *idle* timeout is still open; `SessionStore` has no
   last-seen column, so it would be a schema change rather than a constant.

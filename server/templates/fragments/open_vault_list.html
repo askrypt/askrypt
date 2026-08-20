@@ -1,0 +1,37 @@
+{#-
+  The vault picker. Served inside `open.html` and, on its own, from
+  `GET /open/vaults` — which is how the page adopts a fresh ETag after a save
+  without a reload, so the `data-vault-etag` here is load-bearing rather than
+  decoration.
+
+  Rows are buttons, not links: picking one starts an in-page flow that never
+  navigates. Everything the controller needs rides on `data-` attributes, the
+  same handoff `captcha.js` and `google.js` use, because the CSP forbids the
+  inline script that would otherwise pass it.
+-#}
+<div id="open-vault-list">
+{%- if vaults.is_empty() %}
+  <p>No vault files on this account yet. Upload one from
+  <a href="/vaults">your vaults</a>, or open a file from this device below.</p>
+{%- else %}
+  <ul class="pick-list">
+{%- for vault in vaults %}
+    <li>
+      <button class="pick" type="button"
+              data-vault-id="{{ vault.id }}"
+              data-vault-name="{{ vault.name }}"
+              data-vault-etag="{{ vault.etag }}">
+        <span class="pick-name">{{ vault.name }}</span>
+        <span class="pick-meta">{{ vault.size }} &middot; changed {{ vault.updated }}</span>
+        {#- The file's own account of the save, out of the unencrypted write
+            stamp. A hint, never evidence: nothing in the format authenticates
+            it (SPEC.md, "Integrity: not provided"). -#}
+{%- if let Some(saved) = vault.saved %}
+        <span class="pick-meta">Saved by {{ saved }}</span>
+{%- endif %}
+      </button>
+    </li>
+{%- endfor %}
+  </ul>
+{%- endif %}
+</div>

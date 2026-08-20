@@ -362,10 +362,16 @@ async fn the_vendored_assets_are_served_under_assets() {
 async fn no_page_carries_an_inline_script_or_style() {
     let app = app();
     let cookies = register(&app, "csp@example.com").await;
-    let signed_out = ["/", "/login", "/register", "/nope"];
+    let signed_out = ["/", "/login", "/register", "/nope", "/open"];
     // The first account registered on a server is its administrator, so this
     // jar reaches the Users page too.
-    let signed_in = ["/account", "/vaults", "/admin/users", "/admin/settings"];
+    let signed_in = [
+        "/account",
+        "/vaults",
+        "/admin/users",
+        "/admin/settings",
+        "/open",
+    ];
     for (path, jar) in signed_out
         .iter()
         .map(|p| (*p, ""))
@@ -1707,8 +1713,174 @@ async fn pages_are_never_cached() {
     let app = app();
     let cookies = register(&app, "nocache@example.com").await;
 
-    for (path, jar) in [("/", ""), ("/login", ""), ("/account", cookies.as_str())] {
+    for (path, jar) in [
+        ("/", ""),
+        ("/login", ""),
+        ("/open", ""),
+        ("/account", cookies.as_str()),
+    ] {
         let (_, headers, _) = send(&app, get_with_cookies(path, jar)).await;
         assert_eq!(headers[header::CACHE_CONTROL], "no-store", "{path}");
     }
+}
+
+// ---------------------------------------------------------------- /open
+
+/// The one page on the site that decrypts. What the server owes it is a
+/// picker, the two modules, and no part of a vault's contents — it has none.
+
+#[tokio::test]
+async fn the_viewer_serves_a_signed_out_visitor() {
+    let (status, _, html) = send(&app(), get("/open")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    // The whole point of serving it signed-out: a file from the device needs
+    // no account.
+    assert!(html.contains(r#"id="open-file""#), "no file input");
+    assert!(
+        !html.contains(r#"id="open-vault-list""#),
+        "listed vaults for nobody"
+    );
+    assert!(html.contains("/login"), "no way to sign in offered");
+    // Both modules, and as modules — a classic script would not resolve the
+    // `import` of vault-format.js.
+    assert!(html.contains(r#"<script type="module" src="/assets/vault-open.js">"#));
+    // The page needs JavaScript, which no other page on the site does, so it
+    // has to say so to a visitor who has it switched off.
+    assert!(html.contains("<noscript>"));
+}
+
+#[tokio::test]
+async fn the_viewer_lists_the_account_s_vaults_with_their_etags() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "viewer@example.com").await;
+    let (status, _, _) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "phone.askrypt")],
+            Some(("phone.askrypt", &vault_bytes(7))),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    let (status, _, html) = send(&app, get_with_cookies("/open", &cookies)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(r#"data-vault-name="phone.askrypt""#),
+        "row missing"
+    );
+    // The ETag is what the save sends as `If-Match`; without it on the row the
+    // page could only overwrite blindly.
+    assert!(html.contains(r#"data-vault-etag=""#), "no ETag on the row");
+    assert!(html.contains(r#"data-vault-id=""#), "no id on the row");
+    // The CSRF token the save posts with.
+    assert!(
+        html.contains(r#"id="open-csrf""#),
+        "no CSRF token for the save"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_account_is_not_the_same_as_a_signed_out_one() {
+    let app = app();
+    let cookies = register(&app, "empty@example.com").await;
+    let (_, _, html) = send(&app, get_with_cookies("/open", &cookies)).await;
+
+    // The list is rendered and says it is empty, rather than being absent —
+    // which is what a signed-out visitor gets, and means something else.
+    assert!(html.contains(r#"id="open-vault-list""#));
+    assert!(html.contains("No vault files on this account yet"));
+}
+
+#[tokio::test]
+async fn the_picker_can_be_re_read_on_its_own() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "refresh@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "one.askrypt")],
+            Some(("one.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+
+    // A fragment, not a page: this is how the viewer adopts the fresh ETag
+    // after a save without reloading and losing the unlocked vault.
+    let (status, _, fragment) = send(&app, get_with_cookies("/open/vaults", &cookies)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        fragment.starts_with(r#"<div id="open-vault-list">"#),
+        "not a fragment"
+    );
+    assert!(
+        !fragment.contains("<!doctype html>"),
+        "a whole page came back"
+    );
+    assert!(fragment.contains(r#"data-vault-name="one.askrypt""#));
+}
+
+#[tokio::test]
+async fn the_picker_fragment_is_not_public() {
+    let (status, headers, _) = send(&app(), get("/open/vaults")).await;
+
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/login");
+}
+
+#[tokio::test]
+async fn the_file_manager_links_each_row_to_the_viewer() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "deeplink@example.com").await;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "linked.askrypt")],
+            Some(("linked.askrypt", &vault_bytes(3))),
+        ),
+    )
+    .await;
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = first_vault_id(&html);
+    assert!(
+        html.contains(&format!(r#"href="/open?vault={id}""#)),
+        "no deep link from the row to the viewer"
+    );
+}
+
+#[tokio::test]
+async fn a_vault_name_out_of_the_store_cannot_inject_markup() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "escape@example.com").await;
+    // The name is stored user text and lands in a `data-` attribute the
+    // controller reads, so the escaping matters twice over.
+    let hostile = r#""><script>x</script>.askrypt"#;
+    send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", hostile)],
+            Some(("ok.askrypt", &vault_bytes(4))),
+        ),
+    )
+    .await;
+
+    let (_, _, html) = send(&app, get_with_cookies("/open", &cookies)).await;
+    assert!(
+        !html.contains("<script>x</script>"),
+        "name rendered as markup"
+    );
 }
