@@ -1785,6 +1785,33 @@ async fn the_viewer_lists_the_account_s_vaults_with_their_etags() {
 }
 
 #[tokio::test]
+async fn a_new_vault_can_be_started_with_or_without_an_account() {
+    let app = app();
+
+    // Creating one needs no account at all: the questions, the answers and the
+    // key never leave the page, and the result is a file to download.
+    let (_, _, html) = send(&app, get("/open")).await;
+    assert!(html.contains(r#"id="open-new""#), "no way to start one");
+    assert!(html.contains(r#"id="open-create-form""#), "no create form");
+    // The rows are built by the controller, so the form ships with the
+    // container and nothing else — a fixed pair of fields here would be a
+    // second place the count of questions is decided.
+    assert!(html.contains(r#"id="open-create-questions""#));
+
+    // Signed in, the same form is offered, and the token the upload posts with
+    // is on the page — saving a created vault to the account is `POST /vaults`,
+    // the file manager's own route.
+    let cookies = register(&app, "starter@example.com").await;
+    let (status, _, html) = send(&app, get_with_cookies("/open", &cookies)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"id="open-create-form""#));
+    assert!(
+        html.contains(r#"id="open-csrf""#),
+        "no CSRF token for the save"
+    );
+}
+
+#[tokio::test]
 async fn an_empty_account_is_not_the_same_as_a_signed_out_one() {
     let app = app();
     let cookies = register(&app, "empty@example.com").await;

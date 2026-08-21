@@ -28,8 +28,9 @@ sent anywhere.</p>
 run the Web Cryptography API. That usually means the page was loaded over plain
 HTTP rather than HTTPS, or the browser is an old one.</p>
 
-{#- The CSRF token for the save, which posts to `/vaults/{id}/replace` like
-    the file manager's own replace form does. -#}
+{#- The CSRF token for the two saves, both of which post to routes the file
+    manager already owns: `/vaults/{id}/replace` for a vault that is stored
+    here, `/vaults` for one this page has just created. -#}
 <input type="hidden" id="open-csrf" value="{{ chrome.csrf }}">
 
 <p class="status-line" role="status" id="open-status" hidden></p>
@@ -53,6 +54,43 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
     <p class="hint">A <code>.askrypt</code> file your desktop or mobile app
     saved. It is read in the page and never uploaded.</p>
   </div>
+
+  <p class="row-actions"><button class="button small" type="button"
+  id="open-new">Create a new vault</button></p>
+</section>
+
+<!-- 1b. A brand-new vault ---------------------------------------------- -->
+<section class="card" id="open-create" hidden>
+  <h2>Create a new vault</h2>
+  <p>Choose the questions you will be asked to unlock this vault, and answer
+  each one now. The answers are the key: there is no master password behind
+  them and nothing on this server can recover them.</p>
+  <p class="hint">Answers ignore spaces, dashes and capitals, so type them
+  however you like &mdash; but everything else has to match exactly, every
+  time. Pick answers that will not change and that you will not mistype.</p>
+
+  <form class="form wide" id="open-create-form">
+    <label for="open-create-name">Name this vault</label>
+    <input id="open-create-name" type="text" autocomplete="off"
+           spellcheck="false" placeholder="My vault" required>
+
+    <div id="open-create-questions"></div>
+
+    <p class="row-actions"><button class="linklike" type="button"
+    id="open-create-add">Add another question</button></p>
+
+    <label class="open-check"><input id="open-create-show" type="checkbox">
+    Show the answers while I type them</label>
+    <label class="open-check"><input id="open-create-translit" type="checkbox">
+    Transliterate Cyrillic answers</label>
+    <p class="hint">Transliteration turns a Russian or Ukrainian answer into
+    Latin letters before the key is derived, so the vault opens on a keyboard
+    that cannot type Cyrillic. Leave it off if your answers are already
+    Latin. It cannot be changed later without re-keying the vault.</p>
+
+    <button class="button" type="submit">Create this vault</button>
+    <button class="linklike" type="button" data-action="cancel">Cancel</button>
+  </form>
 </section>
 
 <!-- 2. The first security question ------------------------------------ -->

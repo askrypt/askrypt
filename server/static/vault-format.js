@@ -18,6 +18,12 @@ const VERSION = "0.9";
 const ZIP_ENTRY = "askrypt.json";
 const DEFAULT_KDF = "pbkdf2";
 
+/** The work factor a vault created here is born with, matching the
+ *  `iterations.unwrap_or(600000)` in `AskryptFile::create` and
+ *  `defaultIterations` in `app/lib/crypto/vault.dart`. A vault that already
+ *  exists keeps its own, whatever it is. */
+export const DEFAULT_ITERATIONS = 600_000;
+
 /** Matches `crate::vaults::MAX_VAULT_BYTES` on the server. */
 export const MAX_VAULT_BYTES = 10 * 1024 * 1024;
 /** Matches `vaultfile::MAX_JSON_BYTES`: a bound on what a crafted archive can
@@ -198,6 +204,18 @@ export async function aesCbcEncrypt(plaintext, key, iv) {
 
 function randomBytes(n) {
   return crypto.getRandomValues(new Uint8Array(n));
+}
+
+/** A fresh master key — the port of `MasterSecret::generate`.
+ *
+ *  Minting deliberately lives *outside* [`createVault`], which keeps refusing
+ *  to write without a key: a vault's master key is a property of the vault and
+ *  not of a particular write (SPEC.md, "Master key lifetime"), so a save must
+ *  never be able to mint one by accident. Calling this is what brings a vault
+ *  into existence, and `vault-open.js` does it in exactly one place — the
+ *  mirror of `RekeyInputs::run` being the desktop app's only mint. */
+export function generateMasterKey() {
+  return randomBytes(32);
 }
 
 // ---------------------------------------------------------------------------
@@ -559,10 +577,11 @@ export async function decryptWithMaster(file, questionsData, answers) {
 
 /** Rebuilds a vault file. Mirrors `AskryptFile::create` in `core/src/lib.rs`.
  *
- *  `masterKey` is **required** here, unlike in the Rust and Dart cores: this
- *  page only ever opens a vault that already exists, so there is no
- *  mint-on-write branch to get wrong. Everything encrypted under that key —
- *  today the entry list, in future file attachments — survives the write only
+ *  `masterKey` is **required** here, unlike in the Rust and Dart cores, whose
+ *  `create` mints one when handed none: a brand-new vault gets its key from
+ *  [`generateMasterKey`] before it ever reaches this function, so there is no
+ *  mint-on-write branch here to get wrong. Everything encrypted under that key
+ *  — today the entry list, in future file attachments — survives a write only
  *  because it is re-wrapped rather than rotated.
  *
  *  `salt0`, `salt1` and the data IV *are* drawn fresh every time, and the IV

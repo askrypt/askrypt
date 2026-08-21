@@ -427,6 +427,17 @@ code {
 }
 .open-toolbar .open-check { margin-top: 0; }
 
+/* One security question and its answer, on the create-a-vault form. The rule
+   down the side groups the pair: a vault with five questions is otherwise ten
+   fields in a column with nothing saying which belongs to which. */
+.qa-row {
+  margin-top: 1.1rem;
+  padding: 0 0 0.9rem 0.85rem;
+  border-left: 2px solid var(--line);
+}
+.qa-row label:first-child { margin-top: 0.2rem; }
+.qa-row .qa-remove { font-size: 0.85rem; }
+
 /* A masked field with its Show and Copy buttons. The input keeps the width it
    would have had on its own; the buttons sit beside it. */
 .reveal-row { display: flex; gap: 0.6rem; align-items: center; }

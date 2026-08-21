@@ -119,7 +119,9 @@ Self-hosting is documented in **`server/DEPLOY.md`**.
 **Phase 14 reversed a Phase 7 decision, and the reversal is the design.** The
 site used to say, on the landing page and in the footer, that it could not
 open a vault; `/open` now does, entirely in the visitor's browser over the Web
-Cryptography API. What did *not* change: the server still stores opaque bytes,
+Cryptography API, and it **creates** one there too — questions, answers and a
+freshly minted master key, none of which leave the page. What did *not*
+change: the server still stores opaque bytes,
 still never sees an answer, a master key or a plaintext entry, and still does
 not link `askrypt-core` — the browser port is its own file. What is genuinely
 weaker than an app, and what the page says in as many words: the code is
@@ -777,7 +779,9 @@ next request.
   the cookie-authed route that already exists because a browser cannot set an
   `Authorization` header; saving one is `POST /vaults/{id}/replace`, which
   runs the same `If-Match`, quota, versioning and `check_upload` gates as the
-  file manager's own replace. A second write door would be a second place for
+  file manager's own replace, and storing a vault the page *created* is `POST
+  /vaults`, that same manager's upload, which is where the name rules and the
+  per-account count live. A second write door would be a second place for
   those rules to drift. Neither route carries a rate limiter — both are reads,
   and neither is worth guessing at. The picker's rows are **buttons** carrying
   `data-vault-id`/`-name`/`-etag`, since picking one starts an in-page flow
@@ -906,7 +910,7 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 48 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 49 tests:
   template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
@@ -923,9 +927,11 @@ next request.
   wrong extension, a ZIP with no `askrypt.json` (which the API's magic check
   admits), and a refused *replace* leaving the stored bytes untouched — each
   asserting the file was not stored, since a readable message over a stored
-  file would be the worse bug; and the six `/open` tests, which assert what
+  file would be the worse bug; and the seven `/open` tests, which assert what
   the *server* owes the viewer and nothing about the decrypting: the page
-  serves a signed-out visitor with a file input and no listing, an empty
+  serves a signed-out visitor with a file input and no listing, the create
+  form is offered signed in and out alike (creating one needs no account; with
+  one, the CSRF token the upload posts with is on the page), an empty
   account renders the list saying it is empty rather than omitting it, rows
   carry the id/name/ETag the controller reads plus the CSRF token the save
   posts with, the picker is re-readable as a bare fragment but not by a
@@ -988,7 +994,7 @@ next request.
   `auth_page.html`, `account.html`, `vaults.html`, `admin_users.html`,
   `admin_settings.html`,
   `link.html` (the device-link page, in its four states), `open.html` (the
-  Phase 14 viewer — six `hidden` `<section class="card">`s that
+  Phase 14 viewer — seven `hidden` `<section class="card">`s that
   `vault-open.js` reveals a step at a time, plus a closing card stating what
   the page can and cannot promise and linking its two scripts to be read),
   `error.html`, and
@@ -1031,6 +1037,12 @@ next request.
   **pure by contract** — no DOM, no `fetch`, no globals, nothing persisted —
   because `scripts/vault-js-parity.mjs` imports the shipped file *unchanged*
   under Node, so a reach for `window` or `document` would break the gate.
+  `createVault` **refuses to write without a master key**, unlike the Rust and
+  Dart cores, whose `create` mints one when handed none: the mint is
+  `generateMasterKey`, called from `vault-open.js` at the one moment a vault
+  comes into existence, so no save can mint a key by accident (`SPEC.md`,
+  "Master key lifetime"). `DEFAULT_ITERATIONS` is what a vault born here
+  declares; one that already exists keeps its own.
   It hardens two things the format leaves unauthenticated: `MAX_JSON_BYTES`
   (1 MiB, matching `vaultfile`) caps what a crafted archive can inflate, and
   `MAX_ITERATIONS` (5,000,000) caps the PBKDF2 work a crafted `params` can
@@ -1039,7 +1051,16 @@ next request.
 
   **`vault-open.js`** is the DOM around it and holds no crypto: pick (a stored
   vault, or a local file that is never uploaded) → the first question → the
-  rest → the entry list with search/tags/hidden → one entry → save. A save
+  rest → the entry list with search/tags/hidden → one entry → save. A second
+  way in **creates** a vault instead — a name, two or more question/answer
+  pairs and the transliteration switch, held to the same rules as
+  `panes::questions::save` — and it derives *nothing* at that point: the entry
+  list is empty and a save re-encrypts everything anyway, so the only thing
+  settled there and never again is the master key. Such a vault carries
+  `source.kind === "new"` until a save lands, which is what picks the upload
+  route over the replace one and what makes the save card say the vault exists
+  only in this page; once uploaded it adopts the new row's id and ETag, found
+  by name, and carries on as an ordinary stored one. A save
   re-encrypts the whole vault in the page under the **same master key**
   (re-wrapped, never rotated — `SPEC.md`, "Master key lifetime"), the same
   answers, work factor and normalization setting, which is why the answers are

@@ -853,19 +853,39 @@ askrypt/
     `OpenPage.vaults` is an `Option`: `None` is "nobody is signed in",
     `Some(empty)` is "an account with nothing stored", and the two render
     differently.
+  - **Creating a vault, not only opening one** *(added 2026-08-21)*. The page
+    takes a name, two or more question/answer pairs and the transliteration
+    switch, mints the master key with `generateMasterKey` — the browser's one
+    mint, the counterpart of `RekeyInputs::run` in the desktop app — and drops
+    straight into the unlocked view with an empty entry list. Nothing is
+    derived at that moment: a save re-encrypts the whole vault anyway, so the
+    derivation would only be thrown away. `createVault` keeps refusing to
+    write without a key, which is what stops a *save* from ever minting one
+    (`SPEC.md`, "Master key lifetime"). Signed out, the result is a file to
+    download — the case that needs no account at all. Signed in, "Save to this
+    account" is `POST /vaults`, the file manager's own upload, so the name
+    rules, the per-account count and `check_upload` are enforced in the one
+    place they already were; the page then re-reads the picker and adopts the
+    new row's id and ETag by name, after which further saves are ordinary
+    replaces. Still **no POST in `web/open.rs`**.
   - **The picker is re-readable on its own** (`GET /open/vaults`), because a
     save moves the file's ETag and the value the page was rendered with would
     then be refused for a conflict the visitor did not cause. It also backs
     Refresh, for the reason the desktop's wizard refetches every time it
     opens: a listing cached per sign-in hides vaults saved since.
   - **Phase gate:** ✅ the page serves a signed-out visitor with a file input
-    and no listing; an empty account renders the list saying it is empty
+    and no listing; the create form is offered signed in and out alike; an
+    empty account renders the list saying it is empty
     rather than omitting it; rows carry id, name and ETag plus the CSRF token
     the save posts with; the picker is re-readable as a bare fragment and not
     by a signed-out visitor; the file manager deep-links each row; a hostile
     vault name cannot inject markup; and `/open` carries no inline script or
-    style, signed in or out. `server/tests/web.rs` (48 tests, six of them
+    style, signed in or out. `server/tests/web.rs` (49 tests, seven of them
     `/open`) plus `scripts/vault-js-parity.mjs` (41 checks) for the crypto.
+    The DOM half has no test harness in this repo, by the same no-Node rule:
+    the create → upload → adopt → replace round trip was driven by hand
+    (jsdom, off-repo) against a local server, and a vault the page creates was
+    checked to open in `askrypt-core` and to pass the server's `is_vault`.
 
 ## Open decisions (not blocking)
 

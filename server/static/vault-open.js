@@ -12,8 +12,9 @@
 // names come out of a file that anybody could have written.
 
 import {
-  CARD_KEYS, MAX_VAULT_BYTES, VaultError, blankEntry, createVault,
-  decryptWithMaster, getQuestionsData, isCard, parseVault,
+  CARD_KEYS, DEFAULT_ITERATIONS, MAX_VAULT_BYTES, VaultError, blankEntry,
+  createVault, decryptWithMaster, generateMasterKey, getQuestionsData, isCard,
+  parseVault,
 } from "./vault-format.js";
 
 // How long the tab may sit in the background before the vault locks. The
@@ -39,10 +40,15 @@ let state = emptyState();
 
 function emptyState() {
   return {
-    // Where the bytes came from: {kind:"server", id, name, etag} or
-    // {kind:"file", name}.
+    // Where the bytes came from: {kind:"server", id, name, etag},
+    // {kind:"file", name}, or {kind:"new", name} for a vault this page has
+    // just created and that has therefore never been written anywhere.
     source: null,
-    file: null, // the parsed, still-encrypted header
+    file: null, // the parsed, still-encrypted header; null for a new vault
+    // The format parameters a save has to reproduce: read off the file that
+    // was opened, or chosen once when a vault is created. Held apart from
+    // `file` precisely because a new vault has no file to read them from.
+    params: null,
     qd: null, // the remaining questions and salt1, once the first answer is in
     answer0: null,
     questions: null, // every question, first included
@@ -79,7 +85,9 @@ let busyDepth = 0;
 function busy(on, label) {
   busyDepth = Math.max(0, busyDepth + (on ? 1 : -1));
   const working = busyDepth > 0;
-  for (const button of document.querySelectorAll("#open-first-form button, #open-rest-form button, #open-save button")) {
+  for (const button of document.querySelectorAll(
+    "#open-create-form button, #open-first-form button, #open-rest-form button, #open-save button",
+  )) {
     button.disabled = working;
   }
   if (on && label) say(label);
@@ -148,6 +156,11 @@ async function loadBytes(bytes, source) {
   // `question0` and `params` are stored unencrypted, so the first question can
   // be put on screen before a single derivation has run.
   state.file = await parseVault(bytes);
+  state.params = {
+    iterations: state.file.iterations,
+    translit: state.file.translit,
+    kdf: state.file.kdf,
+  };
   state.source = source;
   say("");
   show("open-source", false);
@@ -168,6 +181,174 @@ async function refreshPicker() {
   current.replaceWith(fresh);
   bindPicker();
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Step 1b — a brand-new vault
+// ---------------------------------------------------------------------------
+
+const utf8 = new TextEncoder();
+
+/// Whether there is an account behind this page. The picker is rendered for a
+/// signed-in visitor and for nobody else — including one whose account holds
+/// no vaults yet, whose list says so rather than being left out — so its
+/// presence is the answer, and no separate flag has to be kept in step.
+function signedIn() {
+  return $("open-vault-list") !== null;
+}
+
+/// Two empty rows, like `panes::questions::State::begin_new`: a vault needs at
+/// least two questions, so starting with two says so without a sentence.
+function beginCreate() {
+  $("open-create-name").value = "";
+  $("open-create-show").checked = false;
+  $("open-create-translit").checked = false;
+  $("open-create-questions").replaceChildren();
+  addQuestionRow();
+  addQuestionRow();
+  say("");
+  show("open-source", false);
+  show("open-create", true);
+  $("open-create-name").focus();
+}
+
+function addQuestionRow() {
+  const row = document.createElement("div");
+  row.className = "qa-row";
+
+  const question = document.createElement("input");
+  question.type = "text";
+  question.className = "qa-question";
+  question.required = true;
+  question.autocomplete = "off";
+  question.spellcheck = false;
+
+  const answer = document.createElement("input");
+  answer.className = "qa-answer";
+  answer.required = true;
+  // Masked unless the visitor asks otherwise, and never autocorrected: a phone
+  // keyboard would otherwise store an answer that is not the one being typed,
+  // and normalization only strips spaces, dashes and capitals.
+  answer.type = $("open-create-show").checked ? "text" : "password";
+  for (const [k, v] of Object.entries({
+    autocomplete: "off", autocapitalize: "off", autocorrect: "off",
+    spellcheck: "false",
+  })) answer.setAttribute(k, v);
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "linklike danger qa-remove";
+  remove.textContent = "Remove this question";
+  remove.addEventListener("click", () => removeQuestionRow(row));
+
+  const questionLabel = document.createElement("label");
+  const answerLabel = document.createElement("label");
+  row.append(questionLabel, question, answerLabel, answer, remove);
+  $("open-create-questions").append(row);
+  numberQuestionRows();
+  question.focus();
+}
+
+function removeQuestionRow(row) {
+  row.remove();
+  numberQuestionRows();
+}
+
+/// Labels, ids and the removability of each row, recomputed whenever the set
+/// changes. The last two rows carry no Remove button rather than a refusal:
+/// the format's floor is two questions, and a control that cannot be used is
+/// better not offered.
+function numberQuestionRows() {
+  const rows = [...$("open-create-questions").querySelectorAll(".qa-row")];
+  rows.forEach((row, i) => {
+    const question = row.querySelector(".qa-question");
+    const answer = row.querySelector(".qa-answer");
+    question.id = `create-q-${i}`;
+    answer.id = `create-a-${i}`;
+    const [questionLabel, answerLabel] = row.querySelectorAll("label");
+    questionLabel.setAttribute("for", question.id);
+    questionLabel.textContent = `Question ${i + 1}`;
+    answerLabel.setAttribute("for", answer.id);
+    answerLabel.textContent = `Answer ${i + 1}`;
+    row.querySelector(".qa-remove").hidden = rows.length <= 2;
+  });
+}
+
+function toggleCreateAnswers() {
+  const shown = $("open-create-show").checked;
+  for (const answer of document.querySelectorAll("#open-create-questions .qa-answer")) {
+    answer.type = shown ? "text" : "password";
+  }
+}
+
+/// Brings a vault into existence. Nothing is derived or encrypted here: the
+/// entry list is empty, and a save re-encrypts the whole vault anyway, so the
+/// derivation would only be thrown away. What *is* decided here and never
+/// again is the master key — this is the page's one mint, the counterpart of
+/// `RekeyInputs::run` in the desktop app — along with the work factor and the
+/// normalization setting, which a later save reproduces out of `state.params`.
+function createNew(event) {
+  event.preventDefault();
+  const name = $("open-create-name").value.trim();
+  const rows = [...$("open-create-questions").querySelectorAll(".qa-row")];
+  const questions = rows.map((row) => row.querySelector(".qa-question").value.trim());
+  const answers = rows.map((row) => row.querySelector(".qa-answer").value);
+
+  const problem = createProblem(name, questions, answers);
+  if (problem) {
+    say(problem, "error");
+    return;
+  }
+
+  state.source = { kind: "new", name };
+  state.file = null;
+  state.params = {
+    iterations: DEFAULT_ITERATIONS,
+    translit: $("open-create-translit").checked,
+    // The Rust core writes this and no implementation reads it; a vault born
+    // here declares what it actually used, like every other writer does.
+    kdf: "pbkdf2",
+  };
+  state.questions = questions;
+  state.answer0 = answers[0];
+  state.answers = answers;
+  state.masterKey = generateMasterKey();
+  state.entries = [];
+  // Unsaved from its first instant: this vault exists only in this page until
+  // one of the two save buttons is pressed, which is what the state line says
+  // and what the unload guard is armed by.
+  state.dirty = true;
+
+  show("open-create", false);
+  clearCreateFields();
+  enterVault();
+  say("Vault created. Add your entries, then save it.");
+}
+
+/// The same rules as `panes::questions::save`, plus the name — which this page
+/// needs and the desktop asks for at its own save dialog instead. The 500-byte
+/// question ceiling is `createVault`'s, checked here so it lands next to the
+/// field rather than after a save that got as far as encrypting.
+function createProblem(name, questions, answers) {
+  if (name === "") return "Give the vault a name.";
+  if (utf8.encode(name).length > 255 || /[\\/\u0000-\u001f\u007f]/.test(name)) {
+    return "That name will not work as a file name. Keep it short and plain.";
+  }
+  if (questions.length < 2) return "At least two questions are required.";
+  const blankQuestion = questions.findIndex((question) => question === "");
+  if (blankQuestion >= 0) return `Question ${blankQuestion + 1} cannot be empty.`;
+  const longQuestion = questions.findIndex((q) => utf8.encode(q).length > 500);
+  if (longQuestion >= 0) return `Question ${longQuestion + 1} is too long.`;
+  const blankAnswer = answers.findIndex((answer) => answer.trim() === "");
+  if (blankAnswer >= 0) return `Answer ${blankAnswer + 1} cannot be empty.`;
+  return null;
+}
+
+function clearCreateFields() {
+  $("open-create-name").value = "";
+  $("open-create-questions").replaceChildren();
+  $("open-create-show").checked = false;
+  $("open-create-translit").checked = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,15 +418,28 @@ function unlock(event) {
     state.dirty = false;
     say("");
     show("open-rest", false);
-    show("open-vault", true);
-    show("open-save", true);
-    $("open-vault-title").textContent = state.source.name;
-    $("open-save-server").hidden = state.source.kind !== "server";
-    refreshTags();
-    renderEntries();
-    renderSaveState();
-    armIdle();
+    enterVault();
   });
+}
+
+/// The unlocked view, reached from an unlock and from a creation alike —
+/// everything below this point works the same whether the entries came out of
+/// a file or have yet to be typed.
+function enterVault() {
+  show("open-vault", true);
+  show("open-save", true);
+  $("open-vault-title").textContent = state.source.name;
+  // A vault that lives on this account can be written back to it, and so can
+  // one this page has just created — as a new file, through the same upload
+  // the file manager uses. A vault opened from a local file cannot: the
+  // account has no row for it, and inventing one would silently turn "I opened
+  // a file" into "I uploaded my vault".
+  $("open-save-server").hidden = !(state.source.kind === "server"
+    || (state.source.kind === "new" && signedIn()));
+  refreshTags();
+  renderEntries();
+  renderSaveState();
+  armIdle();
 }
 
 // ---------------------------------------------------------------------------
@@ -440,9 +634,17 @@ function localTime(unixSeconds) {
 // ---------------------------------------------------------------------------
 
 function renderSaveState() {
+  // A created vault has never been written anywhere, so "no changes since you
+  // opened it" would be true and useless: what matters is that closing the tab
+  // would be the end of it.
+  const fresh = state.source.kind === "new";
   $("open-save-state").textContent = state.dirty
-    ? "You have changes that are not saved yet."
-    : "No changes since you opened this vault.";
+    ? (fresh
+      ? "This vault exists only in this page until you save it."
+      : "You have changes that are not saved yet.")
+    : (fresh
+      ? "Downloaded, and not stored on this account."
+      : "No changes since you opened this vault.");
 }
 
 /// Re-encrypts the whole vault. Everything but the entries is carried over
@@ -454,9 +656,9 @@ async function rebuild() {
     questions: state.questions,
     answers: state.answers,
     entries: state.entries,
-    iterations: state.file.iterations,
-    translit: state.file.translit,
-    kdf: state.file.kdf,
+    iterations: state.params.iterations,
+    translit: state.params.translit,
+    kdf: state.params.kdf,
     masterKey: state.masterKey,
     host: hostStamp(),
   });
@@ -482,23 +684,37 @@ function guessPlatform() {
   return "";
 }
 
+/// Writes the vault to the account: a replace for one that is stored there, an
+/// upload for one this page created. Both are routes `web::vaults` already
+/// owns and both run its `check_upload`, quota and versioning rules — `/open`
+/// deliberately has no POST of its own, so there is no second place for any of
+/// that to drift.
 function saveToServer() {
+  const fresh = state.source.kind === "new";
   attempt("Encrypting and uploading…", async () => {
     const bytes = await rebuild();
     const form = new FormData();
     // The CSRF part must come first: `web::csrf::CsrfMultipart` verifies it as
     // it reads the parts, before any file bytes are buffered.
     form.append("csrf", $("open-csrf").value);
-    // The version this page was handed. A stale one is refused rather than
-    // quietly overwriting what another device saved in the meantime.
-    form.append("etag", state.source.etag);
+    if (fresh) {
+      // What the file is stored under. The upload would otherwise fall back to
+      // the *file* name, which carries the extension a stored name need not.
+      form.append("name", state.source.name);
+    } else {
+      // The version this page was handed. A stale one is refused rather than
+      // quietly overwriting what another device saved in the meantime.
+      form.append("etag", state.source.etag);
+    }
     form.append(
       "file",
       new Blob([bytes], { type: "application/octet-stream" }),
       withExtension(state.source.name),
     );
 
-    const res = await fetch(`/vaults/${encodeURIComponent(state.source.id)}/replace`, {
+    const res = await fetch(fresh
+      ? "/vaults"
+      : `/vaults/${encodeURIComponent(state.source.id)}/replace`, {
       method: "POST",
       body: form,
       credentials: "same-origin",
@@ -521,10 +737,39 @@ function saveToServer() {
     state.dirty = false;
     // The ETag moved, so the value this page holds is now the one the *next*
     // save would be refused for. Adopt the new one before allowing another.
-    if (await refreshPicker()) adoptFreshEtag();
+    const listed = await refreshPicker();
+    if (fresh) {
+      // The upload made a row that this page has no id or ETag for, and both
+      // are what a further save needs. Adopting it turns the created vault
+      // into a stored one; failing to find it is not a lost save, only a
+      // second upload that the server would refuse for a name it already has.
+      const adopted = listed && adoptCreated();
+      renderSaveState();
+      say(adopted
+        ? "Saved to your account."
+        : "Saved to your account — reload this page before saving it again.");
+      return;
+    }
+    if (listed) adoptFreshEtag();
     renderSaveState();
     say("Saved.");
   });
+}
+
+/// Finds the row the upload just created and takes over its id and ETag, so
+/// the vault carries on as an ordinary stored one. Matched by name, which is
+/// what was just sent and what the server stores it under.
+function adoptCreated() {
+  const button = [...($("open-vault-list")?.querySelectorAll("button.pick") ?? [])]
+    .find((row) => row.getAttribute("data-vault-name") === state.source.name);
+  if (!button) return false;
+  state.source = {
+    kind: "server",
+    id: button.getAttribute("data-vault-id"),
+    name: button.getAttribute("data-vault-name"),
+    etag: button.getAttribute("data-vault-etag") || "",
+  };
+  return true;
 }
 
 /// Pulls the sentence `web::vaults::refused` rendered — a stale ETag, a full
@@ -574,7 +819,9 @@ function saveDownload() {
     URL.revokeObjectURL(url);
     state.dirty = false;
     renderSaveState();
-    say("Downloaded a new copy — a browser cannot write back over the file you picked.");
+    say(state.source.kind === "file"
+      ? "Downloaded a new copy — a browser cannot write back over the file you picked."
+      : "Downloaded. Keep it somewhere you will find it again.");
   });
 }
 
@@ -592,6 +839,9 @@ function withExtension(name) {
 
 function lock(reason) {
   clearEditorFields();
+  // The answers typed into the create form are key material as much as the
+  // ones typed into an unlock, and a cancelled creation leaves them there.
+  clearCreateFields();
   $("open-answer0").value = "";
   $("open-rest-fields").replaceChildren();
   $("open-entries").replaceChildren();
@@ -606,7 +856,8 @@ function lock(reason) {
   disarmIdle();
   clearClipboardSoon.cancel();
 
-  for (const id of ["open-first", "open-rest", "open-vault", "open-editor", "open-save"]) {
+  for (const id of ["open-create", "open-first", "open-rest", "open-vault",
+    "open-editor", "open-save"]) {
     show(id, false);
   }
   show("open-source", true);
@@ -695,6 +946,11 @@ function init() {
     const file = e.target.files?.[0];
     if (file) openLocal(file);
   });
+
+  $("open-new").addEventListener("click", beginCreate);
+  $("open-create-add").addEventListener("click", addQuestionRow);
+  $("open-create-show").addEventListener("change", toggleCreateAnswers);
+  $("open-create-form").addEventListener("submit", createNew);
 
   $("open-first-form").addEventListener("submit", revealQuestions);
   $("open-rest-form").addEventListener("submit", unlock);
