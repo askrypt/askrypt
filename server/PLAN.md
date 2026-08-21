@@ -824,13 +824,14 @@ askrypt/
     *this server sent*, so a compromised or dishonest server could send
     different JavaScript. A desktop or mobile app was installed once and the
     server has no say in it. The page says so, names the trade, and links its
-    two scripts to be read.
+    three scripts to be read.
   - **Bounded everywhere else.** No CDN, no bundler, no dependency, no inline
     script, and — unlike the captcha and Google-button pages — **no widened
     CSP**: `script-src 'self'` and `connect-src 'self'` already cover it.
     Nothing is persisted in the browser: no `localStorage`, no
     `sessionStorage`, no IndexedDB, no URL fragment, no console. Locking drops
-    one state object and there is nowhere else for a secret to be.
+    one state object — plus the Smart Lock bundle, when there is one — and
+    there is nowhere else for a secret to be.
   - **A third implementation of the format, not a fourth trust boundary.**
     `static/vault-format.js` is a port of `core/src/lib.rs` following
     `app/lib/crypto/` function for function, over the Web Cryptography API —
@@ -868,6 +869,30 @@ askrypt/
     place they already were; the page then re-reads the picker and adopts the
     new row's id and ETag by name, after which further saves are ordinary
     replaces. Still **no POST in `web/open.rs`**.
+  - **Smart Lock, ported** *(added 2026-08-21)*. `static/vault-smartlock.js`
+    is the browser port of `src/smartlock.rs`: every answer encrypted under
+    one of them, chosen at random and never the first, at 2,000,000 PBKDF2
+    iterations, with an IV per ciphertext and an eight-hour ceiling. It is
+    **not part of the format** — nothing it produces is written to a file and
+    no other implementation reads it — so it lives beside `vault-format.js`
+    rather than inside it and has no golden vectors; it keeps the same
+    pure-by-contract rules, and the parity gate checks the shape it gives the
+    bundle. **The server is not involved at any point**: there is no route, no
+    header and no byte of it that leaves the page, so `web/open.rs` still has
+    no POST.
+
+    Two differences from the desktop, each forced by the page. Arming
+    **re-encrypts what is in the page** rather than re-opening the file on
+    disk, because a tab has no file to re-read — which costs one save's worth
+    of derivation and means arming can lose nothing and refuse nothing but a
+    one-question vault. And only the *button* arms it: the automatic locks
+    keep nothing, because "nothing is kept after a lock" is this page's
+    promise and the desktop's idle timeout does not have to honour it. The
+    exception is a session that came out of a Smart Lock, where an automatic
+    lock re-arms — the user asked for exactly that, and the ceiling they
+    started is still running. The security property is the desktop's
+    unchanged: the bundle holds answers and no master key, so on its own it
+    opens nothing.
   - **The picker is re-readable on its own** (`GET /open/vaults`), because a
     save moves the file's ETag and the value the page was rendered with would
     then be refused for a conflict the visitor did not cause. It also backs
@@ -879,9 +904,11 @@ askrypt/
     rather than omitting it; rows carry id, name and ETag plus the CSRF token
     the save posts with; the picker is re-readable as a bare fragment and not
     by a signed-out visitor; the file manager deep-links each row; a hostile
-    vault name cannot inject markup; and `/open` carries no inline script or
-    style, signed in or out. `server/tests/web.rs` (49 tests, seven of them
-    `/open`) plus `scripts/vault-js-parity.mjs` (41 checks) for the crypto.
+    vault name cannot inject markup; the Smart Lock card and its controls ship
+    on every visitor's page and start hidden; and `/open` carries no inline
+    script or style, signed in or out. `server/tests/web.rs` (50 tests, eight
+    of them `/open`) plus `scripts/vault-js-parity.mjs` (50 checks) for the
+    crypto, the Smart Lock bundle's shape among them.
     The DOM half has no test harness in this repo, by the same no-Node rule:
     the create → upload → adopt → replace round trip was driven by hand
     (jsdom, off-repo) against a local server, and a vault the page creates was

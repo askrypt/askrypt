@@ -1742,8 +1742,8 @@ async fn the_viewer_serves_a_signed_out_visitor() {
         "listed vaults for nobody"
     );
     assert!(html.contains("/login"), "no way to sign in offered");
-    // Both modules, and as modules — a classic script would not resolve the
-    // `import` of vault-format.js.
+    // The entry point, and as a module — a classic script would not resolve the
+    // `import`s of vault-format.js and vault-smartlock.js.
     assert!(html.contains(r#"<script type="module" src="/assets/vault-open.js">"#));
     // The page needs JavaScript, which no other page on the site does, so it
     // has to say so to a visitor who has it switched off.
@@ -1809,6 +1809,34 @@ async fn a_new_vault_can_be_started_with_or_without_an_account() {
         html.contains(r#"id="open-csrf""#),
         "no CSRF token for the save"
     );
+}
+
+#[tokio::test]
+async fn the_viewer_ships_the_smart_lock_controls() {
+    let app = app();
+
+    // Smart Lock is entirely in the page — the server has no route for it and
+    // never sees the bundle — so what it owes is the markup the controller
+    // drives, on a signed-out visitor's page as much as an account holder's.
+    for html in [
+        send(&app, get("/open")).await.2,
+        {
+            let cookies = register(&app, "smartlock@example.com").await;
+            send(&app, get_with_cookies("/open", &cookies)).await.2
+        },
+    ] {
+        assert!(html.contains(r#"id="open-smart-arm""#), "no way to arm it");
+        assert!(html.contains(r#"id="open-smart-form""#), "no unlock form");
+        assert!(html.contains(r#"id="open-smart-question""#), "no key question");
+        assert!(html.contains(r#"id="open-smart-full""#), "no way out to a full lock");
+        // The armed card starts hidden like every other step: the controller
+        // reveals one at a time, and a visible one here would be a card with
+        // no bundle behind it.
+        assert!(
+            html.contains(r#"<section class="card" id="open-smart" hidden>"#),
+            "the armed card is not hidden"
+        );
+    }
 }
 
 #[tokio::test]

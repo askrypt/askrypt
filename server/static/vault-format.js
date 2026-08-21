@@ -202,7 +202,10 @@ export async function aesCbcEncrypt(plaintext, key, iv) {
   return new Uint8Array(out);
 }
 
-function randomBytes(n) {
+/** Cryptographically strong random bytes. Exported because `randomBytes` is a
+ *  primitive of the same standing as [`pbkdf2`] and [`aesCbcEncrypt`], and
+ *  `vault-smartlock.js` needs the salt and IVs its bundle carries. */
+export function randomBytes(n) {
   return crypto.getRandomValues(new Uint8Array(n));
 }
 

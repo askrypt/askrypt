@@ -1,9 +1,9 @@
 // The `/open` page: pick a vault, answer the questions, browse and edit, save.
 //
-// All the crypto lives in `vault-format.js`; this file is the DOM around it.
-// Nothing here writes to `localStorage`, `sessionStorage`, IndexedDB, the URL
-// fragment or the console — a decrypted vault exists only in this page's
-// variables and only until it locks.
+// All the crypto lives in `vault-format.js` and `vault-smartlock.js`; this file
+// is the DOM around them. Nothing here writes to `localStorage`,
+// `sessionStorage`, IndexedDB, the URL fragment or the console — a decrypted
+// vault exists only in this page's variables and only until it locks.
 //
 // The CSP is `script-src 'self'` on this page as on every other, so there is
 // no inline script anywhere and every value the markup hands over arrives as a
@@ -16,6 +16,9 @@ import {
   createVault, decryptWithMaster, generateMasterKey, getQuestionsData, isCard,
   parseVault,
 } from "./vault-format.js";
+import {
+  SMART_LOCK_TIMEOUT_MS, createSmartLock, recoverSmartLock, smartLockRemaining,
+} from "./vault-smartlock.js";
 
 // How long the tab may sit in the background before the vault locks. The
 // mobile app locks the instant it is backgrounded; a browser tab fires the
@@ -61,8 +64,19 @@ function emptyState() {
     // Index into `entries`, or -1 for an entry being added.
     editing: null,
     draft: null,
+    // When this session's eight-hour Smart Lock ceiling runs out, or null when
+    // it did not come out of a Smart Lock and therefore has no ceiling. It
+    // doubles as the answer to "did the user ask for this vault to be
+    // reachable from one answer?", which is what an automatic lock consults.
+    smartDeadline: null,
   };
 }
+
+/// The armed Smart Lock, or null. Deliberately *outside* `state`, because
+/// arming is a lock: it runs the whole of `lock`, which replaces `state`
+/// wholesale, and the bundle is what is put back afterwards. A full lock
+/// clears this too — there is nowhere else for a secret to be.
+let smart = null;
 
 // ---------------------------------------------------------------------------
 // Chrome: status, busy, section visibility
@@ -86,7 +100,8 @@ function busy(on, label) {
   busyDepth = Math.max(0, busyDepth + (on ? 1 : -1));
   const working = busyDepth > 0;
   for (const button of document.querySelectorAll(
-    "#open-create-form button, #open-first-form button, #open-rest-form button, #open-save button",
+    "#open-create-form button, #open-first-form button, #open-rest-form button,"
+      + " #open-smart-form button, #open-vault .row-actions button, #open-save button",
   )) {
     button.disabled = working;
   }
@@ -440,6 +455,9 @@ function enterVault() {
   renderEntries();
   renderSaveState();
   armIdle();
+  // A session reached through a Smart Lock inherits its ceiling; one reached by
+  // answering every question has none.
+  if (state.smartDeadline !== null) armCeiling(state.smartDeadline);
 }
 
 // ---------------------------------------------------------------------------
@@ -837,12 +855,14 @@ function withExtension(name) {
 // Locking
 // ---------------------------------------------------------------------------
 
+/// A full lock: every secret dropped, the Smart Lock bundle among them.
 function lock(reason) {
   clearEditorFields();
   // The answers typed into the create form are key material as much as the
   // ones typed into an unlock, and a cancelled creation leaves them there.
   clearCreateFields();
   $("open-answer0").value = "";
+  $("open-smart-answer").value = "";
   $("open-rest-fields").replaceChildren();
   $("open-entries").replaceChildren();
   $("open-search").value = "";
@@ -853,29 +873,208 @@ function lock(reason) {
   // is no `zeroize` here, and the desktop and mobile cores say so about their
   // own immutable strings too.
   state = emptyState();
+  smart = null;
   disarmIdle();
+  disarmHidden();
+  disarmCeiling();
+  stopCountdown();
   clearClipboardSoon.cancel();
 
-  for (const id of ["open-create", "open-first", "open-rest", "open-vault",
-    "open-editor", "open-save"]) {
+  for (const id of ["open-create", "open-first", "open-rest", "open-smart",
+    "open-vault", "open-editor", "open-save"]) {
     show(id, false);
   }
   show("open-source", true);
   say(reason || "Locked.");
 }
 
+// ---------------------------------------------------------------------------
+// Smart Lock — the answers held encrypted under one of themselves
+// ---------------------------------------------------------------------------
+
+/// Arms Smart Lock. The port of `App::start_smart_lock`, with one deliberate
+/// difference, in the bytes the bundle re-opens.
+///
+/// The desktop re-reads the file the vault was opened from, which is why
+/// arming there drops unsaved edits and why `App::auto_smart_lock` saves first
+/// or refuses. A browser tab has no file to re-read — a vault opened from a
+/// local file cannot be written back to it, and one created here may never
+/// have been written at all — so this re-encrypts what is in the page instead,
+/// under the same master key and the same answers a save would use. It costs
+/// one save's worth of derivation, and it means arming loses nothing and can
+/// refuse nothing.
+///
+/// The security property is unchanged: the bundle still holds answers and no
+/// master key, so on its own it opens nothing — recovering the vault is still
+/// the ordinary layered unlock, run against these bytes.
+async function armSmartLock() {
+  if (!unlocked()) return;
+  // Smart Lock keys on an answer other than the first, so a one-question vault
+  // has nothing to key on. Every vault this page can *write* has at least two
+  // questions; one written by something else need not.
+  if (state.answers.length < 2) {
+    throw new VaultError("Smart Lock needs a vault with at least two questions.");
+  }
+
+  const bytes = await rebuild();
+  const bundle = await createSmartLock({
+    answer0: state.answers[0],
+    answers: state.answers.slice(1),
+    questions: state.questions.slice(1),
+    translit: state.params.translit,
+  });
+  // What survives the lock, besides the bundle: where the vault came from, the
+  // bytes it re-opens, and whether it still owes a save. Everything else is
+  // re-derived on the way back in.
+  const carried = { bundle, source: state.source, bytes, dirty: state.dirty };
+
+  // A full lock first — it drops every secret and clears every field, which is
+  // exactly what arming has to do as well. The bundle goes back afterwards,
+  // because `lock` is also what *ends* a Smart Lock.
+  lock("");
+  smart = carried;
+  showSmart();
+}
+
+function showSmart() {
+  show("open-source", false);
+  show("open-smart", true);
+  $("open-smart-question").textContent = smart.bundle.keyQuestion;
+  $("open-smart-answer").value = "";
+  renderCountdown();
+  countdownTimer = setInterval(renderCountdown, 30 * 1000);
+  armCeiling(smart.bundle.armedAt + SMART_LOCK_TIMEOUT_MS);
+  $("open-smart-answer").focus();
+}
+
+/// One answer recovers the whole set, which then opens the vault the ordinary
+/// way: 2M iterations to get the answers back, then the format's own 600k
+/// twice. Mirrors `SmartUnlockInputs::run`.
+function smartUnlock(event) {
+  event.preventDefault();
+  const answer = $("open-smart-answer").value;
+  const carried = smart;
+  if (!carried) return;
+  attempt("Deriving the key… this takes a moment.", async () => {
+    // Parsed first, and not only for the ciphertext: `translit` decides how the
+    // answer normalizes, and it is a property of the vault rather than of the
+    // bundle — the same reason `Vault<SmartLocked>` reads it off its file.
+    const file = await parseVault(carried.bytes);
+    let recovered;
+    try {
+      recovered = await recoverSmartLock(carried.bundle, answer, file.translit);
+    } catch {
+      throw new VaultError("That is not the answer this Smart Lock was keyed on.");
+    }
+    // These bytes were written by this page from these answers, so nothing
+    // below can fail over a wrong answer — only over a bug.
+    const qd = await getQuestionsData(file, recovered.answer0);
+    const opened = await decryptWithMaster(file, qd, recovered.answers);
+
+    smart = null;
+    stopCountdown();
+    state = emptyState();
+    state.source = carried.source;
+    state.file = file;
+    state.params = {
+      iterations: file.iterations, translit: file.translit, kdf: file.kdf,
+    };
+    state.qd = qd;
+    state.answer0 = recovered.answer0;
+    state.questions = [file.question0, ...qd.questions];
+    state.answers = [recovered.answer0, ...recovered.answers];
+    state.masterKey = opened.masterKey;
+    state.entries = opened.entries;
+    // The bundle was armed over these very entries, so whatever was owed to a
+    // save before the lock is still owed now.
+    state.dirty = carried.dirty;
+    // The ceiling restarts on the way through, exactly as `smart_unlock` does
+    // it: a session reached from one answer stays time-limited.
+    state.smartDeadline = Date.now() + SMART_LOCK_TIMEOUT_MS;
+
+    $("open-smart-answer").value = "";
+    show("open-smart", false);
+    say("");
+    enterVault();
+  });
+}
+
+function renderCountdown() {
+  if (!smart) return;
+  const minutes = Math.floor(smartLockRemaining(smart.bundle) / (60 * 1000));
+  $("open-smart-countdown").textContent =
+    `Time until full lock: ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function stopCountdown() {
+  clearInterval(countdownTimer);
+  countdownTimer = null;
+}
+
+/// The eight-hour ceiling, which outlives the bundle: a vault re-opened from a
+/// Smart Lock carries one too, so being reachable from a single answer stays
+/// time-limited however often it is re-armed. `setTimeout` tops out at about
+/// 25 days, so eight hours is well inside what one timer can hold.
+function armCeiling(at) {
+  disarmCeiling();
+  ceilingTimer = setTimeout(
+    () => lock("Smart Lock expired — the vault is fully locked."),
+    Math.max(0, at - Date.now()),
+  );
+}
+
+function disarmCeiling() {
+  clearTimeout(ceilingTimer);
+  ceilingTimer = null;
+}
+
 // --- auto-lock -------------------------------------------------------------
 
 let idleTimer = null;
 let hiddenTimer = null;
+let ceilingTimer = null;
+let countdownTimer = null;
 
 function unlocked() {
   return state.entries !== null;
 }
 
+/// What a lock the *page* decided on does — as opposed to one the user asked
+/// for by pressing a button.
+///
+/// It keeps nothing, which is the promise `/open` makes and the desktop does
+/// not have to: there, an idle timeout arms Smart Lock. The exception is a
+/// session that came out of a Smart Lock, which `smartDeadline` is what marks:
+/// the user asked for this vault to be reachable from one answer, the ceiling
+/// they started is still running, and throwing the answers away every three
+/// idle minutes would make the feature useless. Arming is best effort — a
+/// failure still locks, because a timeout that leaves a vault open is the one
+/// outcome that must not happen.
+function autoLock(reason) {
+  // Something is already deriving or uploading. `App::start_smart_lock` bails
+  // on `session.busy` for the same reason: replacing the state object out from
+  // under a save in flight leaves its continuation reading a locked vault.
+  // Come back to it on the next idle turn instead.
+  if (busyDepth > 0) {
+    armIdle();
+    return;
+  }
+  if (state.smartDeadline === null) {
+    lock(reason);
+    return;
+  }
+  busy(true, reason);
+  armSmartLock()
+    .then(() => say(`${reason} Smart Lock is armed.`))
+    .catch(() => lock(reason))
+    .finally(() => busy(false));
+}
+
 function armIdle() {
   disarmIdle();
-  if (unlocked()) idleTimer = setTimeout(() => lock("Locked after a few minutes idle."), IDLE_MS);
+  if (unlocked()) {
+    idleTimer = setTimeout(() => autoLock("Locked after a few minutes idle."), IDLE_MS);
+  }
 }
 
 function disarmIdle() {
@@ -883,14 +1082,24 @@ function disarmIdle() {
   idleTimer = null;
 }
 
+/// Cleared by every lock, not only by a visibility change: a background timer
+/// armed before the vault was Smart Locked would otherwise come due afterwards
+/// and throw the bundle away, sixty seconds after the user asked for it.
+function disarmHidden() {
+  clearTimeout(hiddenTimer);
+  hiddenTimer = null;
+}
+
 function onActivity() {
   if (unlocked()) armIdle();
 }
 
 function onVisibility() {
-  clearTimeout(hiddenTimer);
+  disarmHidden();
   if (document.visibilityState !== "hidden" || !unlocked()) return;
-  hiddenTimer = setTimeout(() => lock("Locked while the page was in the background."), HIDDEN_GRACE_MS);
+  hiddenTimer = setTimeout(
+    () => autoLock("Locked while the page was in the background."), HIDDEN_GRACE_MS,
+  );
 }
 
 // --- clipboard -------------------------------------------------------------
@@ -962,7 +1171,14 @@ function init() {
     $(id).addEventListener("input", renderEntries);
   }
   $("open-add").addEventListener("click", () => editEntry(-1));
+  $("open-smart-arm").addEventListener("click", () => attempt("Locking…", async () => {
+    await armSmartLock();
+    say("Smart Lock is armed. One answer re-opens this vault.");
+  }));
   $("open-lock").addEventListener("click", () => lock());
+
+  $("open-smart-form").addEventListener("submit", smartUnlock);
+  $("open-smart-full").addEventListener("click", () => lock());
 
   $("open-editor-form").addEventListener("submit", applyEntry);
   $("entry-cancel").addEventListener("click", closeEditor);
@@ -989,7 +1205,9 @@ function init() {
     document.addEventListener(event, onActivity, { passive: true });
   }
   window.addEventListener("beforeunload", (e) => {
-    if (!state.dirty) return;
+    // A Smart Locked vault still owes whatever it owed when it was armed, and
+    // closing the tab is the end of the bundle as much as of the entries.
+    if (!state.dirty && !smart?.dirty) return;
     e.preventDefault();
     e.returnValue = "";
   });

@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const vault = await import(join(root, "server/static/vault-format.js"));
+const smartlock = await import(join(root, "server/static/vault-smartlock.js"));
 
 const vectors = JSON.parse(
   await readFile(join(root, "app/test/fixtures/vectors.json"), "utf8"),
@@ -198,6 +199,83 @@ await group("save and reopen (round trip)", async () => {
     "master key was preserved, not rotated",
     vault.hexFromBytes(reopened.masterKey),
     vault.hexFromBytes(masterKey),
+  );
+});
+
+// --- Smart Lock ------------------------------------------------------------
+//
+// Not part of the format — nothing here is ever written to a file, and no
+// other implementation reads it — so there are no golden vectors to compare
+// against, and none are needed: the derivation is the format's own answer key
+// at a different work factor, and every primitive under it is already pinned
+// above. What this checks is the shape `src/smartlock.rs` gives the bundle.
+//
+// Three 2,000,000-iteration derivations, so this group is the slow one.
+
+await group("Smart Lock arms and re-opens under one answer", async () => {
+  const answers = golden.answers;
+  const bundle = await smartlock.createSmartLock({
+    answer0: answers[0],
+    answers: answers.slice(1),
+    questions: golden.questions.slice(1),
+    translit: golden.translit,
+  });
+
+  // Never the first answer: that one is the layer the whole scheme rests on,
+  // and keying the bundle on it would put the questions and the answers behind
+  // the same secret.
+  check(
+    "the key answer is never the first one",
+    bundle.keyAnswerIndex >= 1 && bundle.keyAnswerIndex <= answers.length - 1,
+    true,
+  );
+  check(
+    "key question is the one that answer belongs to",
+    bundle.keyQuestion,
+    golden.questions[bundle.keyAnswerIndex],
+  );
+  // Two ciphertexts sharing a key must not share an IV.
+  check(
+    "each ciphertext has its own IV",
+    vault.hexFromBytes(bundle.ivAnswer0) !== vault.hexFromBytes(bundle.ivAnswers),
+    true,
+  );
+  // Nothing in the bundle is plaintext, and no master key is in it at all:
+  // recovering the vault still means the ordinary layered unlock.
+  check("bundle holds no master key", "masterKey" in bundle, false);
+  const blob = Buffer.from([
+    ...bundle.encryptedAnswer0, ...bundle.encryptedAnswers,
+    ...bundle.salt, ...bundle.ivAnswer0, ...bundle.ivAnswers,
+  ]);
+  check(
+    "no answer appears in the clear",
+    // Short answers are left out: a byte or two turning up inside ciphertext
+    // is coincidence, and would make this flaky rather than strict.
+    answers.filter((a) => a.length >= 4)
+      .some((a) => blob.includes(Buffer.from(a, "utf8"))),
+    false,
+  );
+
+  // The key answer, typed with different spacing and capitals: normalization
+  // is the format's, so it opens the bundle all the same.
+  const typed = ` ${golden.answers[bundle.keyAnswerIndex].toUpperCase()} `;
+  const recovered = await smartlock.recoverSmartLock(bundle, typed, golden.translit);
+  check("answer0 recovered", recovered.answer0, answers[0]);
+  check("remaining answers recovered", recovered.answers, answers.slice(1));
+
+  let refused = false;
+  try {
+    await smartlock.recoverSmartLock(bundle, "not the answer", golden.translit);
+  } catch {
+    refused = true;
+  }
+  check("any other answer is refused", refused, true);
+
+  const left = smartlock.smartLockRemaining(bundle);
+  check(
+    "the eight-hour ceiling is running",
+    left > 0 && left <= smartlock.SMART_LOCK_TIMEOUT_MS,
+    true,
   );
 });
 

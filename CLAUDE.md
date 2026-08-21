@@ -248,8 +248,8 @@ next request.
   server behind the rate limiter alone is legitimate, and it keeps the auth
   forms working without JavaScript); `captcha.js` joins the startup asset
   check only then, since without it nobody can sign in at all. The two
-  viewer modules (`vault-format.js`, `vault-open.js`) are checked
-  **unconditionally** — `/open` is linked from the nav on every page, so
+  viewer modules (`vault-format.js`, `vault-smartlock.js`,
+  `vault-open.js`) are checked **unconditionally** — `/open` is linked from the nav on every page, so
   without them it is a page that does nothing. Serves with
   `ConnectInfo` so rate
   limiting and the audit log can key on peer IPs. `std::env::args()` is parsed
@@ -910,7 +910,7 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 49 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 50 tests:
   template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
@@ -927,7 +927,7 @@ next request.
   wrong extension, a ZIP with no `askrypt.json` (which the API's magic check
   admits), and a refused *replace* leaving the stored bytes untouched — each
   asserting the file was not stored, since a readable message over a stored
-  file would be the worse bug; and the seven `/open` tests, which assert what
+  file would be the worse bug; and the eight `/open` tests, which assert what
   the *server* owes the viewer and nothing about the decrypting: the page
   serves a signed-out visitor with a file input and no listing, the create
   form is offered signed in and out alike (creating one needs no account; with
@@ -935,7 +935,10 @@ next request.
   account renders the list saying it is empty rather than omitting it, rows
   carry the id/name/ETag the controller reads plus the CSRF token the save
   posts with, the picker is re-readable as a bare fragment but not by a
-  signed-out visitor, the file manager deep-links each row to it, and a
+  signed-out visitor, the file manager deep-links each row to it, the Smart
+  Lock card and its controls ship on every visitor's page and start hidden
+  (the server has no route for the feature and never sees a bundle, so the
+  markup is all it owes), and a
   hostile vault name cannot inject markup into the `data-` attribute it lands
   in) and
   `admin.rs` (the Phase 8 gate, 11 tests: first-account-is-admin and the nav
@@ -994,8 +997,8 @@ next request.
   `auth_page.html`, `account.html`, `vaults.html`, `admin_users.html`,
   `admin_settings.html`,
   `link.html` (the device-link page, in its four states), `open.html` (the
-  Phase 14 viewer — seven `hidden` `<section class="card">`s that
-  `vault-open.js` reveals a step at a time, plus a closing card stating what
+  Phase 14 viewer — eight `hidden` `<section class="card">`s that
+  `vault-open.js` reveals a step at a time, the armed Smart Lock among them, plus a closing card stating what
   the page can and cannot promise and linking its two scripts to be read),
   `error.html`, and
   `fragments/` — `auth_form`, `email_form`, `password_form`, `devices`,
@@ -1016,16 +1019,16 @@ next request.
   `/assets/captcha.js` when a site key is configured, and `/assets/google.js`
   plus `accounts.google.com/gsi/client` when a web client id is; and
   `open.html` loading `/assets/vault-open.js` as `type="module"` (which defers
-  by itself and is what makes its static `import` of `vault-format.js`
-  resolve). All **external**, since
+  by itself and is what makes its static `import`s of `vault-format.js` and
+  `vault-smartlock.js` resolve). All **external**, since
   even the widened CSP forbids inline script, which is why the site key, the
   client id and every value the viewer reads off a row reach the scripts as
   `data-` attributes. Confirmation steps are `<details>` disclosures,
   not scripted dialogs — the CSP forbids the inline handler. `static/` holds
   `style.css`, the vendored `htmx.min.js` (2.0.10), `captcha.js`,
-  `google.js` and the two viewer modules, served at
+  `google.js` and the three viewer modules, served at
   `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN,
-  and the viewer keeps it that way: it is two hand-written ES modules with no
+  and the viewer keeps it that way: it is three hand-written ES modules with no
   dependencies and no build step.
 
   **`vault-format.js`** is the browser port of the vault format — a port of
@@ -1049,7 +1052,24 @@ next request.
   demand — production is 600,000, and without the cap a hostile file could
   park a phone in a derivation for the afternoon.
 
-  **`vault-open.js`** is the DOM around it and holds no crypto: pick (a stored
+  **`vault-smartlock.js`** is the browser port of `src/smartlock.rs`, and like
+  that module it is **not part of the format**: nothing it produces is ever
+  written to a file and no other implementation reads it, which is why it sits
+  beside `vault-format.js` rather than inside it and why there are no golden
+  vectors for it. The bundle is every answer encrypted under one of them,
+  chosen at random and never the first, at **2,000,000** PBKDF2 iterations
+  (`SMART_LOCK_ITERATIONS`, far above the vault's own work factor because a
+  single answer has less entropy behind it than the layered unlock does), with
+  an IV per ciphertext and an eight-hour ceiling. It holds the same
+  no-DOM/no-`fetch`/nothing-persisted contract as `vault-format.js`, so
+  `scripts/vault-js-parity.mjs` runs the shipped file unchanged; what that
+  gate checks is the *shape* — the key answer is never the first, the two
+  ciphertexts do not share an IV, no answer appears in the clear, and no
+  master key is in the bundle at all — since the derivation under it is the
+  format's own answer key at a different work factor and every primitive in it
+  is already pinned by the vectors.
+
+  **`vault-open.js`** is the DOM around them and holds no crypto: pick (a stored
   vault, or a local file that is never uploaded) → the first question → the
   rest → the entry list with search/tags/hidden → one entry → save. A second
   way in **creates** a vault instead — a name, two or more question/answer
@@ -1081,6 +1101,32 @@ next request.
   to paste a password anywhere. Copies clear the clipboard after 30 s, like
   `secure_clipboard.dart`. Locking drops every field of one state object;
   there is nowhere else for a secret to be.
+
+  **Smart Lock** (`armSmartLock`/`smartUnlock`) is the desktop feature ported,
+  with two deliberate differences, each of which follows from the page rather
+  than from taste. The desktop re-opens the bundle against the file the vault
+  was read from, which is why arming there loses unsaved edits and why
+  `App::auto_smart_lock` saves first or refuses; a tab has no file to re-read
+  (a local file cannot be written back to, and a created vault may never have
+  been written at all), so arming **re-encrypts what is in the page** — one
+  save's worth of derivation, after which arming loses nothing and refuses
+  nothing but a one-question vault. The security property is unchanged: the
+  bundle still carries answers and no master key, so on its own it opens
+  nothing, and coming back in is the ordinary layered unlock run against those
+  bytes. The second difference is *who* may arm it. Only the button does: the
+  **automatic** locks keep nothing, because "nothing is kept after a lock" is
+  the promise this page makes and the desktop does not have to. The one
+  exception is a session that came out of a Smart Lock — `state.smartDeadline`
+  is what marks it — where an automatic lock re-arms instead, since the user
+  already asked for exactly that and the ceiling they started is still
+  running. Arming is best effort in that path: a failure still locks fully,
+  because a timeout that leaves a vault open is the one outcome that must not
+  happen. The eight-hour ceiling is restarted at each transition, as
+  `Vault::smart_unlock` restarts it, and it outlives the bundle — a vault
+  re-opened from one carries the ceiling too, so being reachable from a single
+  answer stays time-limited however often it is re-armed. `smart` lives
+  *outside* the state object precisely because arming runs the whole of
+  `lock()`, which replaces that object; a full lock clears it as well.
   `captcha.js` keeps the hidden field **freshly populated** rather than
   minting on submit: htmx serializes the form synchronously and
   `grecaptcha.execute` is a promise, so no hook can await one and still let

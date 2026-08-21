@@ -3,10 +3,11 @@
 {% block title %}Open a vault &middot; Askrypt{% endblock %}
 
 {#-
-  The two modules that make this page work. External files, like every other
-  script on the site: the CSP is `script-src 'self'` here as everywhere else,
-  and this page deliberately does not widen it. `type="module"` defers by
-  itself, and covers the static import of `vault-format.js`.
+  The one entry point, which pulls in the other two modules itself. An external
+  file, like every other script on the site: the CSP is `script-src 'self'`
+  here as everywhere else, and this page deliberately does not widen it.
+  `type="module"` defers by itself, and covers the static imports of
+  `vault-format.js` and `vault-smartlock.js`.
 -#}
 {% block head %}
 <script type="module" src="/assets/vault-open.js"></script>
@@ -118,6 +119,24 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   </form>
 </section>
 
+<!-- 3b. Smart Lock ----------------------------------------------------- -->
+<section class="card" id="open-smart" hidden>
+  <h2>Smart Lock is armed</h2>
+  <p>The entries and the master key are gone from this page. Your answers are
+  still here, held encrypted under one of themselves &mdash; so one of them
+  re-opens the vault instead of all of them.</p>
+  <form class="form wide" id="open-smart-form">
+    <p class="hint" id="open-smart-question"></p>
+    <label for="open-smart-answer">Your answer</label>
+    <input id="open-smart-answer" type="password" autocomplete="off"
+           autocapitalize="off" autocorrect="off" spellcheck="false" required>
+    <p class="hint" id="open-smart-countdown"></p>
+    <button class="button" type="submit">Unlock</button>
+    <button class="linklike danger" type="button" id="open-smart-full">Lock
+    it fully</button>
+  </form>
+</section>
+
 <!-- 4. The unlocked vault --------------------------------------------- -->
 <section class="card" id="open-vault" hidden>
   <h2 id="open-vault-title">Entries</h2>
@@ -136,6 +155,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
 
   <p class="row-actions">
     <button class="button small" type="button" id="open-add">Add an entry</button>
+    <button class="linklike" type="button" id="open-smart-arm">Smart Lock</button>
     <button class="linklike" type="button" id="open-lock">Lock</button>
   </p>
 </section>
@@ -249,11 +269,19 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   <p>The decrypting happens here, in your browser, over the Web Cryptography
   API. Nothing this page decrypts is sent to the server, stored in the browser,
   or kept after you lock it.</p>
+  <p>Smart Lock is the one exception, and only while you have asked for it: it
+  drops the entries and the master key like any other lock, but keeps your
+  answers in the page, encrypted under one of themselves, so that a single
+  answer re-opens the vault. It lasts eight hours at the most, it is gone the
+  moment you lock fully or close the tab, and the automatic locks &mdash; the
+  idle timer and the one that fires while this tab sits in the background
+  &mdash; keep nothing at all unless the vault was already Smart Locked.</p>
   <p>It is still JavaScript that this server sent you, so it cannot offer what
   the desktop and mobile apps do: there, the code was installed once and the
   server has no say in it. If that difference matters for your vault, use an
-  app. The two files this page runs are
-  <a href="/assets/vault-format.js">vault-format.js</a> and
+  app. The three files this page runs are
+  <a href="/assets/vault-format.js">vault-format.js</a>,
+  <a href="/assets/vault-smartlock.js">vault-smartlock.js</a> and
   <a href="/assets/vault-open.js">vault-open.js</a>, they have no dependencies,
   and they are meant to be read.</p>
 </section>
