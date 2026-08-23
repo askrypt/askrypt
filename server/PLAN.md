@@ -893,6 +893,31 @@ askrypt/
     started is still running. The security property is the desktop's
     unchanged: the bundle holds answers and no master key, so on its own it
     opens nothing.
+  - **The password generator, ported** *(added 2026-08-23)*.
+    `static/vault-passgen.js` is the browser port of `core/src/passgen.rs`,
+    and like Smart Lock it is **not part of the format** — nothing it produces
+    is written to a file and no other implementation reads it — so it sits
+    beside `vault-format.js` under the same pure-by-contract rules, and the
+    parity gate checks its *rules* (defaults, clamp, character sets, the
+    refusal) since random output has no vectors. The one thing the port must
+    do that `rand::random_range` does for free is draw without modulo bias:
+    `randomIndex` takes 32 fresh bits from `crypto.getRandomValues` and
+    rejects anything at or above the largest multiple of the set size.
+    **The server is not involved**: no route, no header, nothing leaves the
+    page, and `web/open.rs` still has no POST.
+
+    It is a panel under the entry editor's Secret field rather than a screen
+    of its own — the desktop's generator is a rail pane reachable with no
+    entry open, and here the field being edited is the only place a generated
+    password is wanted. The pane's controls and wording are otherwise
+    reproduced, "Copy and use" included, which fills the field *and* copies
+    (cleared after 30 s, through the same `copyText` every other copy on the
+    page uses). One deliberate difference: the panel opens with a password
+    already in it, where the pane opens showing `—` until Generate is
+    pressed — a panel that appeared under a field and shows nothing reads as
+    broken. The generated value is a secret like any other, dropped by
+    `closePassgen`, which `clearEditorFields` calls and every lock path
+    therefore reaches.
   - **The picker is re-readable on its own** (`GET /open/vaults`), because a
     save moves the file's ETag and the value the page was rendered with would
     then be refused for a conflict the visitor did not cause. It also backs
@@ -905,14 +930,18 @@ askrypt/
     the save posts with; the picker is re-readable as a bare fragment and not
     by a signed-out visitor; the file manager deep-links each row; a hostile
     vault name cannot inject markup; the Smart Lock card and its controls ship
-    on every visitor's page and start hidden; and `/open` carries no inline
-    script or style, signed in or out. `server/tests/web.rs` (50 tests, eight
-    of them `/open`) plus `scripts/vault-js-parity.mjs` (50 checks) for the
-    crypto, the Smart Lock bundle's shape among them.
+    on every visitor's page and start hidden; the password generator's panel
+    does too, with every button in it a `type="button"`; and `/open` carries
+    no inline script or style, signed in or out. `server/tests/web.rs`
+    (51 tests, nine of them `/open`) plus `scripts/vault-js-parity.mjs`
+    (64 checks) for the crypto, the Smart Lock bundle's shape and the
+    generator's rules among them.
     The DOM half has no test harness in this repo, by the same no-Node rule:
     the create → upload → adopt → replace round trip was driven by hand
     (jsdom, off-repo) against a local server, and a vault the page creates was
-    checked to open in `askrypt-core` and to pass the server's `is_vault`.
+    checked to open in `askrypt-core` and to pass the server's `is_vault`;
+    the generator panel was driven the same way — open, slider, each toggle,
+    none selected, "Copy and use".
 
 ## Open decisions (not blocking)
 

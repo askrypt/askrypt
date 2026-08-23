@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const vault = await import(join(root, "server/static/vault-format.js"));
 const smartlock = await import(join(root, "server/static/vault-smartlock.js"));
+const passgen = await import(join(root, "server/static/vault-passgen.js"));
 
 const vectors = JSON.parse(
   await readFile(join(root, "app/test/fixtures/vectors.json"), "utf8"),
@@ -277,6 +278,63 @@ await group("Smart Lock arms and re-opens under one answer", async () => {
     left > 0 && left <= smartlock.SMART_LOCK_TIMEOUT_MS,
     true,
   );
+});
+
+// --- The password generator ------------------------------------------------
+//
+// Not part of the format either, and its output is random, so there is nothing
+// to compare byte for byte. What this checks is the rules `core/src/passgen.rs`
+// states: the defaults, the clamp, the character sets, and the refusal.
+
+await group("the password generator follows core/src/passgen.rs", () => {
+  const config = passgen.defaultConfig();
+  check("default length", config.length, 20);
+  check(
+    "every set on by default",
+    [config.useUppercase, config.useLowercase, config.useNumbers, config.useSymbols],
+    [true, true, true, true],
+  );
+  check("MIN_LENGTH", passgen.MIN_LENGTH, 8);
+  check("MAX_LENGTH", passgen.MAX_LENGTH, 100);
+  // `PasswordGenConfig::set_length` clamps rather than refusing.
+  check("length clamps up", passgen.clampLength(5), 8);
+  check("length clamps down", passgen.clampLength(150), 100);
+  check("length in range is kept", passgen.clampLength(37), 37);
+
+  check("default charset size", passgen.charsetFor(config).length, 26 + 26 + 10 + 26);
+  check("requested length is honoured",
+    passgen.generatePassword({ ...config, length: 64 }).length, 64);
+
+  // Each set on its own: a password may only contain what was asked for.
+  for (const [set, chars] of Object.entries(passgen.CHARSETS)) {
+    const only = {
+      length: 100,
+      useUppercase: set === "uppercase",
+      useLowercase: set === "lowercase",
+      useNumbers: set === "numbers",
+      useSymbols: set === "symbols",
+    };
+    const password = passgen.generatePassword(only);
+    check(
+      `${set} only draws from its own set`,
+      [...password].every((c) => chars.includes(c)),
+      true,
+    );
+  }
+
+  let refused = false;
+  try {
+    passgen.generatePassword({
+      length: 20,
+      useUppercase: false,
+      useLowercase: false,
+      useNumbers: false,
+      useSymbols: false,
+    });
+  } catch (err) {
+    refused = err instanceof vault.VaultError;
+  }
+  check("no character type selected is refused", refused, true);
 });
 
 // The entry as the Rust core serializes it: the six card keys are omitted when

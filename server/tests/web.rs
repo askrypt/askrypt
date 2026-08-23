@@ -1818,23 +1818,77 @@ async fn the_viewer_ships_the_smart_lock_controls() {
     // Smart Lock is entirely in the page — the server has no route for it and
     // never sees the bundle — so what it owes is the markup the controller
     // drives, on a signed-out visitor's page as much as an account holder's.
-    for html in [
-        send(&app, get("/open")).await.2,
-        {
-            let cookies = register(&app, "smartlock@example.com").await;
-            send(&app, get_with_cookies("/open", &cookies)).await.2
-        },
-    ] {
+    for html in [send(&app, get("/open")).await.2, {
+        let cookies = register(&app, "smartlock@example.com").await;
+        send(&app, get_with_cookies("/open", &cookies)).await.2
+    }] {
         assert!(html.contains(r#"id="open-smart-arm""#), "no way to arm it");
         assert!(html.contains(r#"id="open-smart-form""#), "no unlock form");
-        assert!(html.contains(r#"id="open-smart-question""#), "no key question");
-        assert!(html.contains(r#"id="open-smart-full""#), "no way out to a full lock");
+        assert!(
+            html.contains(r#"id="open-smart-question""#),
+            "no key question"
+        );
+        assert!(
+            html.contains(r#"id="open-smart-full""#),
+            "no way out to a full lock"
+        );
         // The armed card starts hidden like every other step: the controller
         // reveals one at a time, and a visible one here would be a card with
         // no bundle behind it.
         assert!(
             html.contains(r#"<section class="card" id="open-smart" hidden>"#),
             "the armed card is not hidden"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_viewer_ships_the_password_generator() {
+    let app = app();
+
+    // Like Smart Lock, the generator is entirely in the page — the server has
+    // no route for it and never sees a password — so the markup is all it
+    // owes, and it owes it to a signed-out visitor too: creating a vault and
+    // filling it in needs no account.
+    for html in [send(&app, get("/open")).await.2, {
+        let cookies = register(&app, "passgen@example.com").await;
+        send(&app, get_with_cookies("/open", &cookies)).await.2
+    }] {
+        // The way in: beside Show and Copy on the Secret field, which is the
+        // one place a generated password is wanted.
+        assert!(html.contains(r#"id="entry-generate""#), "no way to open it");
+        // The panel starts hidden, like every other step's markup.
+        assert!(
+            html.contains(r#"<div class="passgen" id="entry-passgen" hidden>"#),
+            "the generator panel is not hidden"
+        );
+        for id in [
+            "passgen-value",
+            "passgen-length",
+            "passgen-upper",
+            "passgen-lower",
+            "passgen-numbers",
+            "passgen-symbols",
+            "passgen-generate",
+            "passgen-copy",
+            "passgen-use",
+            "passgen-close",
+        ] {
+            assert!(html.contains(&format!(r#"id="{id}""#)), "no {id}");
+        }
+        // The panel lives inside the entry form, so a button that defaults to
+        // `submit` would apply the entry instead of generating a password.
+        // The panel nests a div of its own, so it is bounded by what follows
+        // it in the form rather than by the first closing tag.
+        let panel = html
+            .split_once(r#"id="entry-passgen""#)
+            .and_then(|(_, rest)| rest.split_once(r#"<label for="entry-url">"#))
+            .expect("the panel is not in the page")
+            .0;
+        assert_eq!(
+            panel.matches("<button").count(),
+            panel.matches(r#"type="button""#).count(),
+            "a generator button submits the entry form: {panel}"
         );
     }
 }

@@ -247,9 +247,10 @@ next request.
   `DisabledCaptchaVerifier` behind an `info!` (not a `warn!` — a self-hosted
   server behind the rate limiter alone is legitimate, and it keeps the auth
   forms working without JavaScript); `captcha.js` joins the startup asset
-  check only then, since without it nobody can sign in at all. The two
+  check only then, since without it nobody can sign in at all. The four
   viewer modules (`vault-format.js`, `vault-smartlock.js`,
-  `vault-open.js`) are checked **unconditionally** — `/open` is linked from the nav on every page, so
+  `vault-passgen.js`, `vault-open.js`) are checked **unconditionally** —
+  `/open` is linked from the nav on every page, so
   without them it is a page that does nothing. Serves with
   `ConnectInfo` so rate
   limiting and the audit log can key on peer IPs. `std::env::args()` is parsed
@@ -910,7 +911,7 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 50 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 51 tests:
   template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
@@ -927,7 +928,7 @@ next request.
   wrong extension, a ZIP with no `askrypt.json` (which the API's magic check
   admits), and a refused *replace* leaving the stored bytes untouched — each
   asserting the file was not stored, since a readable message over a stored
-  file would be the worse bug; and the eight `/open` tests, which assert what
+  file would be the worse bug; and the nine `/open` tests, which assert what
   the *server* owes the viewer and nothing about the decrypting: the page
   serves a signed-out visitor with a file input and no listing, the create
   form is offered signed in and out alike (creating one needs no account; with
@@ -938,7 +939,9 @@ next request.
   signed-out visitor, the file manager deep-links each row to it, the Smart
   Lock card and its controls ship on every visitor's page and start hidden
   (the server has no route for the feature and never sees a bundle, so the
-  markup is all it owes), and a
+  markup is all it owes), the password generator's panel does the same and
+  every button in it carries `type="button"` (it lives inside the entry form,
+  and a defaulted one would apply the entry instead), and a
   hostile vault name cannot inject markup into the `data-` attribute it lands
   in) and
   `admin.rs` (the Phase 8 gate, 11 tests: first-account-is-admin and the nav
@@ -1019,16 +1022,16 @@ next request.
   `/assets/captcha.js` when a site key is configured, and `/assets/google.js`
   plus `accounts.google.com/gsi/client` when a web client id is; and
   `open.html` loading `/assets/vault-open.js` as `type="module"` (which defers
-  by itself and is what makes its static `import`s of `vault-format.js` and
-  `vault-smartlock.js` resolve). All **external**, since
+  by itself and is what makes its static `import`s of `vault-format.js`,
+  `vault-smartlock.js` and `vault-passgen.js` resolve). All **external**, since
   even the widened CSP forbids inline script, which is why the site key, the
   client id and every value the viewer reads off a row reach the scripts as
   `data-` attributes. Confirmation steps are `<details>` disclosures,
   not scripted dialogs — the CSP forbids the inline handler. `static/` holds
   `style.css`, the vendored `htmx.min.js` (2.0.10), `captcha.js`,
-  `google.js` and the three viewer modules, served at
+  `google.js` and the four viewer modules, served at
   `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN,
-  and the viewer keeps it that way: it is three hand-written ES modules with no
+  and the viewer keeps it that way: it is four hand-written ES modules with no
   dependencies and no build step.
 
   **`vault-format.js`** is the browser port of the vault format — a port of
@@ -1068,6 +1071,25 @@ next request.
   master key is in the bundle at all — since the derivation under it is the
   format's own answer key at a different work factor and every primitive in it
   is already pinned by the vectors.
+
+  **`vault-passgen.js`** is the browser port of `core/src/passgen.rs`, and it
+  is **not part of the format** either — nothing it produces is written to a
+  file and no other implementation reads it — so it sits beside
+  `vault-format.js` under the same no-DOM/no-`fetch`/nothing-persisted
+  contract, which is what lets `scripts/vault-js-parity.mjs` run the shipped
+  file unchanged. Its output is random, so there are no golden vectors: what
+  the gate checks is the rules — the defaults (20 characters, all four sets),
+  `clampLength`'s 8..=100, that each set draws only from its own characters,
+  and that no set selected raises core's own sentence rather than returning an
+  empty string. One thing the port has to do that the Rust gets for free:
+  `rand`'s `random_range` is unbiased, so `randomIndex` draws 32 fresh bits
+  from `crypto.getRandomValues` and **rejects** anything at or above the
+  largest multiple of the set size that fits in them — `% n` would put a thumb
+  on the scale of every password the page produces. The panel around it lives
+  in `vault-open.js`, opened by a Generate button beside Show/Copy on the entry
+  editor's Secret field; there is no counterpart to the desktop's rail button,
+  since the field being edited is the only place a generated password is
+  wanted here.
 
   **`vault-open.js`** is the DOM around them and holds no crypto: pick (a stored
   vault, or a local file that is never uploaded) → the first question → the

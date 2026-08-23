@@ -444,6 +444,69 @@ code {
 .reveal-row input { flex: 1 1 auto; min-width: 0; }
 .reveal-row .linklike { color: var(--accent); white-space: nowrap; }
 
+/* The password generator, opened from the Secret field's Generate button. An
+   inset panel rather than a card: it belongs to the field above it, and a
+   second card inside the editor's would read as a separate step. */
+.passgen {
+  margin: 0.8rem 0 0.4rem;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.passgen-heading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* The password is the point of the panel, so it is the one thing set large.
+   `anywhere` because a 100-character password has no spaces to break at. */
+.passgen-value {
+  display: block;
+  margin: 0.6rem 0 0.9rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+.passgen-length {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+}
+/* The label states the number, so it must not be squeezed by the slider. */
+.passgen-length label {
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.passgen-length input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+/* The four actions sit on one line where there is room, unlike the column
+   `.row-actions` gives a card's own buttons. */
+.passgen-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 1rem;
+}
+.passgen-actions .button.small { margin-top: 0; }
+.passgen-actions .linklike { color: var(--accent); }
+/* `.form .linklike` gives every secondary button in the editor a top margin,
+   which would break this row's alignment. */
+.form .passgen-actions .linklike { margin-top: 0; margin-right: 0; }
+
 /* The editor form ends in one primary action and two secondary ones; the
    primary is full-width by the rule above, so the others need their own gap. */
 .form .linklike { margin-top: 0.9rem; margin-right: 1rem; }

@@ -3,11 +3,11 @@
 {% block title %}Open a vault &middot; Askrypt{% endblock %}
 
 {#-
-  The one entry point, which pulls in the other two modules itself. An external
-  file, like every other script on the site: the CSP is `script-src 'self'`
-  here as everywhere else, and this page deliberately does not widen it.
-  `type="module"` defers by itself, and covers the static imports of
-  `vault-format.js` and `vault-smartlock.js`.
+  The one entry point, which pulls in the other three modules itself. An
+  external file, like every other script on the site: the CSP is
+  `script-src 'self'` here as everywhere else, and this page deliberately does
+  not widen it. `type="module"` defers by itself, and covers the static imports
+  of `vault-format.js`, `vault-smartlock.js` and `vault-passgen.js`.
 -#}
 {% block head %}
 <script type="module" src="/assets/vault-open.js"></script>
@@ -184,6 +184,36 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
                autocapitalize="off" autocorrect="off" spellcheck="false">
         <button class="linklike" type="button" data-reveal="entry-secret">Show</button>
         <button class="linklike" type="button" data-copy="entry-secret">Copy</button>
+        <button class="linklike" type="button" id="entry-generate">Generate</button>
+      </div>
+
+      {#- The password generator, the port of `src/panes/passgen.rs`. It sits
+          inside the entry form, so every one of its buttons is a
+          `type="button"`: a bare button in a form submits it. -#}
+      <div class="passgen" id="entry-passgen" hidden>
+        <p class="passgen-heading">Password generator</p>
+        <output class="passgen-value" id="passgen-value" for="entry-secret">&mdash;</output>
+
+        <div class="passgen-length">
+          <label for="passgen-length">Length: <span id="passgen-length-value">20</span></label>
+          <input id="passgen-length" type="range" min="8" max="100" step="1" value="20">
+        </div>
+
+        <label class="open-check"><input id="passgen-upper" type="checkbox" checked>
+        Uppercase (A-Z)</label>
+        <label class="open-check"><input id="passgen-lower" type="checkbox" checked>
+        Lowercase (a-z)</label>
+        <label class="open-check"><input id="passgen-numbers" type="checkbox" checked>
+        Numbers (0-9)</label>
+        <label class="open-check"><input id="passgen-symbols" type="checkbox" checked>
+        Symbols (!@#&hellip;)</label>
+
+        <p class="row-actions passgen-actions">
+          <button class="button small" type="button" id="passgen-generate">Generate</button>
+          <button class="linklike" type="button" id="passgen-copy">Copy</button>
+          <button class="linklike" type="button" id="passgen-use">Copy and use</button>
+          <button class="linklike" type="button" id="passgen-close">Close</button>
+        </p>
       </div>
 
       <label for="entry-url">URL</label>
@@ -279,9 +309,10 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   <p>It is still JavaScript that this server sent you, so it cannot offer what
   the desktop and mobile apps do: there, the code was installed once and the
   server has no say in it. If that difference matters for your vault, use an
-  app. The three files this page runs are
+  app. The four files this page runs are
   <a href="/assets/vault-format.js">vault-format.js</a>,
-  <a href="/assets/vault-smartlock.js">vault-smartlock.js</a> and
+  <a href="/assets/vault-smartlock.js">vault-smartlock.js</a>,
+  <a href="/assets/vault-passgen.js">vault-passgen.js</a> and
   <a href="/assets/vault-open.js">vault-open.js</a>, they have no dependencies,
   and they are meant to be read.</p>
 </section>

@@ -1,7 +1,8 @@
 // The `/open` page: pick a vault, answer the questions, browse and edit, save.
 //
-// All the crypto lives in `vault-format.js` and `vault-smartlock.js`; this file
-// is the DOM around them. Nothing here writes to `localStorage`,
+// All the crypto lives in `vault-format.js` and `vault-smartlock.js`, and the
+// password generator in `vault-passgen.js`; this file is the DOM around the
+// three of them. Nothing here writes to `localStorage`,
 // `sessionStorage`, IndexedDB, the URL fragment or the console — a decrypted
 // vault exists only in this page's variables and only until it locks.
 //
@@ -19,6 +20,9 @@ import {
 import {
   SMART_LOCK_TIMEOUT_MS, createSmartLock, recoverSmartLock, smartLockRemaining,
 } from "./vault-smartlock.js";
+import {
+  MAX_LENGTH, MIN_LENGTH, clampLength, defaultConfig, generatePassword,
+} from "./vault-passgen.js";
 
 // How long the tab may sit in the background before the vault locks. The
 // mobile app locks the instant it is backgrounded; a browser tab fires the
@@ -544,6 +548,8 @@ function editEntry(index) {
   state.editing = index;
   state.draft = index < 0 ? blankEntry() : { ...state.entries[index] };
   fillEditor(state.draft);
+  // An entry always opens with the generator shut, whatever the last one left.
+  closePassgen();
   $("open-editor-title").textContent = index < 0 ? "New entry" : "Edit entry";
   $("entry-delete").hidden = index < 0;
   show("open-vault", false);
@@ -636,6 +642,9 @@ function clearEditorFields() {
     $(id).value = "";
   }
   $("entry-hidden").checked = false;
+  // A generated password is a secret like any other field's, and this is the
+  // one funnel closing the editor and every lock path both reach.
+  closePassgen();
 }
 
 function markDirty() {
@@ -645,6 +654,108 @@ function markDirty() {
 
 function localTime(unixSeconds) {
   return new Date(unixSeconds * 1000).toLocaleString();
+}
+
+// ---------------------------------------------------------------------------
+// The password generator — the panel under the Secret field
+// ---------------------------------------------------------------------------
+//
+// The port of `src/panes/passgen.rs`, over `vault-passgen.js` the way that
+// pane sits over `askrypt::passgen`. It is a panel rather than a screen of its
+// own because there is only one place a generated password is wanted here: the
+// entry being edited. The desktop's rail button has no counterpart.
+
+/// The character sets and length, which are a preference rather than a secret
+/// and so live for as long as the page does — the pane's `State` does the
+/// same. `passgenValue` beside it is the secret half, and the counterpart of
+/// that struct's `Drop`/`forget`: `closePassgen` is the only way it is dropped
+/// and every lock path reaches it.
+let passgenConfig = defaultConfig();
+let passgenValue = "";
+
+/// Opens the panel with a password already in it.
+///
+/// The one deliberate difference from the pane, which opens showing `—` until
+/// Generate is pressed: there the generator is a screen you navigated to on
+/// purpose, here it is a panel that appeared under a field, and an empty one
+/// reads as broken.
+function openPassgen() {
+  syncPassgenControls();
+  show("entry-passgen", true);
+  regeneratePassgen();
+}
+
+/// Hides the panel and forgets the password — `State::forget`. Called from
+/// `clearEditorFields`, which is the funnel both closing the editor and every
+/// lock path already go through.
+function closePassgen() {
+  passgenValue = "";
+  $("passgen-value").textContent = "—";
+  show("entry-passgen", false);
+}
+
+/// Writes the controls out of `passgenConfig`, so the markup's own values are
+/// only ever the initial ones and the panel comes back the way it was left.
+function syncPassgenControls() {
+  const slider = $("passgen-length");
+  slider.min = String(MIN_LENGTH);
+  slider.max = String(MAX_LENGTH);
+  slider.value = String(passgenConfig.length);
+  $("passgen-length-value").textContent = String(passgenConfig.length);
+  $("passgen-upper").checked = passgenConfig.useUppercase;
+  $("passgen-lower").checked = passgenConfig.useLowercase;
+  $("passgen-numbers").checked = passgenConfig.useNumbers;
+  $("passgen-symbols").checked = passgenConfig.useSymbols;
+}
+
+/// `State::regenerate`: a fresh password, or the reason there isn't one on the
+/// status line — where the pane puts it in `session.error_message`.
+function regeneratePassgen() {
+  try {
+    passgenValue = generatePassword(passgenConfig);
+    $("passgen-value").textContent = passgenValue;
+    say("");
+  } catch (err) {
+    passgenValue = "";
+    $("passgen-value").textContent = "—";
+    say(err instanceof VaultError ? err.message : "Something went wrong.", "error");
+  }
+}
+
+/// Every control regenerates immediately, exactly as in the pane — the length
+/// clamps in `vault-passgen.js`, so nothing here has to.
+function onPassgenControl() {
+  passgenConfig = {
+    length: clampLength($("passgen-length").value),
+    useUppercase: $("passgen-upper").checked,
+    useLowercase: $("passgen-lower").checked,
+    useNumbers: $("passgen-numbers").checked,
+    useSymbols: $("passgen-symbols").checked,
+  };
+  $("passgen-length-value").textContent = String(passgenConfig.length);
+  regeneratePassgen();
+}
+
+async function copyPassgen() {
+  if (!passgenValue) {
+    say("No password to copy.", "error");
+    return;
+  }
+  await copyText(passgenValue);
+}
+
+/// `Msg::CopyAndUse`: the clipboard *and* the field, then forget it. The field
+/// is left masked — revealing it would be a second decision, and the Show
+/// button is right there.
+async function usePassgen() {
+  if (!passgenValue) {
+    say("No password to copy.", "error");
+    return;
+  }
+  const password = passgenValue;
+  $("entry-secret").value = password;
+  closePassgen();
+  await copyText(password);
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,9 +1230,8 @@ const clearClipboardSoon = (() => {
   return fn;
 })();
 
-async function copyField(id) {
-  const value = $(id).value;
-  if (!value) return;
+/// The one clipboard path: a field's value, or the generator's password.
+async function copyText(value) {
   try {
     await navigator.clipboard.writeText(value);
     clearClipboardSoon();
@@ -1129,6 +1239,12 @@ async function copyField(id) {
   } catch {
     say("This browser would not let the page use the clipboard.", "error");
   }
+}
+
+async function copyField(id) {
+  const value = $(id).value;
+  if (!value) return;
+  await copyText(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,6 +1312,16 @@ function init() {
   for (const button of document.querySelectorAll("[data-copy]")) {
     button.addEventListener("click", () => copyField(button.getAttribute("data-copy")));
   }
+
+  $("entry-generate").addEventListener("click", openPassgen);
+  for (const id of ["passgen-length", "passgen-upper", "passgen-lower",
+    "passgen-numbers", "passgen-symbols"]) {
+    $(id).addEventListener("input", onPassgenControl);
+  }
+  $("passgen-generate").addEventListener("click", regeneratePassgen);
+  $("passgen-copy").addEventListener("click", copyPassgen);
+  $("passgen-use").addEventListener("click", usePassgen);
+  $("passgen-close").addEventListener("click", closePassgen);
 
   $("open-save-server").addEventListener("click", saveToServer);
   $("open-save-download").addEventListener("click", saveDownload);
