@@ -694,7 +694,7 @@ function localTime(unixSeconds) {
 }
 
 // ---------------------------------------------------------------------------
-// The password generator — the panel under the Secret field
+// The password generator — the panel under the Password field
 // ---------------------------------------------------------------------------
 //
 // The port of `src/panes/passgen.rs`, over `vault-passgen.js` the way that
