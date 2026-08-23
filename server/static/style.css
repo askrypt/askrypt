@@ -467,6 +467,14 @@ code {
 .qa-row label:first-child { margin-top: 0.2rem; }
 .qa-row .qa-remove { font-size: 0.85rem; }
 
+/* The masked fields on `/open`. They are text inputs with their glyphs
+   replaced rather than password fields, because a password field being
+   submitted is what makes a browser offer to save what was typed into it, and
+   a security answer or a vault secret in the browser's own password store is
+   exactly what that page promises never to leave behind. `vault-open.js`
+   feature-detects this property and keeps `type="password"` without it. */
+.masked { -webkit-text-security: disc; }
+
 /* A masked field with its Show and Copy buttons. The input keeps the width it
    would have had on its own; the buttons sit beside it. */
 .reveal-row { display: flex; gap: 0.6rem; align-items: center; }

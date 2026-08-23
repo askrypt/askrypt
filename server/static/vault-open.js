@@ -40,6 +40,42 @@ const VAULT_EXTENSION = ".askrypt";
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------------------
+// Masking — why none of these fields is a password field
+// ---------------------------------------------------------------------------
+
+// A browser offers to save whatever was typed into an `input[type=password]`
+// when the form around it is submitted, and nothing on this side stops the
+// offer: `autocomplete="off"` is advice a password manager ignores, and
+// `preventDefault` only cancels the navigation, not the heuristic. Every
+// masked field here is either key material — a security answer — or a secret
+// out of the vault, so accepting that offer would put in the browser's own
+// password store exactly what this page promises to keep nowhere.
+//
+// So masking is CSS over an ordinary text field, which no password manager
+// watches. The fallback is the honest one: where the property is unsupported
+// the fields stay `type="password"`, because a secret rendered in the clear
+// is a worse outcome than a save prompt. That is also why the markup declares
+// them as password fields — a browser that cannot mask them needs no
+// conversion, and one that can is converted at startup.
+const CSS_MASKING = CSS.supports("-webkit-text-security", "disc");
+
+/// Makes an input maskable, and masks it.
+function maskable(input) {
+  if (CSS_MASKING) input.type = "text";
+  setMasked(input, true);
+  return input;
+}
+
+function setMasked(input, masked) {
+  if (CSS_MASKING) input.classList.toggle("masked", masked);
+  else input.type = masked ? "password" : "text";
+}
+
+function isMasked(input) {
+  return CSS_MASKING ? input.classList.contains("masked") : input.type === "password";
+}
+
+// ---------------------------------------------------------------------------
 // State — everything a lock has to drop
 // ---------------------------------------------------------------------------
 
@@ -248,7 +284,8 @@ function addQuestionRow() {
   // Masked unless the visitor asks otherwise, and never autocorrected: a phone
   // keyboard would otherwise store an answer that is not the one being typed,
   // and normalization only strips spaces, dashes and capitals.
-  answer.type = $("open-create-show").checked ? "text" : "password";
+  maskable(answer);
+  setMasked(answer, !$("open-create-show").checked);
   for (const [k, v] of Object.entries({
     autocomplete: "off", autocapitalize: "off", autocorrect: "off",
     spellcheck: "false",
@@ -296,7 +333,7 @@ function numberQuestionRows() {
 function toggleCreateAnswers() {
   const shown = $("open-create-show").checked;
   for (const answer of document.querySelectorAll("#open-create-questions .qa-answer")) {
-    answer.type = shown ? "text" : "password";
+    setMasked(answer, !shown);
   }
 }
 
@@ -407,8 +444,8 @@ function buildAnswerFields(questions) {
 
     const input = document.createElement("input");
     input.id = `open-answer-${i}`;
-    input.type = "password";
     input.required = true;
+    maskable(input);
     // A phone keyboard will otherwise autocorrect an answer into a different
     // one, and normalization only strips spaces, dashes and capitals.
     for (const [k, v] of Object.entries({
@@ -582,7 +619,7 @@ function fillEditor(entry) {
     : "";
   // Secrets start masked whatever they were left as last time.
   for (const id of ["entry-secret", "entry-card-number", "entry-card-cvv", "entry-card-pin"]) {
-    $(id).type = "password";
+    setMasked($(id), true);
   }
   for (const button of document.querySelectorAll("[data-reveal]")) {
     button.textContent = "Show";
@@ -1262,6 +1299,10 @@ function init() {
     return;
   }
 
+  // The template's own masked fields; the ones built at runtime are made
+  // maskable where they are created.
+  for (const input of document.querySelectorAll("input[type='password']")) maskable(input);
+
   bindPicker();
   $("open-refresh")?.addEventListener("click", () => attempt("Refreshing…", async () => {
     if (!await refreshPicker()) throw new VaultError("Could not refresh the list.");
@@ -1304,8 +1345,8 @@ function init() {
   for (const button of document.querySelectorAll("[data-reveal]")) {
     button.addEventListener("click", () => {
       const field = $(button.getAttribute("data-reveal"));
-      const hiddenNow = field.type === "password";
-      field.type = hiddenNow ? "text" : "password";
+      const hiddenNow = isMasked(field);
+      setMasked(field, !hiddenNow);
       button.textContent = hiddenNow ? "Hide" : "Show";
     });
   }

@@ -1116,7 +1116,18 @@ next request.
   of the returned HTML rather than reinvented) and a downloaded copy (a
   browser cannot write back over the file you picked). All rendered text goes
   through `textContent`, never `innerHTML`: an entry name comes out of a file
-  anybody could have written. It locks on an explicit Lock, on 3 minutes idle
+  anybody could have written. **No field on the page is `type="password"`
+  in a browser that can mask a text one**: masking is the `.masked` class
+  (`-webkit-text-security`), applied through `maskable`/`setMasked` and
+  feature-detected once in `CSS_MASKING`. A password field being submitted is
+  what makes a browser offer to save what was typed into it, and a security
+  answer sitting in the browser's own password store is precisely what this
+  page promises to leave nowhere — `autocomplete="off"` is advice a password
+  manager ignores, and `preventDefault` cancels the navigation, not the
+  heuristic. Without the property the fields stay password fields, a secret
+  rendered in the clear being the worse outcome, which is why the template
+  declares them that way and startup converts them. It locks on an explicit
+  Lock, on 3 minutes idle
   (matching the mobile app's `kInactivityTimeout`) and 60 s after the tab is
   hidden — not instantly like the mobile app, because a browser fires the same
   event when you merely switch tabs and locking there would make it impossible
