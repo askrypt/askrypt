@@ -41,7 +41,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   <h2>Choose a vault</h2>
 {%- if let Some(listing) = vaults %}
   {{ listing|safe }}
-  <p class="row-actions"><button class="linklike" type="button" id="open-refresh">Refresh
+  <p class="row-actions"><button class="button small secondary" type="button" id="open-refresh">Refresh
   this list</button></p>
 {%- else %}
   <p>You are not signed in, so there is nothing stored here to list.
@@ -77,7 +77,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
 
     <div id="open-create-questions"></div>
 
-    <p class="row-actions"><button class="linklike" type="button"
+    <p class="row-actions"><button class="button small secondary" type="button"
     id="open-create-add">Add another question</button></p>
 
     <label class="open-check"><input id="open-create-show" type="checkbox">
@@ -90,7 +90,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
     Latin. It cannot be changed later without re-keying the vault.</p>
 
     <button class="button" type="submit">Create this vault</button>
-    <button class="linklike" type="button" data-action="cancel">Cancel</button>
+    <button class="button small secondary" type="button" data-action="cancel">Cancel</button>
   </form>
 </section>
 
@@ -105,7 +105,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
     <p class="hint">Answers ignore spaces, dashes and capitals, so type it
     however you like.</p>
     <button class="button" type="submit" id="open-first-submit">Continue</button>
-    <button class="linklike" type="button" data-action="cancel">Choose a different vault</button>
+    <button class="button small secondary" type="button" data-action="cancel">Choose a different vault</button>
   </form>
 </section>
 
@@ -115,7 +115,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   <form class="form wide" id="open-rest-form">
     <div id="open-rest-fields"></div>
     <button class="button" type="submit" id="open-rest-submit">Unlock</button>
-    <button class="linklike" type="button" data-action="cancel">Start over</button>
+    <button class="button small secondary" type="button" data-action="cancel">Start over</button>
   </form>
 </section>
 
@@ -132,7 +132,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
            autocapitalize="off" autocorrect="off" spellcheck="false" required>
     <p class="hint" id="open-smart-countdown"></p>
     <button class="button" type="submit">Unlock</button>
-    <button class="linklike danger" type="button" id="open-smart-full">Lock
+    <button class="button small secondary danger" type="button" id="open-smart-full">Lock
     it fully</button>
   </form>
 </section>
@@ -153,10 +153,10 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   <ul class="pick-list" id="open-entries"></ul>
   <p class="hint" id="open-empty" hidden>Nothing matches.</p>
 
-  <p class="row-actions">
+  <p class="row-actions inline">
     <button class="button small" type="button" id="open-add">Add an entry</button>
-    <button class="linklike" type="button" id="open-smart-arm">Smart Lock</button>
-    <button class="linklike" type="button" id="open-lock">Lock</button>
+    <button class="button small secondary" type="button" id="open-smart-arm">Smart Lock</button>
+    <button class="button small secondary" type="button" id="open-lock">Lock</button>
   </p>
 </section>
 
@@ -182,9 +182,9 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
       <div class="reveal-row">
         <input id="entry-secret" type="password" autocomplete="new-password"
                autocapitalize="off" autocorrect="off" spellcheck="false">
-        <button class="linklike" type="button" data-reveal="entry-secret">Show</button>
-        <button class="linklike" type="button" data-copy="entry-secret">Copy</button>
-        <button class="linklike" type="button" id="entry-generate">Generate</button>
+        <button class="button small secondary" type="button" data-reveal="entry-secret">Show</button>
+        <button class="button small secondary" type="button" data-copy="entry-secret">Copy</button>
+        <button class="button small secondary" type="button" id="entry-generate">Generate</button>
       </div>
 
       {#- The password generator, the port of `src/panes/passgen.rs`. It sits
@@ -210,9 +210,9 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
 
         <p class="row-actions passgen-actions">
           <button class="button small" type="button" id="passgen-generate">Generate</button>
-          <button class="linklike" type="button" id="passgen-copy">Copy</button>
-          <button class="linklike" type="button" id="passgen-use">Copy and use</button>
-          <button class="linklike" type="button" id="passgen-close">Close</button>
+          <button class="button small secondary" type="button" id="passgen-copy">Copy</button>
+          <button class="button small secondary" type="button" id="passgen-use">Copy and use</button>
+          <button class="button small secondary" type="button" id="passgen-close">Close</button>
         </p>
       </div>
 
@@ -237,8 +237,8 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
       <div class="reveal-row">
         <input id="entry-card-number" type="password" autocomplete="off"
                inputmode="numeric" spellcheck="false">
-        <button class="linklike" type="button" data-reveal="entry-card-number">Show</button>
-        <button class="linklike" type="button" data-copy="entry-card-number">Copy</button>
+        <button class="button small secondary" type="button" data-reveal="entry-card-number">Show</button>
+        <button class="button small secondary" type="button" data-copy="entry-card-number">Copy</button>
       </div>
 
       <label for="entry-card-expiry">Expiry (MM/YY)</label>
@@ -248,16 +248,16 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
       <div class="reveal-row">
         <input id="entry-card-cvv" type="password" autocomplete="off"
                inputmode="numeric" spellcheck="false">
-        <button class="linklike" type="button" data-reveal="entry-card-cvv">Show</button>
-        <button class="linklike" type="button" data-copy="entry-card-cvv">Copy</button>
+        <button class="button small secondary" type="button" data-reveal="entry-card-cvv">Show</button>
+        <button class="button small secondary" type="button" data-copy="entry-card-cvv">Copy</button>
       </div>
 
       <label for="entry-card-pin">PIN</label>
       <div class="reveal-row">
         <input id="entry-card-pin" type="password" autocomplete="off"
                inputmode="numeric" spellcheck="false">
-        <button class="linklike" type="button" data-reveal="entry-card-pin">Show</button>
-        <button class="linklike" type="button" data-copy="entry-card-pin">Copy</button>
+        <button class="button small secondary" type="button" data-reveal="entry-card-pin">Show</button>
+        <button class="button small secondary" type="button" data-copy="entry-card-pin">Copy</button>
       </div>
     </div>
 
@@ -273,8 +273,8 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
     <p class="hint" id="entry-stamp"></p>
 
     <button class="button" type="submit">Apply</button>
-    <button class="linklike" type="button" id="entry-cancel">Cancel</button>
-    <button class="linklike danger" type="button" id="entry-delete">Delete this entry</button>
+    <button class="button small secondary" type="button" id="entry-cancel">Cancel</button>
+    <button class="button small secondary danger" type="button" id="entry-delete">Delete this entry</button>
   </form>
 </section>
 
@@ -282,7 +282,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
 <section class="card" id="open-save" hidden>
   <h2>Save</h2>
   <p class="hint" id="open-save-state"></p>
-  <p class="row-actions">
+  <p class="row-actions inline">
     <button class="button small" type="button" id="open-save-server" hidden>Save to
     this account</button>
     <button class="button small" type="button" id="open-save-download">Download a

@@ -256,7 +256,7 @@ function addQuestionRow() {
 
   const remove = document.createElement("button");
   remove.type = "button";
-  remove.className = "linklike danger qa-remove";
+  remove.className = "button small secondary danger qa-remove";
   remove.textContent = "Remove this question";
   remove.addEventListener("click", () => removeQuestionRow(row));
 

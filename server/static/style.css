@@ -149,6 +149,9 @@ p { margin: 0.6rem 0; }
   font: inherit;
 }
 .form .button { margin-top: 1.25rem; width: 100%; }
+/* Only the primary action is the wide one; the secondaries beside it keep
+   their natural width and share a line. */
+.form .button.secondary { width: auto; margin-top: 0.9rem; margin-right: 0.6rem; }
 .form .alt { margin-top: 1rem; color: var(--muted); font-size: 0.9rem; }
 
 /* Separator between the password form and the Google button. The rules are
@@ -182,7 +185,9 @@ p { margin: 0.6rem 0; }
 .button {
   display: inline-block;
   padding: 0.55rem 1.1rem;
-  border: 0;
+  /* Transparent rather than none, so `.secondary`'s border adds no height and
+     the two sit level in the same row. */
+  border: 1px solid transparent;
   border-radius: 8px;
   background: var(--accent);
   color: #fff;
@@ -210,6 +215,23 @@ form.inline { display: inline; margin: 0; }
 .button.danger { background: var(--danger); }
 .linklike.danger, summary.danger { color: var(--danger); }
 
+/* A secondary action: the same shape as `.button`, outlined in the card's own
+   colours instead of filled. The alternative to a filled button is not a
+   `.linklike` one — a bare label beside a real button reads as a link, which
+   is what Smart Lock and Lock looked like on /open. `.linklike` stays for the
+   places that genuinely are links in flow: the nav's sign-out, a table row's
+   inline actions. */
+.button.secondary {
+  background: var(--bg);
+  color: var(--fg);
+  border-color: var(--line);
+}
+.button.secondary:hover { border-color: var(--accent); color: var(--accent); filter: none; }
+/* Destructive, but still secondary: outlined until it is hovered, so it is not
+   the loudest thing on a card whose primary action is the safe one. */
+.button.secondary.danger { background: var(--bg); color: var(--danger); border-color: var(--danger); }
+.button.secondary.danger:hover { background: var(--danger); color: var(--danger-ink); filter: none; }
+
 /* ---------- listings (devices, vault files) ---------- */
 
 /* Wide tables scroll inside their card instead of stretching the page. */
@@ -230,8 +252,15 @@ table.listing td {
 table.listing th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
 table.listing tbody tr:last-child td { border-bottom: 0; }
 
-.row-actions { display: flex; flex-direction: column; gap: 0.4rem; align-items: flex-start; }
+.row-actions { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; }
 .row-actions a { color: var(--accent); }
+/* The row's own gap does the spacing, so the buttons in it drop the top margin
+   `.button.small` carries for a form. */
+.row-actions .button { margin-top: 0; }
+/* A card whose actions are all buttons puts them on one line where there is
+   room: a column of buttons reads as a list of steps rather than a choice.
+   The default stays a column for the table cells that mix links and text. */
+.row-actions.inline { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
 
 form.rename { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 form.rename input[type="text"] {
@@ -442,7 +471,7 @@ code {
    would have had on its own; the buttons sit beside it. */
 .reveal-row { display: flex; gap: 0.6rem; align-items: center; }
 .reveal-row input { flex: 1 1 auto; min-width: 0; }
-.reveal-row .linklike { color: var(--accent); white-space: nowrap; }
+.reveal-row .button.secondary { margin-top: 0; margin-right: 0; white-space: nowrap; }
 
 /* The password generator, opened from the Secret field's Generate button. An
    inset panel rather than a card: it belongs to the field above it, and a
@@ -501,12 +530,7 @@ code {
   gap: 0.9rem;
   margin-top: 1rem;
 }
-.passgen-actions .button.small { margin-top: 0; }
-.passgen-actions .linklike { color: var(--accent); }
-/* `.form .linklike` gives every secondary button in the editor a top margin,
-   which would break this row's alignment. */
-.form .passgen-actions .linklike { margin-top: 0; margin-right: 0; }
-
-/* The editor form ends in one primary action and two secondary ones; the
-   primary is full-width by the rule above, so the others need their own gap. */
-.form .linklike { margin-top: 0.9rem; margin-right: 1rem; }
+.passgen-actions .button { margin-top: 0; }
+/* `.form .button.secondary` gives every secondary button in the editor a top
+   margin, which would break this row's alignment. */
+.passgen-actions .button.secondary { margin-top: 0; margin-right: 0; }
