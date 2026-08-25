@@ -252,6 +252,13 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
                         return (Action::None, false);
                     };
                     vault.add_attachment(attached.attachment.id.clone(), attached.sealed);
+                    // An unnamed item takes the file's name, extension and all:
+                    // an attachment is most of what a `File` entry is, and the
+                    // save below would refuse a blank name anyway. Only when the
+                    // field is empty, so nothing the user typed is overwritten.
+                    if state.entry.name.trim().is_empty() {
+                        state.entry.name = attached.attachment.name.clone();
+                    }
                     state.entry.attachments.push(attached.attachment);
                     state.error = None;
                 }
