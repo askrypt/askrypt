@@ -13,7 +13,7 @@
 //! ## Quick Start Example
 //!
 //! ```
-//! use askrypt::{AskryptFile, SecretEntry};
+//! use askrypt::{Attachments, AskryptFile, SecretEntry};
 //!
 //! // Define your security questions
 //! let questions = vec![
@@ -42,6 +42,7 @@
 //!         created: 1704067200,
 //!         modified: 1704067200,
 //!         hidden: false,
+//!         attachments: Vec::new(),
 //!         card: Default::default(),
 //!     }
 //! ];
@@ -54,6 +55,7 @@
 //!     Some(5000),
 //!     false,
 //!     None, // no existing master key: mint one
+//!     &Attachments::new(), // no file attachments
 //! ).unwrap();
 //!
 //! // Save to disk
@@ -75,7 +77,8 @@ pub mod types;
 
 #[cfg(feature = "server-storage")]
 pub use storage::{
-    BrowserLogin, BrowserLoginStatus, RemoteVault, ServerClient, ServerStorage, normalize_base_url,
+    BrowserLogin, BrowserLoginStatus, MAX_VAULT_BYTES, RemoteVault, ServerClient, ServerStorage,
+    normalize_base_url,
 };
 pub use storage::{
     LocalFileStorage, MemoryStorage, RemoteRevision, Revision, StorageError, VaultStorage,
@@ -96,6 +99,35 @@ type Aes256CbcEnc = Encryptor<Aes256>;
 type Aes256CbcDec = Decryptor<Aes256>;
 
 const DEFAULT_KDF: &str = "pbkdf2";
+
+/// The one ZIP member the format has always had: the vault's JSON.
+const VAULT_ENTRY: &str = "askrypt.json";
+
+/// The prefix every file-attachment member carries. The rest of the name is the
+/// attachment's [`Attachment::id`] and nothing else, so the archive listing of a
+/// vault reveals how many files it holds but never what they are called.
+const ATTACHMENT_PREFIX: &str = "files/";
+
+/// Ceiling on the inflated `askrypt.json`.
+///
+/// This is the one member a reader has no choice but to hold whole, so it is
+/// the one a **crafted** archive can use to make it allocate: a few hundred
+/// bytes of deflated zeros expand to gigabytes. A megabyte is orders of
+/// magnitude above any real vault's metadata — the entries are one base64
+/// string, however many there are — and it is the same figure the server's own
+/// reader (`server/src/vaultfile.rs`) and the browser port use.
+///
+/// There is deliberately **no ceiling on the attachments** any more. There used
+/// to be one, 256 MiB across the archive, and it was a bound on what a reader
+/// would allocate — back when opening a vault inflated every blob into memory.
+/// Nothing does now: opening lists the members, saving copies them across
+/// compressed, and extracting one streams it to the file the user named. A
+/// crafted archive can therefore make this crate write a large file to a
+/// destination the user chose, which is what any archiver does, and the cap
+/// would only have stopped legitimate vaults from opening. The Dart and browser
+/// ports still inflate, so they still cap; that is a property of a reader, not
+/// of the format.
+const MAX_JSON_BYTES: u64 = 1024 * 1024;
 
 /// Derive a 32-byte key via PBKDF2 into a self-zeroizing array.
 ///
@@ -129,10 +161,17 @@ impl AskryptFile {
     ///   one. Pass `None` **only for a brand-new vault**: every save of an
     ///   already-open vault must hand back the key
     ///   [`decrypt_with_master`](Self::decrypt_with_master) recovered, so that
-    ///   blobs encrypted under it (the coming file attachments) survive the
+    ///   blobs encrypted under it (the file attachments) survive the
     ///   write. Changing the questions and answers is still a save in this
     ///   sense — the answers re-wrap the same key, which is the whole point of
     ///   the master-key indirection.
+    /// * `attachments` - The vault's attachment ciphertexts. Every save must
+    ///   hand these back for the same reason it must hand back the master key:
+    ///   they are encrypted under it and this call rebuilds the whole archive.
+    ///   Pass [`Attachments::new`] when there are none. Blobs no entry in
+    ///   `secret_data` refers to are **dropped** here rather than written —
+    ///   `SPEC.md` makes that a rule, so that deleting an attachment shrinks
+    ///   the vault.
     ///
     /// `salt0`, `salt1` and the `data` IV are always regenerated, even when the
     /// master key is kept. The IV especially: AES-CBC under a repeated key *and*
@@ -146,7 +185,7 @@ impl AskryptFile {
     /// # Example
     ///
     /// ```
-    /// use askrypt::{AskryptFile, SecretEntry};
+    /// use askrypt::{Attachments, AskryptFile, SecretEntry};
     ///
     /// let questions = vec![
     ///     "What is your mother's maiden name?".to_string(),
@@ -170,12 +209,13 @@ impl AskryptFile {
     ///         created: 1704067200,
     ///         modified: 1704067200,
     ///         hidden: false,
+    ///         attachments: Vec::new(),
     ///         card: Default::default(),
     ///     }
     /// ];
     ///
     /// let askrypt_file =
-    ///     AskryptFile::create(questions, answers, data, Some(6000), false, None).unwrap();
+    ///     AskryptFile::create(questions, answers, data, Some(6000), false, None, &Attachments::new()).unwrap();
     /// ```
     pub fn create(
         questions: Vec<String>,
@@ -184,6 +224,7 @@ impl AskryptFile {
         iterations: Option<u32>,
         translit: bool,
         master: Option<&MasterSecret>,
+        attachments: &Attachments,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Validate inputs
         if questions.len() < 2 {
@@ -248,7 +289,12 @@ impl AskryptFile {
         let iv_array: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
         let data = encrypt_to_base64(&secret_data, master_key.as_bytes(), &iv_array)?;
 
-        // Step 7: Create and return AskryptFile
+        // Step 7: Carry the attachment blobs across, less any the entries being
+        // written no longer refer to.
+        let mut attachments = attachments.clone();
+        attachments.retain_referenced(&secret_data);
+
+        // Step 8: Create and return AskryptFile
         let mut file = AskryptFile {
             version: "0.9".to_string(),
             question0: questions[0].clone(),
@@ -263,6 +309,7 @@ impl AskryptFile {
             qs,
             master,
             data,
+            attachments,
         };
         // Every write goes through `create` (the vault's blobs are re-encrypted
         // on each save), so stamping here keeps the fields current.
@@ -293,7 +340,7 @@ impl AskryptFile {
     /// # Example
     ///
     /// ```
-    /// use askrypt::{AskryptFile, SecretEntry };
+    /// use askrypt::{Attachments, AskryptFile, SecretEntry};
     ///
     /// let questions = vec![
     ///     "What is your mother's maiden name?".to_string(),
@@ -317,12 +364,13 @@ impl AskryptFile {
     ///         created: 1704067200,
     ///         modified: 1704067200,
     ///         hidden: false,
+    ///         attachments: Vec::new(),
     ///         card: Default::default(),
     ///     }
     /// ];
     ///
     /// let askrypt_file =
-    ///     AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), false, None)
+    ///     AskryptFile::create(questions, answers.clone(), data.clone(), Some(6000), false, None, &Attachments::new())
     ///         .unwrap();
     /// let questions_data = askrypt_file.get_questions_data(answers[0].clone()).unwrap();
     /// let decrypted_data = askrypt_file.decrypt(&questions_data, answers[1..].into()).unwrap();
@@ -423,35 +471,138 @@ impl AskryptFile {
         Ok(questions_data)
     }
 
+    /// Stream the whole archive into `out`, taking each attachment from its
+    /// source rather than from memory.
+    ///
+    /// This is the writer every other write path goes through. `askrypt.json`
+    /// is written first, then one `files/<id>` member per attachment in id
+    /// order, each taken from wherever [`Attachments`] says it currently lives:
+    ///
+    /// * [`AttachmentSource::Carried`] — copied **verbatim** out of the archive
+    ///   at [`Attachments::origin`], compressed bytes, method and CRC intact.
+    ///   Nothing is inflated, deflated or decrypted, which is what makes
+    ///   carrying a large attachment across a save nearly free. It is legal
+    ///   because the master key is never rotated (`SPEC.md`, "Master key
+    ///   lifetime"), so a member encrypted under it stays valid forever.
+    /// * [`AttachmentSource::Sealed`] — copied from its ciphertext file and
+    ///   deflated, like `askrypt.json`. Every member of the archive is written
+    ///   the same way. It buys no space (the body is AES-CBC ciphertext, which
+    ///   does not compress; deflate falls back to stored blocks and adds a few
+    ///   bytes per 64 KB), so this is uniformity rather than economy, and
+    ///   readers handle both methods regardless.
+    ///
+    /// A carried member the origin archive turns out not to hold is skipped,
+    /// with the same tolerance the reader has for a dangling reference
+    /// (`SPEC.md` rule 3). A carried member with **no origin at all** is an
+    /// error rather than a silent omission: dropping it would delete the user's
+    /// file, which `SPEC.md` rule 4 exists to prevent.
+    pub fn write_archive<W: Write + std::io::Seek>(
+        &self,
+        out: W,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+
+        let mut zip = zip::ZipWriter::new(out);
+        let options = SimpleFileOptions::default();
+
+        zip.start_file(VAULT_ENTRY, options)?;
+        zip.write_all(json.as_bytes())?;
+
+        // Opened lazily and once: a vault with no carried attachments — a brand
+        // new one, or one whose origin is the file we are replacing — must not
+        // pay for opening an archive it never reads.
+        let mut origin: Option<zip::ZipArchive<std::io::BufReader<std::fs::File>>> = None;
+
+        for (id, source) in self.attachments.iter() {
+            let name = format!("{ATTACHMENT_PREFIX}{id}");
+            match source {
+                AttachmentSource::Sealed(path) => {
+                    let mut sealed = buffered_read(std::fs::File::open(path)?);
+                    zip.start_file(&name, options)?;
+                    std::io::copy(&mut sealed, &mut zip)?;
+                }
+                AttachmentSource::Carried => {
+                    let archive = match &mut origin {
+                        Some(archive) => archive,
+                        None => {
+                            let path = self.attachments.origin().ok_or(
+                                "The archive these attachments came from is no longer open",
+                            )?;
+                            origin.insert(zip::ZipArchive::new(buffered_read(
+                                std::fs::File::open(path)?,
+                            ))?)
+                        }
+                    };
+                    let Some(index) = archive.index_for_name(&name) else {
+                        continue;
+                    };
+                    zip.raw_copy_file(archive.by_index_raw(index)?)?;
+                }
+            }
+        }
+
+        // `finish` writes the central directory but does not flush the writer
+        // it was handed; a `BufWriter` dropped afterwards would swallow the
+        // error from its own last write, which is the one that matters.
+        let mut out = zip.finish()?;
+        out.flush()?;
+        Ok(())
+    }
+
     /// Serialize the AskryptFile to an in-memory ZIP archive with internal file
     /// name "askrypt.json".
     ///
-    /// This is the I/O-agnostic counterpart to [`save_to_file`](Self::save_to_file)
-    /// and is the entry point used by non-filesystem platforms (e.g. mobile,
-    /// where storage is mediated by the OS rather than raw paths).
+    /// The buffered convenience over [`write_archive`](Self::write_archive), for
+    /// callers that genuinely want the bytes: the server backend (whose vaults
+    /// are capped at 10 MiB anyway), the golden-vector generator, and tests.
+    /// Anything writing to a file should use `write_archive` directly, since
+    /// this holds the whole archive — attachments and all — in one allocation.
     ///
     /// # Returns
     ///
     /// Returns a Result containing the ZIP archive bytes or an error
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let json = serde_json::to_string_pretty(self)?;
         let mut buf = Vec::new();
-        {
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let options = SimpleFileOptions::default();
-
-            zip.start_file("askrypt.json", options)?;
-            zip.write_all(json.as_bytes())?;
-
-            zip.finish()?;
-        }
+        self.write_archive(std::io::Cursor::new(&mut buf))?;
         Ok(buf)
+    }
+
+    /// Parse the archive at `path`, indexing its attachments without reading
+    /// one of them.
+    ///
+    /// This is the reader for anything backed by a file, and the only one that
+    /// yields a vault whose attachments can be written back out. It reads
+    /// `askrypt.json` and *lists* the `files/` members; each becomes an
+    /// [`AttachmentSource::Carried`] against `path`, so their bytes stay on disk
+    /// until something actually asks for one. A vault holding a gigabyte of
+    /// attachments therefore opens in the same memory as an empty one.
+    ///
+    /// The caller must keep `path` valid for as long as the vault is open — the
+    /// desktop app holds a write lock on it for exactly that reason.
+    pub fn from_path<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = path.as_ref();
+        let mut zip = zip::ZipArchive::new(buffered_read(std::fs::File::open(path)?))?;
+        let mut askrypt_file = Self::read_json(&mut zip)?;
+        askrypt_file.attachments = Attachments::from_origin(path, attachment_ids(&zip));
+        Ok(askrypt_file)
     }
 
     /// Deserialize an AskryptFile from an in-memory ZIP archive containing
     /// "askrypt.json".
     ///
-    /// This is the I/O-agnostic counterpart to [`load_from_file`](Self::load_from_file).
+    /// The buffered counterpart to [`from_path`](Self::from_path), kept for
+    /// callers that only ever hold bytes: the [`storage::VaultStorage`] default
+    /// `load_vault`, the parity fixtures, tests.
+    ///
+    /// Its attachments are indexed as [`AttachmentSource::Carried`] with **no
+    /// origin**, because a byte slice is not somewhere they can be read from
+    /// again. Such a vault opens, decrypts and lists its attachments perfectly
+    /// well; what it cannot do is be written back out, and
+    /// [`write_archive`](Self::write_archive) says so with an error rather than
+    /// quietly dropping the files (`SPEC.md` rule 4). Spill the bytes to a file
+    /// and use `from_path` when the vault has to survive a save.
     ///
     /// # Arguments
     ///
@@ -462,11 +613,38 @@ impl AskryptFile {
     /// Returns a Result containing the loaded AskryptFile or an error
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+        let mut askrypt_file = Self::read_json(&mut zip)?;
+        for id in attachment_ids(&zip) {
+            askrypt_file.attachments.carry_without_origin(id);
+        }
+        Ok(askrypt_file)
+    }
 
-        let mut askrypt_json = zip.by_name("askrypt.json")?;
+    /// Read and validate `askrypt.json` out of an open archive.
+    ///
+    /// The attachments field is left empty; the two readers above fill it in
+    /// the way that suits where their bytes came from.
+    fn read_json<R: std::io::Read + std::io::Seek>(
+        zip: &mut zip::ZipArchive<R>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut json = String::new();
-        // TODO: Handle large files more efficiently in future
-        std::io::Read::read_to_string(&mut askrypt_json, &mut json)?;
+        {
+            let askrypt_json = zip.by_name(VAULT_ENTRY)?;
+            // Checked against the *declared* size before reading, so a bomb is
+            // refused rather than expanded and then measured — and capped again
+            // while reading, since that figure comes out of the archive and a
+            // liar is exactly what this is guarding against.
+            if askrypt_json.size() > MAX_JSON_BYTES {
+                return Err("The vault's metadata is implausibly large".into());
+            }
+            std::io::Read::read_to_string(
+                &mut std::io::Read::take(askrypt_json, MAX_JSON_BYTES + 1),
+                &mut json,
+            )?;
+            if json.len() as u64 > MAX_JSON_BYTES {
+                return Err("The vault's metadata is implausibly large".into());
+            }
+        }
 
         let askrypt_file: AskryptFile = serde_json::from_str(&json)?;
         // TODO: Support multiple versions in future
@@ -514,6 +692,22 @@ impl AskryptFile {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(LocalFileStorage::new(path.as_ref()).load_vault()?)
     }
+}
+
+/// The ids of every `files/` member in an open archive.
+///
+/// Anything that is not a `files/<something>` member is ignored, exactly as it
+/// was before attachments existed. The names are read off the archive rather
+/// than off the entry list because the entries are still encrypted at this
+/// point — and names are *all* that is read: not one member is opened, which is
+/// what lets a vault holding gigabytes of attachments open in the memory an
+/// empty one does.
+fn attachment_ids<R: std::io::Read + std::io::Seek>(zip: &zip::ZipArchive<R>) -> Vec<String> {
+    zip.file_names()
+        .filter_map(|name| name.strip_prefix(ATTACHMENT_PREFIX))
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Label for the machine writing the vault, for [`Params::host`].
@@ -684,6 +878,325 @@ pub fn decrypt_with_aes(
         .map_err(|_| "Decryption padding error")?;
 
     Ok(plaintext.to_vec())
+}
+
+/// Encrypt one file's bytes as a vault attachment, minting its id and IV.
+///
+/// This is the only place an attachment is sealed. It draws 16 random bytes for
+/// the id (rendered as 32 lowercase hex characters, which is the whole of the
+/// ZIP member's name) and 16 more for a **fresh** IV, then encrypts under the
+/// vault's long-lived master key. The IV must be fresh every time: reusing one
+/// under a key that never rotates would let anyone holding two versions of a
+/// vault read off how much of the attachment went unchanged, which is the same
+/// reason `SPEC.md` regenerates the `data` IV on every write.
+///
+/// The returned [`Attachment`] carries an **empty `name`** — this function
+/// deals in bytes and has no opinion about what the file is called. The caller
+/// fills it in, along with `added` if it wants something other than now.
+///
+/// # Returns
+///
+/// The metadata and the ciphertext, which the caller files into
+/// [`Attachments`] under the returned id.
+///
+/// # Example
+///
+/// ```
+/// use askrypt::{MasterSecret, open_attachment, seal_attachment};
+///
+/// let master = MasterSecret::generate();
+/// let (mut meta, ciphertext) = seal_attachment(b"scan of my passport", &master).unwrap();
+/// meta.name = "passport.pdf".to_string();
+///
+/// let opened = open_attachment(&ciphertext, &meta, &master).unwrap();
+/// assert_eq!(&opened[..], b"scan of my passport");
+/// ```
+pub fn seal_attachment(
+    plaintext: &[u8],
+    master: &MasterSecret,
+) -> Result<(Attachment, Vec<u8>), Box<dyn std::error::Error>> {
+    use std::fmt::Write;
+
+    let id = generate_bytes(16).iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    });
+    let iv_bytes = generate_bytes(16);
+    let iv: [u8; 16] = iv_bytes
+        .clone()
+        .try_into()
+        .map_err(|_| "Invalid IV length")?;
+
+    let ciphertext = encrypt_with_aes(plaintext, master.as_bytes(), &iv)?;
+
+    Ok((
+        Attachment {
+            id,
+            name: String::new(),
+            size: plaintext.len() as u64,
+            added: chrono::Utc::now().timestamp(),
+            iv: encode_base64(&iv_bytes),
+        },
+        ciphertext,
+    ))
+}
+
+/// Decrypt one attachment's bytes, given its metadata and the vault's key.
+///
+/// The plaintext is returned in a [`Zeroizing`] because it is the file itself:
+/// [`decrypt_with_aes`] wipes its own working buffer but explicitly leaves the
+/// returned copy to the caller, and an attachment is exactly the kind of
+/// payload that should not linger in a freed allocation.
+///
+/// `attachment.size` is **not** checked against the result. The format offers no
+/// integrity (`SPEC.md`, "Integrity: not provided"), so a mismatch would be a
+/// hint rather than a verdict, and refusing on one would turn a recoverable
+/// file into an unreadable one.
+pub fn open_attachment(
+    ciphertext: &[u8],
+    attachment: &Attachment,
+    master: &MasterSecret,
+) -> Result<Zeroizing<Vec<u8>>, Box<dyn std::error::Error>> {
+    let iv_bytes = decode_base64(&attachment.iv)?;
+    let iv: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
+    Ok(Zeroizing::new(decrypt_with_aes(
+        ciphertext,
+        master.as_bytes(),
+        &iv,
+    )?))
+}
+
+/// How much of a file is held in memory at a time while it is being encrypted
+/// or decrypted.
+///
+/// The whole point of the streaming pair below is that this number, and not the
+/// file's size, is what an attachment costs. It is a multiple of the AES block
+/// size, so a chunk is always a whole number of blocks.
+const CRYPTO_CHUNK: usize = 64 * 1024;
+
+/// The AES block size, in bytes. CBC advances a block at a time, which is why
+/// both streaming functions carry a partial one between chunks.
+const AES_BLOCK: usize = 16;
+
+/// Encrypt one file as a vault attachment, streaming it, and mint its metadata.
+///
+/// The streaming twin of [`seal_attachment`]: same id, same fresh IV, same
+/// AES-256-CBC under the vault's long-lived master key, and byte-for-byte the
+/// same ciphertext — but neither the plaintext nor the ciphertext is ever held
+/// whole. `src` is read and `dest` written in [`CRYPTO_CHUNK`] pieces, which is
+/// what lets an attachment be larger than the machine's memory.
+///
+/// `dest` is a file holding *only* this attachment's ciphertext. It is the sole
+/// copy of it until a save folds it into the archive, so nothing may delete it
+/// until then — see [`Attachments::sealed_paths`].
+///
+/// Like [`seal_attachment`] the returned [`Attachment`] carries an **empty
+/// `name`**: this function deals in bytes and has no opinion about what the file
+/// is called. The caller fills it in.
+pub fn seal_attachment_to_file(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    master: &MasterSecret,
+) -> Result<Attachment, Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+
+    let id = generate_bytes(16).iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    });
+    let iv_bytes = generate_bytes(16);
+    let iv: [u8; 16] = iv_bytes
+        .clone()
+        .try_into()
+        .map_err(|_| "Invalid IV length")?;
+
+    let mut cipher = Aes256CbcEnc::new(master.as_bytes().into(), (&iv).into());
+
+    let mut input = std::io::BufReader::new(std::fs::File::open(src)?);
+    let mut output = std::io::BufWriter::new(std::fs::File::create(dest)?);
+
+    // Both hold plaintext, so both wipe on drop. `carry` is the partial block
+    // left over from the previous chunk: CBC only ever advances whole blocks,
+    // and the *final* partial one belongs to `encrypt_padded`.
+    let mut chunk = Zeroizing::new(vec![0u8; CRYPTO_CHUNK]);
+    let mut carry = Zeroizing::new(Vec::<u8>::with_capacity(CRYPTO_CHUNK + AES_BLOCK));
+    let mut size: u64 = 0;
+
+    loop {
+        let read = read_up_to(&mut input, &mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        carry.extend_from_slice(&chunk[..read]);
+
+        let whole = (carry.len() / AES_BLOCK) * AES_BLOCK;
+        if whole > 0 {
+            encrypt_blocks_in_place(&mut cipher, &mut carry[..whole]);
+            // Ciphertext now, so draining it needs no wipe.
+            std::io::Write::write_all(&mut output, &carry[..whole])?;
+            carry.drain(..whole);
+        }
+    }
+
+    // Whatever is left is under one block, and PKCS#7 always adds a final one —
+    // including when nothing is left at all, which is why an empty file still
+    // seals to sixteen bytes.
+    let leftover = carry.len();
+    let mut tail = Zeroizing::new(vec![0u8; 2 * AES_BLOCK]);
+    tail[..leftover].copy_from_slice(&carry[..leftover]);
+    let final_block = cipher
+        .encrypt_padded::<Pkcs7>(&mut tail, leftover)
+        .map_err(|_| "Encryption padding error")?;
+    std::io::Write::write_all(&mut output, final_block)?;
+    std::io::Write::flush(&mut output)?;
+
+    Ok(Attachment {
+        id,
+        name: String::new(),
+        size,
+        added: chrono::Utc::now().timestamp(),
+        iv: encode_base64(&iv_bytes),
+    })
+}
+
+/// Decrypt one attachment, streaming it, straight into the file at `dest`.
+///
+/// The streaming twin of [`open_attachment`]. `src` is any reader over the
+/// attachment's ciphertext — a `files/` member of an open archive, or a sealed
+/// file — so nothing has to be buffered to get at it, and the plaintext goes to
+/// disk a chunk at a time rather than through a `Vec`.
+///
+/// `attachment.size` is **not** checked against what was written, for the reason
+/// [`open_attachment`] gives: the format offers no integrity (`SPEC.md`,
+/// "Integrity: not provided"), so a mismatch would be a hint rather than a
+/// verdict, and refusing on one would turn a recoverable file into an
+/// unreadable one.
+pub fn open_attachment_to_file<R: std::io::Read>(
+    src: R,
+    attachment: &Attachment,
+    master: &MasterSecret,
+    dest: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let iv_bytes = decode_base64(&attachment.iv)?;
+    let iv: [u8; 16] = iv_bytes.try_into().map_err(|_| "Invalid IV length")?;
+
+    let mut cipher = Aes256CbcDec::new(master.as_bytes().into(), (&iv).into());
+
+    let mut input = std::io::BufReader::new(src);
+    let mut output = std::io::BufWriter::new(std::fs::File::create(dest)?);
+
+    // Ciphertext on the way in, so neither buffer starts out secret; what comes
+    // out of `decrypt_blocks_in_place` is the file itself, and is wiped as soon
+    // as it has been written.
+    let mut chunk = vec![0u8; CRYPTO_CHUNK];
+    let mut carry: Vec<u8> = Vec::with_capacity(CRYPTO_CHUNK + AES_BLOCK);
+
+    loop {
+        let read = read_up_to(&mut input, &mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        carry.extend_from_slice(&chunk[..read]);
+
+        // Always hold the last whole block back: the PKCS#7 padding lives in it
+        // and can only be stripped once we know no more ciphertext is coming.
+        if carry.len() > AES_BLOCK {
+            let whole = ((carry.len() - 1) / AES_BLOCK) * AES_BLOCK;
+            if whole > 0 {
+                decrypt_blocks_in_place(&mut cipher, &mut carry[..whole]);
+                std::io::Write::write_all(&mut output, &carry[..whole])?;
+                zeroize::Zeroize::zeroize(&mut carry[..whole]);
+                carry.drain(..whole);
+            }
+        }
+    }
+
+    // Only whole blocks were ever taken out, so what is left is a multiple of
+    // the block size unless the ciphertext never was one.
+    if carry.is_empty() || !carry.len().is_multiple_of(AES_BLOCK) {
+        return Err("Decryption padding error".into());
+    }
+    let mut tail = Zeroizing::new(carry);
+    let final_block = cipher
+        .decrypt_padded::<Pkcs7>(&mut tail)
+        .map_err(|_| "Decryption padding error")?;
+    std::io::Write::write_all(&mut output, final_block)?;
+    std::io::Write::flush(&mut output)?;
+
+    Ok(())
+}
+
+/// Decrypt one carried attachment straight out of the archive at `origin`.
+///
+/// The pairing of [`open_attachment_to_file`] with the archive layout, kept
+/// here so that knowing a blob lives in a `files/<id>` member stays this
+/// crate's business. Nothing is buffered: the member's reader is handed to the
+/// streaming decryptor as it inflates.
+///
+/// A member the archive does not hold is a **dangling reference**, and the
+/// error says so; `SPEC.md` requires a reader to tolerate one, which here means
+/// telling the caller rather than refusing the vault.
+pub fn extract_attachment(
+    origin: &std::path::Path,
+    attachment: &Attachment,
+    master: &MasterSecret,
+    dest: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut archive = zip::ZipArchive::new(buffered_read(std::fs::File::open(origin)?))?;
+    let member = archive
+        .by_name(&format!("{ATTACHMENT_PREFIX}{}", attachment.id))
+        .map_err(|_| "This file is not stored in the vault")?;
+    open_attachment_to_file(member, attachment, master, dest)
+}
+
+/// Wrap a file in a buffer big enough that copying a member is not a syscall
+/// storm.
+///
+/// The ZIP layer reads and writes straight through whatever it is handed, and
+/// `raw_copy_file` — the streaming copy that carries an attachment from one
+/// archive into the next — moves the whole member through `io::copy`, whose
+/// default buffer is 8 KiB. Unbuffered, a gigabyte of attachment is a quarter
+/// of a million syscalls on each side; buffered, it is a few thousand.
+fn buffered_read(file: std::fs::File) -> std::io::BufReader<std::fs::File> {
+    std::io::BufReader::with_capacity(IO_BUFFER, file)
+}
+
+/// Buffer size for the archive reads and writes above.
+const IO_BUFFER: usize = 1024 * 1024;
+
+/// Fill as much of `buf` as the reader will give, answering how many bytes.
+///
+/// [`std::io::Read::read`] is free to return fewer bytes than asked for at any
+/// time, and a short read would silently misalign the block stream — so this
+/// loops until the buffer is full or the reader is done. A returned length
+/// below `buf.len()` therefore means end of input and nothing else.
+fn read_up_to<R: std::io::Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
+/// Encrypt `blocks` in place, advancing the CBC chain. Length must be a
+/// multiple of [`AES_BLOCK`]; a trailing partial block is silently ignored,
+/// which is why every caller splits on a block boundary first.
+fn encrypt_blocks_in_place(cipher: &mut Aes256CbcEnc, blocks: &mut [u8]) {
+    let (whole, tail) = cipher::InOutBuf::from(blocks).into_chunks();
+    debug_assert!(tail.is_empty(), "not a whole number of AES blocks");
+    cipher.encrypt_blocks_inout(whole);
+}
+
+/// Decrypt `blocks` in place, advancing the CBC chain. Same length rule as
+/// [`encrypt_blocks_in_place`].
+fn decrypt_blocks_in_place(cipher: &mut Aes256CbcDec, blocks: &mut [u8]) {
+    let (whole, tail) = cipher::InOutBuf::from(blocks).into_chunks();
+    debug_assert!(tail.is_empty(), "not a whole number of AES blocks");
+    cipher.decrypt_blocks_inout(whole);
 }
 
 /// Calculate PBKDF2 key derivation from secret and salt
@@ -1058,6 +1571,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         };
 
@@ -1098,6 +1612,7 @@ mod tests {
             qs: "base64-encrypted-questions".to_string(),
             master: "base64-encrypted-master".to_string(),
             data: "base64-encrypted-data".to_string(),
+            attachments: Attachments::new(),
         };
 
         let json = serde_json::to_string(&file).unwrap();
@@ -1128,6 +1643,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }];
 
@@ -1138,6 +1654,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1174,6 +1691,7 @@ mod tests {
             qs: "qs".to_string(),
             master: "master".to_string(),
             data: "data".to_string(),
+            attachments: Attachments::new(),
         };
 
         file.touch();
@@ -1253,7 +1771,15 @@ mod tests {
         let answers = vec![];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None, false, None);
+        let result = AskryptFile::create(
+            questions,
+            answers,
+            data,
+            None,
+            false,
+            None,
+            &Attachments::new(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1266,7 +1792,15 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None, false, None);
+        let result = AskryptFile::create(
+            questions,
+            answers,
+            data2,
+            None,
+            false,
+            None,
+            &Attachments::new(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1279,7 +1813,15 @@ mod tests {
         let answers = vec!["Answer1".to_string()];
         let data2 = vec![];
 
-        let result = AskryptFile::create(questions, answers, data2, None, false, None);
+        let result = AskryptFile::create(
+            questions,
+            answers,
+            data2,
+            None,
+            false,
+            None,
+            &Attachments::new(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1304,7 +1846,15 @@ mod tests {
         ];
         let data = vec![];
 
-        let result = AskryptFile::create(questions, answers, data, None, false, None);
+        let result = AskryptFile::create(
+            questions,
+            answers,
+            data,
+            None,
+            false,
+            None,
+            &Attachments::new(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1338,6 +1888,7 @@ mod tests {
                 created: 1704067200,
                 modified: 1704067200,
                 hidden: false,
+                attachments: Vec::new(),
                 card: Default::default(),
             },
             SecretEntry {
@@ -1351,6 +1902,7 @@ mod tests {
                 created: 1704153600,
                 modified: 1704153600,
                 hidden: false,
+                attachments: Vec::new(),
                 card: Default::default(),
             },
         ];
@@ -1363,6 +1915,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1397,6 +1950,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }];
 
@@ -1407,6 +1961,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1440,6 +1995,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: CardFields {
                 holder: "Ruslan A.".to_string(),
                 brand: "Visa".to_string(),
@@ -1457,6 +2013,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
         let questions_data = file.get_questions_data(answers[0].clone()).unwrap();
@@ -1480,6 +2037,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         };
 
@@ -1532,6 +2090,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }];
 
@@ -1542,6 +2101,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1590,11 +2150,20 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }];
 
-        let askrypt_file =
-            AskryptFile::create(questions, answers, data, Some(6000), false, None).unwrap();
+        let askrypt_file = AskryptFile::create(
+            questions,
+            answers,
+            data,
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .unwrap();
 
         let temp_file =
             std::env::temp_dir().join(format!("test_vault_content_{}.askrypt", std::process::id()));
@@ -1637,6 +2206,7 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }];
 
@@ -1647,6 +2217,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1703,9 +2274,69 @@ mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }];
         (questions, answers, data)
+    }
+
+    /// A directory of this test's own, since tests run in parallel in one
+    /// process and the attachment paths below are real files.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "askrypt_core_test_{}_{}",
+                tag,
+                std::process::id()
+            ));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).expect("scratch directory");
+            Self(dir)
+        }
+
+        fn join(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+
+        /// A file holding `bytes`, for something to attach.
+        fn file(&self, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+            let path = self.join(name);
+            std::fs::write(&path, bytes).expect("scratch file");
+            path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// Seal `plaintext` into the scratch directory the way the app does, and
+    /// answer the metadata plus a store pointing at it.
+    fn seal_into(
+        scratch: &Scratch,
+        tag: &str,
+        plaintext: &[u8],
+        master: &MasterSecret,
+    ) -> (Attachment, Attachments) {
+        let src = scratch.file(&format!("{tag}.plain"), plaintext);
+        let dest = scratch.join(&format!("{tag}.sealed"));
+        let meta = seal_attachment_to_file(&src, &dest, master).unwrap();
+        let mut attachments = Attachments::new();
+        attachments.insert_sealed(meta.id.clone(), dest);
+        (meta, attachments)
+    }
+
+    /// The ciphertext of one member of an archive on disk.
+    fn member_bytes(path: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+        let mut member = zip.by_name(name).ok()?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut member, &mut bytes).ok()?;
+        Some(bytes)
     }
 
     /// Open a vault the way an app does, returning the entries and the key.
@@ -1726,6 +2357,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
         let (entries, master) = open(&first, &answers);
@@ -1738,6 +2370,7 @@ mod tests {
             Some(6000),
             false,
             Some(&master),
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1762,6 +2395,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
         let (entries, master) = open(&first, &answers);
@@ -1778,6 +2412,7 @@ mod tests {
             Some(6000),
             false,
             Some(&master),
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1785,6 +2420,469 @@ mod tests {
         let opened =
             decrypt_with_aes(&sealed, master_after_save.as_bytes(), &attachment_iv).unwrap();
         assert_eq!(opened, attachment);
+    }
+
+    #[test]
+    fn an_attachment_survives_a_full_save_and_reload() {
+        // The end-to-end version of the test above: through `create`, through
+        // the ZIP, and back out again, with only the answers to open it.
+        let (questions, answers, mut data) = master_test_vault();
+
+        let first = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .unwrap();
+        let (_, master) = open(&first, &answers);
+
+        let scratch = Scratch::new("survives_save_and_reload");
+        let plaintext = b"the contents of an attached file";
+        let (mut meta, attachments) = seal_into(&scratch, "passport", plaintext, &master);
+        meta.name = "passport.pdf".to_string();
+        data[0].attachments = vec![meta.clone()];
+
+        let saved = AskryptFile::create(
+            questions,
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            Some(&master),
+            &attachments,
+        )
+        .unwrap();
+
+        let vault = scratch.join("vault.askrypt");
+        saved
+            .write_archive(std::fs::File::create(&vault).unwrap())
+            .unwrap();
+
+        let reloaded = AskryptFile::from_path(&vault).unwrap();
+        let (entries, master_after) = open(&reloaded, &answers);
+
+        assert_eq!(entries[0].attachments.len(), 1);
+        let carried = &entries[0].attachments[0];
+        assert_eq!(carried.name, "passport.pdf");
+        assert_eq!(carried.size, plaintext.len() as u64);
+
+        // The reloaded vault points at the archive it came out of, not at bytes.
+        assert!(matches!(
+            reloaded.attachments.source(&carried.id),
+            Some(AttachmentSource::Carried)
+        ));
+        assert_eq!(reloaded.attachments.origin(), Some(vault.as_path()));
+
+        let out = scratch.join("passport.out");
+        let blob = member_bytes(&vault, &format!("files/{}", carried.id)).expect("blob is there");
+        open_attachment_to_file(&blob[..], carried, &master_after, &out).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn an_attachment_id_never_names_the_file() {
+        // The whole point of the random id: the archive listing of a vault must
+        // not say what is in it.
+        let (questions, answers, mut data) = master_test_vault();
+        let master = MasterSecret::generate();
+
+        let scratch = Scratch::new("id_never_names_the_file");
+        let (mut meta, attachments) = seal_into(&scratch, "taxes", b"secret bytes", &master);
+        meta.name = "my-tax-return-2025.pdf".to_string();
+        data[0].attachments = vec![meta.clone()];
+
+        let bytes = AskryptFile::create(
+            questions,
+            answers,
+            data,
+            Some(6000),
+            false,
+            Some(&master),
+            &attachments,
+        )
+        .unwrap()
+        .to_bytes()
+        .unwrap();
+
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+        let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+        assert!(names.contains(&format!("files/{}", meta.id)));
+        assert!(
+            !names.iter().any(|name| name.contains("tax-return")),
+            "the real file name reached the archive listing: {names:?}"
+        );
+        // Nor is it anywhere in the clear in the bytes.
+        assert!(
+            !bytes
+                .windows("my-tax-return".len())
+                .any(|w| w == b"my-tax-return"),
+            "the real file name is readable in the vault bytes"
+        );
+        // Deflated, like every other member this crate writes.
+        let member = zip.by_name(&format!("files/{}", meta.id)).unwrap();
+        assert_eq!(member.compression(), zip::CompressionMethod::Deflated);
+    }
+
+    #[test]
+    fn a_blob_no_entry_refers_to_is_dropped_on_write() {
+        // Deleting an attachment has to shrink the vault, so a save writes only
+        // what the entries it is writing still point at.
+        let (questions, answers, data) = master_test_vault();
+        let master = MasterSecret::generate();
+
+        let scratch = Scratch::new("orphan_dropped_on_write");
+        let (orphan, attachments) = seal_into(&scratch, "orphan", b"nobody refers to me", &master);
+
+        // `data` carries no attachment references at all.
+        let file = AskryptFile::create(
+            questions,
+            answers,
+            data,
+            Some(6000),
+            false,
+            Some(&master),
+            &attachments,
+        )
+        .unwrap();
+
+        assert!(file.attachments.is_empty());
+        let reloaded = AskryptFile::from_bytes(&file.to_bytes().unwrap()).unwrap();
+        assert!(reloaded.attachments.source(&orphan.id).is_none());
+    }
+
+    #[test]
+    fn an_implausible_askrypt_json_is_refused() {
+        // `askrypt.json` is the one member a reader has no choice but to hold
+        // whole, so it is the one a crafted archive can use to make it
+        // allocate: a few hundred bytes of deflated zeros expand to gigabytes.
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            zip.start_file(
+                "askrypt.json",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+            let chunk = vec![b' '; 1024 * 1024];
+            for _ in 0..64 {
+                zip.write_all(&chunk).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+
+        let err = AskryptFile::from_bytes(&buf).expect_err("a zip bomb should be refused");
+        assert!(
+            err.to_string().contains("implausibly large"),
+            "refused for the wrong reason: {err}"
+        );
+    }
+
+    #[test]
+    fn a_large_attachment_no_longer_stops_a_vault_opening() {
+        // The counterpart, and the point of the redesign: a *big* attachment is
+        // not a bomb, because opening the vault never inflates one. There used
+        // to be a 256 MiB ceiling across the archive, and it would have made
+        // exactly the vaults this exists for unopenable.
+        let scratch = Scratch::new("large_attachment_opens");
+        let (questions, answers, mut data) = master_test_vault();
+        let master = MasterSecret::generate();
+
+        let file = AskryptFile::create(
+            questions,
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            Some(&master),
+            &Attachments::new(),
+        )
+        .unwrap();
+
+        // Not a real 300 MiB file — a member that *claims* to be one, which is
+        // all the old check ever looked at.
+        let vault = scratch.join("huge.askrypt");
+        {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&vault).unwrap());
+            zip.start_file("askrypt.json", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(serde_json::to_string(&file).unwrap().as_bytes())
+                .unwrap();
+            zip.start_file(
+                "files/0123456789abcdef0123456789abcdef",
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+            let chunk = vec![0u8; 1024 * 1024];
+            for _ in 0..300 {
+                zip.write_all(&chunk).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+
+        let reopened = AskryptFile::from_path(&vault).expect("a big vault should still open");
+        assert_eq!(reopened.attachments.len(), 1);
+
+        // And it can still be saved: the huge member is copied across without
+        // being inflated, so the writer holds no more than the reader did.
+        data[0].attachments = vec![Attachment {
+            id: "0123456789abcdef0123456789abcdef".to_string(),
+            name: "huge.bin".to_string(),
+            size: 300 * 1024 * 1024,
+            added: 1704067200,
+            iv: encode_base64(&[0u8; 16]),
+        }];
+        let again = scratch.join("again.askrypt");
+        AskryptFile::create(
+            vec![
+                "What is your mother's maiden name?".to_string(),
+                "What was your first pet's name?".to_string(),
+                "What city were you born in?".to_string(),
+            ],
+            answers,
+            data,
+            Some(6000),
+            false,
+            Some(&master),
+            &reopened.attachments,
+        )
+        .unwrap()
+        .write_archive(std::fs::File::create(&again).unwrap())
+        .unwrap();
+        assert_eq!(AskryptFile::from_path(&again).unwrap().attachments.len(), 1);
+    }
+
+    #[test]
+    fn a_dangling_reference_still_opens_the_vault() {
+        // A reference whose blob is missing is a row a UI marks, never a reason
+        // to refuse the vault.
+        let (questions, answers, mut data) = master_test_vault();
+        let master = MasterSecret::generate();
+
+        data[0].attachments = vec![Attachment {
+            id: "0123456789abcdef0123456789abcdef".to_string(),
+            name: "gone.pdf".to_string(),
+            size: 12,
+            added: 1704067200,
+            iv: encode_base64(&[0u8; 16]),
+        }];
+
+        let file = AskryptFile::create(
+            questions,
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            Some(&master),
+            &Attachments::new(),
+        )
+        .unwrap();
+
+        let reloaded = AskryptFile::from_bytes(&file.to_bytes().unwrap()).unwrap();
+        let (entries, _) = open(&reloaded, &answers);
+        assert_eq!(entries[0].attachments.len(), 1);
+        assert!(
+            reloaded
+                .attachments
+                .source("0123456789abcdef0123456789abcdef")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn streaming_and_one_shot_encryption_agree_byte_for_byte() {
+        // The streaming pair is the one the desktop uses now, so it has to be
+        // the *same* cipher and not merely a working one — a vault sealed by
+        // one and opened by the other, or by another implementation, must
+        // agree. The sizes straddle every boundary in the implementation: the
+        // AES block, the 64 KiB chunk, and one either side of each.
+        let scratch = Scratch::new("streaming_agrees");
+        let key = [9u8; 32];
+        let iv = [3u8; 16];
+
+        for size in [
+            0usize,
+            1,
+            15,
+            16,
+            17,
+            255,
+            CRYPTO_CHUNK - 1,
+            CRYPTO_CHUNK,
+            CRYPTO_CHUNK + 1,
+            CRYPTO_CHUNK + 16,
+            2 * CRYPTO_CHUNK + 7,
+        ] {
+            // Not all one byte: a repeated block would hide a chaining bug.
+            let plaintext: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+
+            let expected = encrypt_with_aes(&plaintext, &key, &iv).unwrap();
+
+            // The streaming half, driven through the public functions by
+            // pinning the id and IV afterwards — `seal_attachment_to_file`
+            // draws its own, so this exercises the cipher rather than the mint.
+            let src = scratch.file(&format!("plain-{size}"), &plaintext);
+            let dest = scratch.join(&format!("sealed-{size}"));
+            let master = MasterSecret::from_slice(&key).unwrap();
+            let meta = seal_attachment_to_file(&src, &dest, &master).unwrap();
+            assert_eq!(meta.size, size as u64, "size at {size}");
+
+            // Same cipher, same key, this time under the IV it drew.
+            let drawn: [u8; 16] = decode_base64(&meta.iv).unwrap().try_into().unwrap();
+            let streamed = std::fs::read(&dest).unwrap();
+            assert_eq!(
+                streamed,
+                encrypt_with_aes(&plaintext, &key, &drawn).unwrap(),
+                "streamed ciphertext differs from the one-shot at {size} bytes"
+            );
+
+            // And the streaming decryptor reads what the one-shot wrote.
+            let fixed = Attachment {
+                id: "0".repeat(32),
+                name: String::new(),
+                size: size as u64,
+                added: 0,
+                iv: encode_base64(&iv),
+            };
+            let out = scratch.join(&format!("out-{size}"));
+            open_attachment_to_file(&expected[..], &fixed, &master, &out).unwrap();
+            assert_eq!(
+                std::fs::read(&out).unwrap(),
+                plaintext,
+                "streamed decryption differs at {size} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_carried_attachment_is_copied_across_verbatim() {
+        // The heart of the redesign: an attachment already in the archive is
+        // moved into the next one as *compressed bytes*, never inflated,
+        // decrypted or re-encrypted. If that copy were not exact, every vault
+        // with an attachment would quietly rot one save at a time.
+        let scratch = Scratch::new("carried_verbatim");
+        let (questions, answers, mut data) = master_test_vault();
+        let master = MasterSecret::generate();
+
+        let plaintext = b"scanned passport, page 1";
+        let (mut meta, attachments) = seal_into(&scratch, "passport", plaintext, &master);
+        meta.name = "passport.pdf".to_string();
+        data[0].attachments = vec![meta.clone()];
+
+        let first_path = scratch.join("first.askrypt");
+        AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            Some(&master),
+            &attachments,
+        )
+        .unwrap()
+        .write_archive(std::fs::File::create(&first_path).unwrap())
+        .unwrap();
+
+        // Reopen it, so every attachment is now `Carried`, and save again.
+        let reopened = AskryptFile::from_path(&first_path).unwrap();
+        assert!(matches!(
+            reopened.attachments.source(&meta.id),
+            Some(AttachmentSource::Carried)
+        ));
+
+        let second_path = scratch.join("second.askrypt");
+        AskryptFile::create(
+            questions,
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            Some(&master),
+            &reopened.attachments,
+        )
+        .unwrap()
+        .write_archive(std::fs::File::create(&second_path).unwrap())
+        .unwrap();
+
+        let name = format!("files/{}", meta.id);
+        assert_eq!(
+            raw_member(&first_path, &name),
+            raw_member(&second_path, &name),
+            "the carried member was not copied verbatim"
+        );
+
+        // Belt and braces: it still decrypts, out of the second archive.
+        let out = scratch.join("passport.out");
+        extract_attachment(&second_path, &meta, &master, &out).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn a_vault_read_from_bytes_refuses_to_drop_its_attachments() {
+        // `from_bytes` has nowhere to read a blob from a second time. Writing
+        // such a vault must fail rather than silently emit an archive with the
+        // `files/` members missing — which is exactly the deletion `SPEC.md`
+        // rule 4 exists to prevent.
+        let scratch = Scratch::new("no_origin_refuses");
+        let (questions, answers, mut data) = master_test_vault();
+        let master = MasterSecret::generate();
+
+        let (mut meta, attachments) = seal_into(&scratch, "codes", b"recovery codes", &master);
+        meta.name = "codes.txt".to_string();
+        data[0].attachments = vec![meta.clone()];
+
+        let file = AskryptFile::create(
+            questions,
+            answers,
+            data,
+            Some(6000),
+            false,
+            Some(&master),
+            &attachments,
+        )
+        .unwrap();
+        let bytes = file.to_bytes().unwrap();
+
+        // Round-tripped through bytes, the attachment is known but unreadable.
+        let orphaned = AskryptFile::from_bytes(&bytes).unwrap();
+        assert!(orphaned.attachments.source(&meta.id).is_some());
+        assert_eq!(orphaned.attachments.origin(), None);
+
+        let err = orphaned
+            .to_bytes()
+            .expect_err("writing a vault with no origin should be refused");
+        assert!(
+            err.to_string().contains("no longer open"),
+            "refused for the wrong reason: {err}"
+        );
+    }
+
+    /// The raw, still-compressed bytes of one member of an archive on disk.
+    fn raw_member(path: &std::path::Path, name: &str) -> Vec<u8> {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+        let index = zip
+            .index_for_name(name)
+            .expect("the member should be there");
+        let mut member = zip.by_index_raw(index).unwrap();
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut member, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn sealing_the_same_bytes_twice_draws_a_fresh_iv() {
+        // CBC under a key that never rotates: a repeated IV would let a holder
+        // of two versions of a vault see how much of an attachment changed.
+        let master = MasterSecret::generate();
+        let (first, first_bytes) = seal_attachment(b"identical contents", &master).unwrap();
+        let (second, second_bytes) = seal_attachment(b"identical contents", &master).unwrap();
+
+        assert_ne!(first.iv, second.iv);
+        assert_ne!(first.id, second.id);
+        assert_ne!(first_bytes, second_bytes);
     }
 
     #[test]
@@ -1801,6 +2899,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
         let (entries, master) = open(&first, &answers);
@@ -1822,6 +2921,7 @@ mod tests {
             Some(6000),
             false,
             Some(&master),
+            &Attachments::new(),
         )
         .unwrap();
 
@@ -1843,10 +2943,19 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
-        let b =
-            AskryptFile::create(questions, answers.clone(), data, Some(6000), false, None).unwrap();
+        let b = AskryptFile::create(
+            questions,
+            answers.clone(),
+            data,
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .unwrap();
 
         assert_ne!(open(&a, &answers).1, open(&b, &answers).1);
     }
@@ -1865,6 +2974,7 @@ mod tests {
             Some(6000),
             false,
             None,
+            &Attachments::new(),
         )
         .unwrap();
         let (entries, master) = open(&first, &answers);
@@ -1876,6 +2986,7 @@ mod tests {
             Some(6000),
             false,
             Some(&master),
+            &Attachments::new(),
         )
         .unwrap();
 

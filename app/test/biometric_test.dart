@@ -69,6 +69,9 @@ class FakeVaultIo implements VaultIo {
   Future<String?> saveVault(Uint8List bytes,
           {String suggestedName = 'vault.askrypt'}) async =>
       '/tmp/$suggestedName';
+  @override
+  Future<String?> saveAttachment(String name, Uint8List bytes) async =>
+      '/tmp/$name';
 }
 
 /// Pumps real *and* fake async until [condition] holds (or times out). Unlock

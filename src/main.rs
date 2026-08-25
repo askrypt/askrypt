@@ -19,6 +19,7 @@ mod icon;
 mod link;
 mod manager;
 mod panes;
+mod scratch;
 mod session;
 mod settings;
 mod smartlock;
@@ -42,7 +43,7 @@ use iced::{time, window};
 use crate::manager::{OpenedVault, SavedVault, SmartLocked, VaultHome, VaultState};
 use crate::panes::Action;
 use crate::panes::wizard::Purpose;
-use crate::session::{Session, VaultError};
+use crate::session::{Session, VaultError, describe_open_error};
 use crate::settings::{AppSettings, VaultLocation, WindowState};
 use crate::tray::TrayEvent;
 
@@ -174,6 +175,14 @@ pub enum Message {
     /// First press: arm the inline confirmation. Second press on the same row
     /// deletes.
     DeleteEntry(usize),
+    /// Save one of the selected entry's attachments to disk. Fired from the
+    /// detail pane, which is read-only — the editor has its own, because it
+    /// works on a draft rather than on the stored entry.
+    ExtractAttachment(String),
+    /// The save dialog closed on an attachment. `None` is a cancel.
+    ExtractTo(String, Option<PathBuf>),
+    /// One attachment finished being written out, or failed to be.
+    Extracted(Box<Result<String, String>>),
     /// The password generator finished with "use this": write it into the open
     /// editor's draft.
     UseGeneratedPassword(String),
@@ -332,11 +341,13 @@ impl App {
         };
 
         if let Some(location) = location {
-            match app
-                .session
-                .storage_for(&location)
-                .and_then(|storage| storage.load_vault().map(|file| (storage, file)))
-            {
+            let scratch = app.session.scratch.clone();
+            match app.session.storage_for(&location).and_then(|storage| {
+                // Through `read_vault`, never `load_vault`: it is what claims
+                // the file and what gives the vault's attachments an archive to
+                // be streamed out of later.
+                manager::read_vault(&storage, scratch.as_ref()).map(|file| (storage, file))
+            }) {
                 Ok((storage, file)) => app.session.vault.open(OpenedVault {
                     file,
                     home: VaultHome::new(location, storage),
@@ -709,6 +720,22 @@ impl App {
                 None => Action::None,
             },
             Message::DeleteEntry(index) => self.delete_entry(index),
+            Message::ExtractAttachment(id) => self.extract_attachment(id),
+            Message::ExtractTo(id, dest) => match dest {
+                Some(dest) => self.write_attachment(id, dest),
+                // Cancelled the save dialog.
+                None => Action::None,
+            },
+            Message::Extracted(result) => {
+                self.session.finish_work();
+                match *result {
+                    Ok(name) => {
+                        self.session.success_message = Some(format!("Saved “{name}”"));
+                    }
+                    Err(message) => self.session.error_message = Some(message),
+                }
+                Action::None
+            }
             Message::UseGeneratedPassword(password) => match self.editor.as_mut() {
                 Some(editor) => {
                     editor.set_secret(password);
@@ -774,6 +801,76 @@ impl App {
             Action::Pane(pane) => self.set_pane(pane),
             Action::PaneRun(pane, task) => Task::batch([self.set_pane(pane), task]),
         }
+    }
+
+    /// Ask where to put one of the selected entry's attachments.
+    ///
+    /// The dialog comes first and the decryption second, so a cancelled save
+    /// never spends the work — and never produces a plaintext copy of the file
+    /// that nothing then writes.
+    fn extract_attachment(&mut self, id: String) -> Action {
+        let Some(entry) = self.selected_entry() else {
+            return Action::None;
+        };
+        let Some(file) = entry.attachments.iter().find(|file| file.id == id) else {
+            return Action::None;
+        };
+        let name = file.name.clone();
+
+        Action::Run(Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_file_name(&name)
+                    .save_file()
+                    .await
+                    .map(|handle| handle.path().to_path_buf())
+            },
+            move |picked| Message::ExtractTo(id.clone(), picked),
+        ))
+    }
+
+    /// Decrypt one attachment and write it where the dialog said.
+    ///
+    /// Both halves are potentially slow — an attachment can be megabytes — so
+    /// this goes to a worker like every other crypto path in the app.
+    fn write_attachment(&mut self, id: String, dest: PathBuf) -> Action {
+        let Some(vault) = self.session.vault.unlocked() else {
+            return Action::None;
+        };
+        let Some(entry) = self.selected_entry() else {
+            return Action::None;
+        };
+        let Some(attachment) = entry.attachments.iter().find(|file| file.id == id).cloned() else {
+            return Action::None;
+        };
+        // Where the bytes are, not the bytes: the worker opens the archive (or
+        // the sealed file) itself and streams straight to `dest`, so saving a
+        // gigabyte out costs one buffer rather than three copies of it.
+        let Some(source) = vault.attachments().source(&id).cloned() else {
+            self.session.error_message = Some(format!(
+                "“{}” is referenced by this item but is not stored in the vault.",
+                attachment.name
+            ));
+            return Action::None;
+        };
+
+        let inputs = manager::ExtractInputs {
+            attachment,
+            source,
+            origin: vault.attachments().origin().map(Path::to_path_buf),
+            master: vault.master().clone(),
+            dest,
+        };
+
+        self.session.begin_work("Saving file…");
+        Action::Run(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || inputs.run())
+                    .await
+                    .expect("attachment extract task panicked")
+            },
+            |result| Message::Extracted(Box::new(result)),
+        ))
     }
 
     fn delete_entry(&mut self, index: usize) -> Action {
@@ -867,6 +964,17 @@ impl App {
     /// Re-encrypt and write the vault on a worker thread. Two 600k-iteration key
     /// derivations plus (for a server vault) a round trip, so never inline.
     fn start_save(&mut self, location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Action {
+        // Save As adopts a new home, and this vault will be reading from it for
+        // as long as it stays open — every carried attachment is streamed out
+        // of it on the next save. So claim it here, before writing, rather than
+        // discovering afterwards that another window owns it.
+        if let Err(e) = storage.acquire_lock() {
+            self.session.error_message = Some(describe_open_error(&VaultError::log(
+                "Failed to claim the vault",
+                &e,
+            )));
+            return Action::None;
+        }
         self.start_save_to(VaultHome::new(location, storage))
     }
 
@@ -893,13 +1001,18 @@ impl App {
             .settings
             .local_backup_dir()
             .map(Path::to_path_buf);
+        // Where a cloud vault's replacement archive is assembled, and where its
+        // freshly attached files were sealed.
+        let scratch = self.session.scratch.clone();
 
         self.session.begin_work("Saving…");
         Action::Run(Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || manager::write_vault(request, home, backup_dir))
-                    .await
-                    .expect("save task panicked")
+                tokio::task::spawn_blocking(move || {
+                    manager::write_vault(request, home, backup_dir, scratch)
+                })
+                .await
+                .expect("save task panicked")
             },
             |result| Message::Global(GlobalMsg::Saved(Box::new(result))),
         ))
@@ -1018,7 +1131,11 @@ impl App {
         if self.session.busy {
             return Action::None;
         }
-        let Some(inputs) = self.session.vault.reload_inputs() else {
+        let Some(inputs) = self
+            .session
+            .vault
+            .reload_inputs(self.session.scratch.clone())
+        else {
             return Action::None;
         };
 
@@ -1073,7 +1190,25 @@ impl App {
             }
         };
 
+        // The archive the vault is on right now. A reload of a cloud vault
+        // spilled a *fresh* copy, so exactly one of the two is about to become
+        // rubbish — which one depends on whether the reload is taken, and that
+        // is decided below.
+        let standing = self.vault_origin();
+
         let (applied, action) = self.install_reload(intent, outcome);
+        if applied {
+            // The vault moved onto the new copy; the one it was reading before
+            // is finished with.
+            manager::retire_origin(standing, self.session.scratch.as_deref());
+        } else {
+            // The reload was declined, so the vault is still reading the copy
+            // it had. The freshly spilled one is what goes.
+            let fetched = self.vault_origin();
+            if fetched != standing {
+                manager::retire_origin(fetched, self.session.scratch.as_deref());
+            }
+        }
         if !applied {
             // The read moved the backend onto the version it fetched. We did
             // not take that version, so put the conflict check back where it
@@ -1084,6 +1219,15 @@ impl App {
             }
         }
         action
+    }
+
+    /// The archive the open vault currently reads its attachments out of.
+    fn vault_origin(&self) -> Option<PathBuf> {
+        self.session
+            .vault
+            .file()
+            .and_then(|file| file.attachments.origin())
+            .map(Path::to_path_buf)
     }
 
     /// Apply one reload outcome, reporting whether the vault actually took it.

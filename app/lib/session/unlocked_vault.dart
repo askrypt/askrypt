@@ -67,9 +67,11 @@ class UnlockedVault {
     required this.translit,
     required this.iterations,
     List<int>? masterKey,
+    Map<String, Uint8List>? attachments,
   })  : _answers = answers,
         _entries = entries,
-        _masterKey = masterKey;
+        _masterKey = masterKey,
+        _attachments = attachments ?? <String, Uint8List>{};
 
   /// Full question list, including the first question (`question0`).
   final List<String> questions;
@@ -86,6 +88,14 @@ class UnlockedVault {
   /// first [toBytes] mints one and keeps it, so a second save of a brand-new
   /// vault does not mint a second key.
   List<int>? _masterKey;
+
+  /// The vault's attachment ciphertexts, keyed by `Attachment.id`, carried from
+  /// the file this vault was opened from and handed back on every save.
+  ///
+  /// This app cannot add or remove an attachment, but it must carry these:
+  /// [AskryptFile.create] writes only the blobs the entries still refer to, so
+  /// a save that forgot them would delete every attached file in the vault.
+  final Map<String, Uint8List> _attachments;
 
   final bool translit;
   final int iterations;
@@ -138,7 +148,30 @@ class UnlockedVault {
       translit: file.translit,
       iterations: file.iterations,
       masterKey: opened.masterKey,
+      attachments: file.attachments,
     );
+  }
+
+  /// The stored bytes of one attachment, or null when the entry refers to a
+  /// blob this archive does not hold — a dangling reference, which `SPEC.md`
+  /// requires readers to tolerate.
+  Uint8List? attachmentBytes(String id) => _attachments[id];
+
+  /// Decrypt one attachment, ready to be written out.
+  ///
+  /// Throws [VaultException] when the vault has no master key yet (a brand-new
+  /// vault, which cannot have attachments) or the blob is missing.
+  Uint8List openAttachmentBytes(Attachment attachment) {
+    final key = _masterKey;
+    if (key == null) {
+      throw VaultException('this vault has no master key yet');
+    }
+    final blob = _attachments[attachment.id];
+    if (blob == null) {
+      throw VaultException(
+          '\u201c${attachment.name}\u201d is not stored in this vault');
+    }
+    return openAttachment(blob, attachment, key);
   }
 
   // --- read (no secrets) ---------------------------------------------------
@@ -207,6 +240,7 @@ class UnlockedVault {
       translit: translit,
       iterations: iterations,
       masterKey: _masterKey,
+      attachments: _attachments,
     )..isModified = true;
   }
 
@@ -235,6 +269,7 @@ class UnlockedVault {
       translit: translit,
       host: currentHostName(),
       masterKey: key,
+      attachments: _attachments,
     );
     isModified = false;
     return file.toBytes();

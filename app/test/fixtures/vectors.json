@@ -157,6 +157,8 @@
       "Fluffy",
       "New York"
     ],
+    "expected_attachment_id": "0123456789abcdef0123456789abcdef",
+    "expected_attachment_plaintext": "scanned passport, page 1",
     "expected_entries": [
       {
         "created": 1704067200,
@@ -204,6 +206,29 @@
         "type": "Card",
         "url": "",
         "user_name": ""
+      },
+      {
+        "attachments": [
+          {
+            "added": 1704153600,
+            "id": "0123456789abcdef0123456789abcdef",
+            "iv": "BwcHBwcHBwcHBwcHBwcHBw==",
+            "name": "passport.txt",
+            "size": 24
+          }
+        ],
+        "created": 1704067200,
+        "hidden": false,
+        "modified": 1704153600,
+        "name": "Passport",
+        "notes": "Scanned before the trip",
+        "secret": "",
+        "tags": [
+          "travel"
+        ],
+        "type": "File",
+        "url": "",
+        "user_name": ""
       }
     ],
     "expected_host": "vector-host",
@@ -215,6 +240,6 @@
       "What city were you born in?"
     ],
     "translit": false,
-    "vault_b64": "UEsDBBQAAAAIAHScC13eveAouAQAACQGAAAMAAAAYXNrcnlwdC5qc29uNZDJDptIFEX3+QrkTS/otJnBkVotwAwGMw8Gb1rFjM1MATZR/r3lJL2sU+c+3fe+f0GQw5pPc913h2/IAfvrdPjzw8Yln2Hdd9iH3ioAkXpG3v0yIW0Pq3z6Y0ZaUGd5h3Sgzf/5FRrABNr58A35/gVBEOTwzIpPfEieWUH8VBDkUMN8Ap/RHxHHMOw3n0EDP3ZduAIe5XAuyYJgQ6DOuXEu//77/zycQDc39cctQDPnv3HVzz/ja57Cfvr68/n7axkyAPPsX/BTIDCC+YrhXzHCx8hvGPUNo++HLwjy49fen1YHfjF7ZhA687KvT9awpC0UteimLYYX6qh4vs6JxWwLFz/EmT1zqqo96b5bjtHyvh+PvXl9ey8QnWjxqfgL6LChMja9WR9vKGjH5gL5PG+bfLEBkaRqafQZqfCne7qrpDV6kraQvKhwUr6fvO5eueejj6dE0+Q3a4yOd/cokfrOzaNoW0P86y6HFswwnz7d294mgkier5dJcnR21nBDGEqocOAZnuhm6xRo2sk+GnSdB8SquGvCY+vxYh69ipqY+ZkKpK+x6ZlMQtEM6mIjZzYcjryjZ1pCu+3CbJuV+yH65JtGUmgKF7DrXc4iZTCv2virTwYg+LQpgydZLQWUmeLeNVbjYFFSq9zmMt3jlu5dbM3pq2+1t5TSZG8bG7TDfe1NKQfhdBpXNYsbo6NFy2DFNLzPERbLl4Igncu08MeO3NindikfDT4nPOqqyRG7RAKeUQTK1IWc9A/7NpbM2N14mJ6H0Dvt4nmE51W5st1OGag72snpzmlSTqG6w2GScKuAjhd+HUzhrFJy21xzjinj4sV4hg/Iye571Nv7Khzr64ui8xc+JmvTYc64VesT5SlG0tx4ZmVTIbnG8T1714LTQNVkgQYQSji+v9lFELJkUc3qMbxgwqAtk3leEGhadPX3Bg2XB6pF8ewqMHxIfua+HQ1/M0K1+CA+X8hThpY1qVbv64ZaMqq+OzZg8S6XURWtabiV3nEz0VjADEWBQ4Df9EdR7uxLI8gtf0lZ7BOV2HmnbJo6hw4gezPu+NtzqZXzZLe6cnK0hI+jJ2uN4PuxCBgiDbeKtCJxNC6KHBKWE2thxPQPtY/il27xb2/Qmog8MyzHvYmhhlEhX4ARJVYkXVshjoJQdbtsQFOaOzPnZ6ur2xSBaB+fPNs3g6zzMjx19+JiUwHfGqkiMhvfRKFIynsT0fGF1kkAs1i+3dl2PL6EjEE3IAsgZMSbOzjHzRL3lJfC0Ge5hWvRJh5XPR/ltBCvVslK9qWgVhoTbSIxgo6N/WgtDPP+IpM3VGS6hDR91reL0MaWsYrB0Jluz+UK9ayaM6ppkHVEjE3WMO3KtKSyUgha4A5tItxz8iJseWAuj7HO35ZS40Y5PiKH05nrI9f0gNPjnncYegW2fO4XYnJts0CXMA+TRGs22t4tk3X3EW3RSUPZ9903O+IUJ7x/cYh3E2fsfGaehVHJmw+WaPGqF8ihaVBrVj9Wkxye/rjtTSiYBSsUt7m1uNXyIt/b9CnD98m+zqi2Q4MCrmOXjomy8wlV2TYDYF+KvVfj5uE1W3ntXchESUJuzX7sRZXCD19+/AdQSwECFAMUAAAACAB0nAtd3r3gKLgEAAAkBgAADAAAAAAAAAAAAAAApIEAAAAAYXNrcnlwdC5qc29uUEsFBgAAAAABAAEAOgAAAOIEAAAAAA=="
+    "vault_b64": "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"
   }
 }

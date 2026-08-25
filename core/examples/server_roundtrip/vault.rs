@@ -8,7 +8,7 @@
 //! contents — that is the whole point of the format — but it does see the
 //! archive's shape.
 
-use askrypt::{AskryptFile, SecretEntry};
+use askrypt::{AskryptFile, Attachments, SecretEntry};
 
 pub const QUESTIONS: [&str; 2] = ["Favourite city?", "First pet?"];
 pub const ANSWERS: [&str; 2] = ["Kyiv", "Fluffy"];
@@ -49,11 +49,13 @@ fn build(secret: &str, notes: String) -> Result<AskryptFile, String> {
             created: 1_704_067_200,
             modified: 1_704_067_200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }],
         Some(ITERATIONS),
         false,
         None,
+        &Attachments::new(),
     )
     .map_err(|e| format!("could not build a vault fixture: {e}"))
 }

@@ -15,7 +15,7 @@
 import {
   CARD_KEYS, DEFAULT_ITERATIONS, MAX_VAULT_BYTES, VaultError, blankEntry,
   createVault, decryptWithMaster, generateMasterKey, getQuestionsData, isCard,
-  parseVault,
+  openAttachment, parseVault,
 } from "./vault-format.js";
 import {
   SMART_LOCK_TIMEOUT_MS, createSmartLock, recoverSmartLock, smartLockRemaining,
@@ -100,6 +100,10 @@ function emptyState() {
     answers: null,
     masterKey: null,
     entries: null,
+    // The attachment ciphertexts, id -> bytes, as `parseVault` read them.
+    // Carried across every save: a save writes only the blobs the entries still
+    // refer to, so forgetting these would delete every attached file.
+    attachments: new Map(),
     dirty: false,
     // Index into `entries`, or -1 for an entry being added.
     editing: null,
@@ -370,6 +374,7 @@ function createNew(event) {
   state.answers = answers;
   state.masterKey = generateMasterKey();
   state.entries = [];
+  state.attachments = new Map();
   // Unsaved from its first instant: this vault exists only in this page until
   // one of the two save buttons is pressed, which is what the state line says
   // and what the unload guard is armed by.
@@ -470,6 +475,7 @@ function unlock(event) {
     }
     state.entries = opened.entries;
     state.masterKey = opened.masterKey;
+    state.attachments = state.file?.attachments ?? new Map();
     state.answers = [state.answer0, ...rest];
     state.dirty = false;
     say("");
@@ -613,6 +619,7 @@ function fillEditor(entry) {
   }
   select.value = type;
   syncTypeFields();
+  fillFiles(entry);
 
   $("entry-stamp").textContent = entry.created
     ? `Created ${localTime(entry.created)} · last changed ${localTime(entry.modified)}`
@@ -627,9 +634,85 @@ function fillEditor(entry) {
 }
 
 function syncTypeFields() {
-  const card = $("entry-type").value.toLowerCase() === "card";
+  const type = $("entry-type").value.toLowerCase();
+  const card = type === "card";
+  // A File entry's point is what is attached to it; the username, password and
+  // website rows would all be blank. Compared case-insensitively because the
+  // clients spell every type differently.
+  const file = type === "file";
   show("entry-card-fields", card);
-  show("entry-login-fields", !card);
+  show("entry-login-fields", !card && !file);
+}
+
+/// The entry's attached files, listed read-only with a download each.
+///
+/// This page can carry attachments and hand one back, but not add or remove
+/// one — the desktop app is where that happens. A row whose blob is missing
+/// from the archive is a dangling reference, which SPEC.md requires readers to
+/// tolerate: it is said plainly rather than hidden.
+function fillFiles(entry) {
+  const files = entry.attachments ?? [];
+  const list = $("entry-file-list");
+  list.replaceChildren();
+  show("entry-files", files.length > 0);
+
+  for (const file of files) {
+    const present = state.attachments.has(file.id);
+    const row = document.createElement("li");
+
+    const label = document.createElement("span");
+    // A file name comes out of a file anybody could have written, so it is set
+    // as text and never as markup.
+    label.textContent = file.name;
+    const detail = document.createElement("span");
+    detail.className = "hint";
+    detail.textContent = present
+      ? ` ${formatSize(file.size)} · added ${localTime(file.added)}`
+      : ` ${formatSize(file.size)} · missing from this vault`;
+    row.append(label, detail);
+
+    if (present) {
+      const button = document.createElement("button");
+      // Inside the entry form: a defaulted button would submit it.
+      button.type = "button";
+      button.className = "button small secondary";
+      button.textContent = "Save";
+      button.addEventListener("click", () => downloadAttachment(file));
+      row.append(" ", button);
+    }
+    list.append(row);
+  }
+}
+
+/// A file size the way a file manager writes one. Mirrors `format_size` in
+/// `src/data.rs`.
+function formatSize(bytes) {
+  const kb = 1024, mb = kb * 1024, gb = mb * 1024;
+  if (bytes < kb) return `${bytes} bytes`;
+  if (bytes < mb) return `${(bytes / kb).toFixed(1)} KB`;
+  if (bytes < gb) return `${(bytes / mb).toFixed(1)} MB`;
+  return `${(bytes / gb).toFixed(1)} GB`;
+}
+
+/// Decrypt one attachment in the page and hand it to the browser to save.
+///
+/// A blob URL rather than a data: URI, because an attachment can be megabytes
+/// and it is revoked as soon as the click has been dispatched.
+async function downloadAttachment(file) {
+  const blob = state.attachments.get(file.id);
+  if (!blob) return;
+  try {
+    const plaintext = await openAttachment(blob, file, state.masterKey);
+    const url = URL.createObjectURL(new Blob([plaintext]));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = file.name || "attachment";
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch {
+    // No integrity in the format, so this is the most that can be said.
+    say(`Could not decrypt “${file.name}”. The stored file may be damaged.`, "error");
+  }
 }
 
 function applyEntry(event) {
@@ -679,6 +762,9 @@ function clearEditorFields() {
     $(id).value = "";
   }
   $("entry-hidden").checked = false;
+  // The file rows carry names out of the vault, so they go with the rest.
+  $("entry-file-list").replaceChildren();
+  show("entry-files", false);
   // A generated password is a secret like any other field's, and this is the
   // one funnel closing the editor and every lock path both reach.
   closePassgen();
@@ -826,6 +912,7 @@ async function rebuild() {
     translit: state.params.translit,
     kdf: state.params.kdf,
     masterKey: state.masterKey,
+    attachments: state.attachments,
     host: hostStamp(),
   });
 }
@@ -1133,6 +1220,7 @@ function smartUnlock(event) {
     state.answers = [recovered.answer0, ...recovered.answers];
     state.masterKey = opened.masterKey;
     state.entries = opened.entries;
+    state.attachments = file.attachments ?? new Map();
     // The bundle was armed over these very entries, so whatever was owed to a
     // save before the lock is still owed now.
     state.dirty = carried.dirty;

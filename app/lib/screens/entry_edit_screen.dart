@@ -99,6 +99,10 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
       cardExpiry: _original?.cardExpiry ?? '',
       cardCvv: _original?.cardCvv ?? '',
       cardPin: _original?.cardPin ?? '',
+      // Carried through for the same reason, and it matters more: dropping
+      // these would delete the attached files themselves, since a save writes
+      // only the blobs the entries still refer to.
+      attachments: List.of(_original?.attachments ?? const <Attachment>[]),
     );
     if (_isNew) {
       notifier.addEntry(entry);
@@ -258,9 +262,81 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
             subtitle: const Text('Only shown when "show hidden" is on.'),
             contentPadding: EdgeInsets.zero,
           ),
+          ..._attachmentsSection(),
         ],
       ),
     );
+  }
+
+  /// The files attached to this entry, listed read-only with a way to save one
+  /// out.
+  ///
+  /// This app deliberately cannot add or remove an attachment — that is the
+  /// desktop's job. What it must do is not lose them, which [_save] handles by
+  /// carrying the list forward untouched.
+  List<Widget> _attachmentsSection() {
+    final files = _original?.attachments ?? const <Attachment>[];
+    if (files.isEmpty) return const [];
+
+    return [
+      const SizedBox(height: 16),
+      const Text('Files', style: TextStyle(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 4),
+      for (final file in files)
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.attach_file),
+          title: Text(file.name),
+          subtitle: Text(
+              '${_formatSize(file.size)} · added ${_formatAdded(file.added)}'),
+          trailing: IconButton(
+            tooltip: 'Save a copy',
+            icon: const Icon(Icons.download),
+            onPressed: () => _saveAttachment(file),
+          ),
+        ),
+    ];
+  }
+
+  /// Decrypt one attachment and hand it to the system's save dialog.
+  Future<void> _saveAttachment(Attachment file) async {
+    final session = ref.read(vaultSessionProvider);
+    if (session is! VaultUnlocked) return;
+
+    try {
+      final plaintext = session.vault.openAttachmentBytes(file);
+      final saved =
+          await ref.read(vaultIoProvider).saveAttachment(file.name, plaintext);
+      if (!mounted) return;
+      if (saved != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved \u201c${file.name}\u201d')),
+        );
+      }
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save the file: $error')),
+      );
+    }
+  }
+
+  /// A file size the way a file manager writes one. Mirrors `format_size` in
+  /// `src/data.rs`.
+  static String _formatSize(int bytes) {
+    const kb = 1024;
+    const mb = kb * 1024;
+    const gb = mb * 1024;
+    if (bytes < kb) return '$bytes bytes';
+    if (bytes < mb) return '${(bytes / kb).toStringAsFixed(1)} KB';
+    if (bytes < gb) return '${(bytes / mb).toStringAsFixed(1)} MB';
+    return '${(bytes / gb).toStringAsFixed(1)} GB';
+  }
+
+  static String _formatAdded(int unixSeconds) {
+    final at = DateTime.fromMillisecondsSinceEpoch(unixSeconds * 1000).toLocal();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${at.year}-${two(at.month)}-${two(at.day)} ${two(at.hour)}:${two(at.minute)}';
   }
 
   Widget _field(TextEditingController c, String label,

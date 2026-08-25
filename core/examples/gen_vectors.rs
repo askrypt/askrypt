@@ -8,7 +8,7 @@
 //!
 //! Run: `cargo run -p askrypt-core --example gen_vectors`
 
-use askrypt::types::{CardFields, SecretEntry};
+use askrypt::types::{Attachment, Attachments, CardFields, MasterSecret, SecretEntry};
 use askrypt::{
     AskryptFile, calc_pbkdf2, encode_base64, encrypt_with_aes, normalize_answer, sha256,
     translit::transliterate,
@@ -34,6 +34,11 @@ fn aes_case(plaintext: &[u8], key: &[u8; 32], iv: &[u8; 16]) -> serde_json::Valu
         "ciphertext_b64": encode_base64(&ct),
     })
 }
+
+/// The `files/<id>` member the fixture vault carries, and its contents. Both
+/// are fixed so the fixture is byte-stable across runs.
+const ATTACHMENT_ID: &str = "0123456789abcdef0123456789abcdef";
+const ATTACHMENT_PLAINTEXT: &str = "scanned passport, page 1";
 
 fn main() {
     // --- normalization (with and without transliteration) ---
@@ -114,6 +119,29 @@ fn main() {
         "Fluffy".to_string(),
         "New York".to_string(),
     ];
+    // The attachment the `File` entry below carries. Everything about it is
+    // pinned rather than drawn: a fixture that changed on every run would prove
+    // nothing about a port.
+    let master = MasterSecret::from_slice(&[42u8; 32]).unwrap();
+    let attachment_iv = [7u8; 16];
+    // The blob reaches the archive the way every freshly attached file does:
+    // as a *sealed file*, since nothing holds an attachment's bytes any more.
+    // The ciphertext is still pinned — same plaintext, key and IV — so the
+    // emitted vault stays byte-identical to the one earlier builds produced.
+    let sealed = std::env::temp_dir().join(format!("askrypt-vector-blob-{}", std::process::id()));
+    std::fs::write(
+        &sealed,
+        encrypt_with_aes(
+            ATTACHMENT_PLAINTEXT.as_bytes(),
+            master.as_bytes(),
+            &attachment_iv,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut attachments = Attachments::new();
+    attachments.insert_sealed(ATTACHMENT_ID.to_string(), sealed.clone());
+
     let entries = vec![
         SecretEntry {
             name: "Example".to_string(),
@@ -126,6 +154,7 @@ fn main() {
             created: 1_704_067_200,
             modified: 1_704_153_600,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         },
         SecretEntry {
@@ -139,6 +168,7 @@ fn main() {
             created: 1_704_067_200,
             modified: 1_704_067_200,
             hidden: true,
+            attachments: Vec::new(),
             card: Default::default(),
         },
         // A card, so the Dart port is pinned to carrying the six `card_*` keys.
@@ -155,6 +185,7 @@ fn main() {
             created: 1_704_067_200,
             modified: 1_704_153_600,
             hidden: false,
+            attachments: Vec::new(),
             card: CardFields {
                 holder: "Ruslan A.".to_string(),
                 brand: "Visa".to_string(),
@@ -164,6 +195,32 @@ fn main() {
                 pin: "9876".to_string(),
             },
         },
+        // A `File` entry carrying an attachment, so both ports are pinned to
+        // carrying the `attachments` key *and* the `files/` ZIP member. Without
+        // one, a port that dropped either — deleting every attached file in the
+        // vault on its next save — would still pass every parity test. This is
+        // the same trap the card entry above exists to close.
+        SecretEntry {
+            name: "Passport".to_string(),
+            user_name: String::new(),
+            secret: String::new(),
+            url: String::new(),
+            notes: "Scanned before the trip".to_string(),
+            entry_type: "File".to_string(),
+            tags: vec!["travel".to_string()],
+            created: 1_704_067_200,
+            modified: 1_704_153_600,
+            hidden: false,
+            attachments: vec![Attachment {
+                id: ATTACHMENT_ID.to_string(),
+                name: "passport.txt".to_string(),
+                size: ATTACHMENT_PLAINTEXT.len() as u64,
+                added: 1_704_153_600,
+                // Pinned rather than drawn, like everything else in a fixture.
+                iv: encode_base64(&[7u8; 16]),
+            }],
+            card: Default::default(),
+        },
     ];
     let iterations = 1000u32; // keep tests fast; production default is 600_000
     let mut file = AskryptFile::create(
@@ -172,7 +229,10 @@ fn main() {
         entries.clone(),
         Some(iterations),
         false,
-        None,
+        // Minted here rather than left to `create`, because the attachment
+        // below has to be encrypted under the very key the vault carries.
+        Some(&master),
+        &attachments,
     )
     .unwrap();
     // `create` stamps params.host/params.updated_at with this machine and the
@@ -183,9 +243,15 @@ fn main() {
     file.params.host = Some(host.to_string());
     file.params.updated_at = Some(updated_at.to_string());
     let vault_bytes = file.to_bytes().unwrap();
+    // The sealed blob has been folded into the archive; nothing needs it now.
+    std::fs::remove_file(&sealed).ok();
 
     let vault = json!({
         "questions": questions,
+        // The attachment's plaintext, so a port can prove it decrypted the
+        // `files/` member rather than merely carried it.
+        "expected_attachment_id": ATTACHMENT_ID,
+        "expected_attachment_plaintext": ATTACHMENT_PLAINTEXT,
         "answers": answers,
         "iterations": iterations,
         "translit": false,

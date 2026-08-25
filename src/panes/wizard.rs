@@ -19,8 +19,9 @@ use iced::widget::{button, column, container, row, rule, scrollable, text, text_
 use iced::{Element, Length, Task, alignment::Vertical};
 
 use crate::data;
-use crate::manager::{OpenedVault, VaultHome};
+use crate::manager::{self, OpenedVault, VaultHome};
 use crate::panes::Action;
+use crate::scratch::Scratch;
 use crate::session::{Session, VaultError, describe_open_error, describe_sign_in_error};
 use crate::settings::VaultLocation;
 use crate::{App, Message, icon, theme};
@@ -402,8 +403,9 @@ fn open_location(state: &mut State, session: &mut Session, location: VaultLocati
         }
     };
 
+    let scratch = session.scratch.clone();
     session.begin_work("Opening…");
-    Action::Run(load_task(location, storage))
+    Action::Run(load_task(location, storage, scratch))
 }
 
 /// Download a server vault through the instance pre-seeded with its id and
@@ -427,11 +429,16 @@ fn download(
     };
     let storage: Arc<dyn VaultStorage> = Arc::new(ServerStorage::existing(client, &vault));
 
+    let scratch = session.scratch.clone();
     session.begin_work("Downloading…");
-    Action::Run(load_task(location, storage))
+    Action::Run(load_task(location, storage, scratch))
 }
 
-fn load_task(location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Task<Message> {
+fn load_task(
+    location: VaultLocation,
+    storage: Arc<dyn VaultStorage>,
+    scratch: Option<Arc<Scratch>>,
+) -> Task<Message> {
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || {
@@ -439,8 +446,10 @@ fn load_task(location: VaultLocation, storage: Arc<dyn VaultStorage>) -> Task<Me
                 // locked, so there is no master key here — the type says so,
                 // rather than an `Option` that happens to be `None`.
                 let home = VaultHome::new(location, Arc::clone(&storage));
-                storage
-                    .load_vault()
+                // `read_vault` rather than `load_vault`: it claims the file for
+                // this app and leaves the vault's attachments pointing at an
+                // archive they can be streamed out of.
+                manager::read_vault(&storage, scratch.as_ref())
                     .map(|file| OpenedVault { file, home })
                     .map_err(|e| VaultError::log("Failed to open vault", &e))
             })

@@ -28,6 +28,15 @@ class FakeVaultIo implements VaultIo {
     saved = bytes;
     return '/tmp/$suggestedName';
   }
+
+  /// The name and the decrypted bytes of the last attachment saved out.
+  (String, Uint8List)? savedAttachment;
+
+  @override
+  Future<String?> saveAttachment(String name, Uint8List bytes) async {
+    savedAttachment = (name, bytes);
+    return '/tmp/$name';
+  }
 }
 
 /// In-memory recent-vault cache.

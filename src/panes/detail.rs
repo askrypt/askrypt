@@ -26,6 +26,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         text("ITEM INFORMATION").size(11).style(text::secondary),
         if data::is_card(entry) {
             card_main_card(entry, app.revealed, app.cvv_revealed)
+        } else if data::is_file(entry) {
+            file_main_card(entry)
         } else {
             main_card(entry, app.revealed)
         },
@@ -61,6 +63,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     if let Some(card) = website_card(entry) {
+        content = content.push(card);
+    }
+
+    if let Some(card) = attachments_card(app, entry) {
         content = content.push(card);
     }
 
@@ -187,6 +193,96 @@ fn main_card(entry: &SecretEntry, revealed: bool) -> Element<'_, Message> {
     ));
 
     theme::card(fields).into()
+}
+
+/// Name alone, in place of [`main_card`] for a `File` entry.
+///
+/// A File entry's point is what is attached to it; the username and password
+/// rows would be labelled blanks. The notes card and the attachments card below
+/// carry the rest.
+fn file_main_card(entry: &SecretEntry) -> Element<'_, Message> {
+    theme::card(column![field_row(
+        "Name",
+        text(&entry.name).size(14).into(),
+        row![]
+    )])
+    .into()
+}
+
+/// The attached files, one row each: name, then size and when it was added.
+///
+/// `None` when the entry has none, so an ordinary login is drawn exactly as it
+/// was before attachments existed. A `File` entry with nothing attached still
+/// gets the card, because there the emptiness is the thing worth saying.
+///
+/// A row whose blob is missing from the archive — a dangling reference, which
+/// `SPEC.md` requires readers to tolerate — is marked and has no save action.
+/// There is nothing to write.
+fn attachments_card<'a>(app: &'a App, entry: &'a SecretEntry) -> Option<Element<'a, Message>> {
+    if entry.attachments.is_empty() && !data::is_file(entry) {
+        return None;
+    }
+
+    let stored = app
+        .session
+        .vault
+        .unlocked()
+        .map(|vault| vault.attachments());
+
+    let mut rows = column![].spacing(0);
+    if entry.attachments.is_empty() {
+        rows = rows.push(
+            container(text("No files attached").size(13).style(text::secondary)).padding([10, 12]),
+        );
+    }
+
+    for (position, file) in entry.attachments.iter().enumerate() {
+        if position > 0 {
+            rows = rows.push(hairline());
+        }
+        let present = stored.is_some_and(|blobs| blobs.source(&file.id).is_some());
+        let detail = if present {
+            format!(
+                "{} · {}",
+                data::format_size(file.size),
+                data::format_timestamp_local(file.added)
+            )
+        } else {
+            format!("{} · missing from this vault", data::format_size(file.size))
+        };
+
+        let actions = if present {
+            row![icon_action(
+                icon::file_earmark_arrow_down(14),
+                "Save this file…",
+                Message::ExtractAttachment(file.id.clone()),
+            )]
+        } else {
+            row![]
+        };
+
+        // The file name leads and the size/date sit under it — the reverse of
+        // `field_row`, whose label is the small secondary line. It comes out of
+        // a file anybody could have written, so it is `text`, never markup.
+        rows = rows.push(
+            container(
+                row![
+                    column![
+                        text(&file.name).size(14),
+                        text(detail).size(11).style(text::secondary),
+                    ]
+                    .spacing(3)
+                    .width(Length::Fill),
+                    actions,
+                ]
+                .align_y(Vertical::Center),
+            )
+            .padding([10, 14])
+            .width(Length::Fill),
+        );
+    }
+
+    Some(theme::card(rows).into())
 }
 
 /// Name / Cardholder / Brand / Number / Expiry / CVV / PIN, in place of

@@ -19,6 +19,7 @@
 //! documentation of [`crate::manager`] for the shape every transition takes.
 
 use crate::manager::{Vault, VaultState};
+use crate::scratch::Scratch;
 use crate::settings::{AppSettings, ServerSession, VaultLocation};
 use crate::tray::AppTray;
 use askrypt::{SecretEntry, ServerClient, StorageError, VaultStorage};
@@ -46,6 +47,11 @@ pub enum VaultError {
     Conflict,
     /// The server refused, carrying its own error code (`quota_exceeded`, …).
     Remote(String),
+    /// Another Askrypt window has this vault open. Not a failure of the storage
+    /// so much as a refusal to let two apps edit one archive, which they would
+    /// otherwise do by reading each other's attachments out from under
+    /// themselves.
+    Locked,
     Other,
 }
 
@@ -61,6 +67,7 @@ impl VaultError {
             StorageError::Auth(_) => VaultError::Auth,
             StorageError::Conflict(_) => VaultError::Conflict,
             StorageError::Remote { code, .. } => VaultError::Remote(code.clone()),
+            StorageError::Locked(_) => VaultError::Locked,
             // `StorageError` is `#[non_exhaustive]`.
             _ => VaultError::Other,
         }
@@ -105,6 +112,10 @@ pub fn describe_open_error(error: &VaultError) -> String {
         VaultError::Format => "That file is not an Askrypt vault".to_string(),
         VaultError::Auth => "Your server session expired. Sign in again.".to_string(),
         VaultError::Network => "Could not reach the server".to_string(),
+        VaultError::Locked => {
+            "That vault is already open in another Askrypt window. Close it there first."
+                .to_string()
+        }
         _ => "Failed to open vault".to_string(),
     }
 }
@@ -160,6 +171,14 @@ pub struct Session {
     /// Whether following has given up on this vault (it is gone, or the token
     /// died). Reset when a vault is opened, locked or closed.
     pub follow_stopped: bool,
+    /// This run's scratch directory, where a freshly attached file's ciphertext
+    /// and a cloud vault's copy of its own archive live.
+    ///
+    /// An `Arc` because every worker that touches an attachment needs it and a
+    /// `spawn_blocking` closure has to own what it captures. `None` means the
+    /// platform offered no cache directory: everything still works, one
+    /// fallback down in `manager`, and only attaching a file is worse for it.
+    pub scratch: Option<Arc<Scratch>>,
 }
 
 impl Session {
@@ -200,6 +219,7 @@ impl Session {
             dismissed_revision: None,
             last_reload: None,
             follow_stopped: false,
+            scratch: Scratch::open().map(Arc::new),
         }
     }
 
@@ -449,6 +469,10 @@ impl Session {
             }
             VaultError::Remote(code) if code == "payload_too_large" => {
                 "This vault is too large for the server".to_string()
+            }
+            VaultError::Locked => {
+                "That vault is already open in another Askrypt window. Close it there first."
+                    .to_string()
             }
             _ => format!("Failed to {} vault", action),
         });

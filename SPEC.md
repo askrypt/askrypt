@@ -3,7 +3,9 @@
 This document specifies the JSON format used by Askrypt to store passwords/secrets. 
 The format is designed to be simple and human-readable. The JSON file (askrypt.json)
 contains the main encrypted data, questions, and parameters required for decryption. 
-This file is compressed into a ZIP archive (vault.askrypt) along with additional attachments (files).
+This file is compressed into a ZIP archive (vault.askrypt) along with the
+encrypted file attachments, one ZIP member each — see
+[File attachments](#file-attachments).
 
 ## File Structure (askrypt.json)
 An Askrypt file is a JSON with the following fields:
@@ -49,6 +51,12 @@ An Askrypt file is a JSON with the following fields:
       (string, optional)
     * `card_cvv` - card security code (string, optional)
     * `card_pin` - card PIN (string, optional)
+  * `attachments` - the files attached to this entry (array of objects,
+    optional). **Omitted when empty**, like the `card_*` keys, so an entry with
+    no files serializes exactly as it did before attachments existed. Each
+    element carries the metadata for one file whose bytes live in a ZIP member
+    of their own; see [File attachments](#file-attachments) for the fields and
+    the rules.
 
 ```json
 {
@@ -80,6 +88,97 @@ dangling `ubuntu@`. Readers must treat the whole value as **opaque display
 text** — vaults written before this convention carry a bare host name with no
 OS half — and must sanitize it before display, since it is attacker-controlled
 in a file that anyone can craft.
+
+## File attachments
+
+Beyond `askrypt.json`, the archive holds **one member per attached file**, named
+`files/<id>`, where `<id>` is the attachment's `id`: 32 lowercase hex characters
+(16 random bytes). The member's body is the file's bytes encrypted with
+AES-256-CBC and PKCS#7 padding under the vault's `masterKey`, with a per-file
+IV. Members are **deflated**, like `askrypt.json` — every member of the archive
+is written the same way. It buys no space (the body is ciphertext, which does
+not compress; deflate falls back to stored blocks and adds a few bytes per
+64 KB), so this is uniformity rather than economy. Readers must accept **both**
+deflated (method 8) and stored (method 0) members regardless: the ZIP method is
+recorded per member, and a writer without a deflate implementation to hand may
+legitimately store one.
+
+Nothing in the format bounds an attachment's size. A reader that inflates every
+member to open a vault will want a ceiling of its own — the Dart and browser
+implementations set one, at 256 MiB across the archive — but that is a property
+of *that reader*, not of the format, and a reader that streams members (as the
+Rust implementation does) needs none. The one member every reader must hold
+whole is `askrypt.json`, and capping *that* is what actually bounds what a
+crafted archive can make a reader allocate; 1 MiB is orders of magnitude above
+any real vault's metadata.
+
+The id is random and is the *whole* of the member's name, so a reader of the
+archive's listing learns nothing about what a vault holds. The real file name
+lives in the entry's `attachments` array, inside the encrypted `data` blob:
+
+```json
+"attachments": [
+  {
+    "id":    "0123456789abcdef0123456789abcdef",
+    "name":  "passport.pdf",
+    "size":  482113,
+    "added": 1755950400,
+    "iv":    "base64-encoded-iv"
+  }
+]
+```
+
+* `id` - names the `files/<id>` member (string, 32 lowercase hex characters)
+* `name` - the file's real name (string)
+* `size` - length of the **plaintext** in bytes (integer)
+* `added` - when the file was attached (**integer**, Unix time in seconds)
+* `iv` - base64 of the 16-byte AES-CBC IV (string)
+
+The IV is stored here rather than prefixed to the member, which is how `master`
+already carries the `data` blob's IV.
+
+### Rules
+
+1. **A fresh IV on every encryption.** The master key is deliberately long-lived
+   (see [Master key lifetime](#master-key-lifetime)), so nothing else in an
+   attachment carries uniqueness. Re-encrypting the same file under a repeated
+   key *and* IV would let anyone holding two versions of a vault read off how
+   long a prefix of it went unchanged — the same reason the `data` IV is
+   regenerated on every write.
+2. **A writer MUST NOT emit a blob no entry references.** Removing an attachment
+   from an entry, or deleting the entry, must actually shrink the vault. Doing
+   this at write time rather than at the moment of removal makes it
+   self-healing: a client that orphaned a blob does not leak it forever.
+3. **A reader MUST tolerate a dangling reference** — an `attachments` element
+   naming a member the archive does not hold. It is a row a UI marks, never a
+   reason to refuse the vault.
+4. **A writer that does not understand attachments must still carry both the
+   `attachments` key and the `files/` members through unchanged.** This is not
+   optional politeness: because a save rebuilds the whole archive and writes
+   only what the entries refer to, a client that dropped either would delete
+   every attached file in the vault. Clients that cannot add or remove an
+   attachment can still be perfectly good custodians of one.
+5. **A writer MAY copy an unchanged member across verbatim** — the same
+   compressed bytes, method and CRC — rather than decrypting and re-encrypting
+   it. This follows from the master key never being rotated (see
+   [Master key lifetime](#master-key-lifetime)): a member sealed under it stays
+   valid for the life of the vault, so rule 1's fresh IV is a rule about
+   *encrypting*, not about writing. It is what lets a client carry an
+   attachment far larger than its own memory: the Rust implementation streams
+   each member straight from the archive it is replacing into the one it is
+   writing, and never holds an attachment's bytes at all.
+
+Attachments are why the master key is preserved rather than rotated: a rotation
+would mean decrypting and re-encrypting every attached file on every save.
+
+### What the archive still reveals
+
+The random member name hides the file *names*, and nothing more. A ZIP central
+directory is not encrypted, so anyone holding the file can read **how many
+attachments a vault has and how large each one is**, along with each member's
+timestamp. That is accepted rather than mitigated: padding sizes would cost
+storage against real limits, and the count is implicit in the archive's shape
+anyway. Treat the count and the sizes as public.
 
 The maximum question length is **500 bytes** (UTF-8). Each question is human-readable text. 
 The answer is a secret known only to the user. Questions can include spaces and special characters.
@@ -166,9 +265,9 @@ not of a particular file on disk: a client that saves a vault must recover the
 existing key first and hand it back, never mint a new one. (Clients recover it as
 a side effect of unlocking, which already decrypts `master`.)
 
-This is what will let encrypted file attachments live under the master key: were
-it rotated on every save, each save would have to decrypt and re-encrypt every
-attachment.
+This is what lets encrypted file attachments live under the master key (see
+[File attachments](#file-attachments)): were it rotated on every save, each save
+would have to decrypt and re-encrypt every attached file.
 
 Two things are **not** preserved. `salt0` and `salt1` are regenerated on every
 write, so the answer-derived keys are never reused. So is `iv`, and that one is
@@ -184,11 +283,11 @@ in future; it does not undo a leak that already happened.
 
 ### Integrity: not provided
 
-**Format v0.9 offers confidentiality but no integrity.** All three blobs — `qs`,
-`master` and `data` — are unauthenticated AES-256-CBC: there is no MAC, no AEAD,
-and nothing anywhere in the file authenticates any other part of it. A reader
-cannot distinguish a vault it wrote from one that has been altered in transit or
-at rest.
+**Format v0.9 offers confidentiality but no integrity.** Every blob — `qs`,
+`master`, `data` and each `files/` attachment — is unauthenticated AES-256-CBC:
+there is no MAC, no AEAD, and nothing anywhere in the file authenticates any
+other part of it. A reader cannot distinguish a vault it wrote from one that has
+been altered in transit or at rest.
 
 This matters because the file is designed to be handed to parties that are not
 trusted with its contents — the Askrypt server stores it as an opaque blob, and
@@ -217,6 +316,11 @@ rather than as design:
   (`salt0`) is in the clear but is *also* the PBKDF2 and SHA-256 salt, so
   changing it destroys the key rather than shifting the plaintext. Otherwise the
   first block of each blob would be malleable with no collateral damage at all.
+  An attachment's IV is sealed the same way, inside `data`. Attachment bytes are
+  the one place where the plaintext is *not* JSON, though, so the "it almost
+  always breaks parsing" argument above does not cover them: a flipped bit in an
+  attachment survives every check this format has, and lands in a file the user
+  then opens in some other application.
 - **There is no padding oracle**, because decryption happens entirely on the
   client and no signal about its outcome is returned to whoever supplied the
   bytes. An attacker is blind and cannot iterate. This is a property of how the
@@ -275,9 +379,11 @@ Requirements, in rough order of how easy each is to get wrong:
    stable (the vault id, a counter persisted in the file, a timestamp), and never
    reuse one across two blobs in the same file.
 2. **Cover every blob**: `qs`, `master`, `data` — and each file attachment, which
-   is the whole reason the master key is preserved in the first place. An
-   attachment scheme designed before this lands should leave room for a per-blob
-   nonce and tag.
+   is the whole reason the master key is preserved in the first place. The
+   attachment metadata is where the room for this was left: a per-blob `nonce`
+   and `tag` are two more keys in each `attachments` element and move nothing
+   else. Attachments are also where a missing tag hurts most, since their
+   plaintext is arbitrary bytes rather than JSON that would fail to parse.
 3. **Bind `params` as associated data.** `params` stays unencrypted (readers need
    `salt`/`iterations` before they have any key), but passing it as AAD to the
    outermost blob makes it unmodifiable, which closes the `host`/`updated_at`
@@ -287,8 +393,9 @@ Requirements, in rough order of how easy each is to get wrong:
    distinguishable, and they deserve different words: one is "try again", the
    other is "this file has been altered — do not trust it". This is a UI change
    in `src/` and `app/`, not just a crypto change.
-5. **Keep the three implementations in lock-step.** Rust core, the Dart port, and
-   new golden vectors: regenerate `app/test/fixtures/vectors.json` via
+5. **Keep the three implementations in lock-step.** Rust core, the Dart port,
+   the browser port, and new golden vectors: regenerate
+   `app/test/fixtures/vectors.json` via
    `cargo run -p askrypt-core --example gen_vectors`, and keep a v0.9 fixture
    alongside the v1.0 one so the read-old/write-new path stays covered.
 6. **The server needs no change and must not get one.** It stores opaque bytes;

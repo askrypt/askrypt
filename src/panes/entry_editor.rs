@@ -8,15 +8,17 @@
 //! preserved. Nothing here touches storage; saving edits `session.entries` and
 //! marks the vault dirty, and the vault is written only by an explicit Save.
 
+use std::path::PathBuf;
+
 use askrypt::SecretEntry;
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_editor, text_input,
 };
-use iced::{Element, Length, alignment::Vertical};
+use iced::{Element, Length, Task, alignment::Vertical};
 
 use crate::panes::Action;
 use crate::session::Session;
-use crate::{Message, Pane, data, icon, theme};
+use crate::{Message, Pane, data, icon, manager, theme};
 
 const NAME_INPUT_ID: &str = "GUI_EDITOR_NAME";
 
@@ -124,6 +126,14 @@ pub enum Msg {
     CardPinEdited(String),
     ToggleReveal,
     ToggleCvvReveal,
+    /// Open the file picker to attach a file to this draft.
+    AttachFile,
+    /// The picker closed. `None` is a cancel.
+    FilePicked(Option<PathBuf>),
+    /// The worker finished reading and encrypting the file.
+    Attached(Box<Result<manager::Attached, String>>),
+    /// Drop an attachment from this draft, by id.
+    RemoveAttachment(String),
     Save,
     Cancel,
 }
@@ -167,6 +177,92 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
         }
         Msg::HiddenToggled(value) => {
             state.entry.hidden = value;
+            (Action::None, false)
+        }
+        // The dialog first, the work second: cancelling then costs nothing and
+        // never leaves a decrypted copy of anything behind.
+        Msg::AttachFile => (
+            Action::Run(Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Attach a file to this item")
+                        .pick_file()
+                        .await
+                        .map(|handle| handle.path().to_path_buf())
+                },
+                |picked| Message::Editor(Msg::FilePicked(picked)),
+            )),
+            false,
+        ),
+        Msg::FilePicked(None) => (Action::None, false),
+        Msg::FilePicked(Some(path)) => {
+            // The key comes off the open vault, not out of the draft: an
+            // attachment lives under the vault's master key, which is why that
+            // key is preserved for the vault's whole life.
+            let Some(vault) = session.vault.unlocked() else {
+                state.error = Some("The vault is not unlocked".to_string());
+                return (Action::None, false);
+            };
+            // A cloud vault has a hard ceiling the server enforces, and finding
+            // out at save time would mean the user cannot save at all until
+            // they work out which file to drop. Said here, before any work,
+            // nothing has happened yet. A local vault is uncapped: it is
+            // streamed to disk now and never held in memory.
+            if let Err(message) = room_for(&path, vault) {
+                state.error = Some(message);
+                return (Action::None, false);
+            }
+
+            let Some(scratch) = session.scratch.clone() else {
+                state.error = Some(
+                    "Files cannot be attached: this system offers no cache directory to encrypt \
+                     them into."
+                        .to_string(),
+                );
+                return (Action::None, false);
+            };
+            let inputs = manager::AttachInputs {
+                dest: scratch.sealed_path(),
+                path,
+                master: vault.master().clone(),
+            };
+            session.begin_work("Encrypting file…");
+            (
+                Action::Run(Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || inputs.run())
+                            .await
+                            .expect("attachment task panicked")
+                    },
+                    |result| Message::Editor(Msg::Attached(Box::new(result))),
+                )),
+                false,
+            )
+        }
+        Msg::Attached(result) => {
+            session.finish_work();
+            match *result {
+                Ok(attached) => {
+                    // The bytes go to the vault and the reference to the draft.
+                    // Filing the bytes does not make the vault dirty — applying
+                    // the item does — so cancelling out of here leaves an orphan
+                    // that the next save's prune collects.
+                    let Some(vault) = session.vault.unlocked_mut() else {
+                        state.error = Some("The vault is not unlocked".to_string());
+                        return (Action::None, false);
+                    };
+                    vault.add_attachment(attached.attachment.id.clone(), attached.sealed);
+                    state.entry.attachments.push(attached.attachment);
+                    state.error = None;
+                }
+                Err(message) => state.error = Some(message),
+            }
+            (Action::None, false)
+        }
+        // Only the reference is dropped here. The blob stays until a save
+        // prunes it, so cancelling the editor puts the file back.
+        Msg::RemoveAttachment(id) => {
+            state.entry.attachments.retain(|file| file.id != id);
             (Action::None, false)
         }
         Msg::CardHolderEdited(value) => {
@@ -330,6 +426,10 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
     // brings it all with it.
     for control in if data::is_card(&state.entry) {
         card_fields(state)
+    } else if data::is_file(&state.entry) {
+        // A File entry has no middle: its name, notes and attachments are the
+        // whole of it, and all three are drawn outside this branch.
+        Vec::new()
     } else {
         login_fields(state)
     } {
@@ -364,6 +464,8 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         ]
         .spacing(12),
     );
+
+    body = body.push(attachments_section(state, session));
 
     if let Some(error) = &state.error {
         body = body.push(text(error.clone()).size(12).style(text::danger));
@@ -546,6 +648,121 @@ fn cvv_reveal_button<'a>(revealed: bool) -> Element<'a, Message> {
     theme::text_button_icon(glyph, tip)
         .on_press(Message::Editor(Msg::ToggleCvvReveal))
         .into()
+}
+
+/// The attached files, with a way to add one and a way to drop one.
+///
+/// Shown for **every** entry type, not just `File`: attaching a recovery-codes
+/// PDF to the login it belongs to is the ordinary case. On a `File` entry it is
+/// the only section there is.
+///
+/// The rows describe what is attached — name, size, when — rather than offering
+/// to open it. Reading a file out is the detail pane's job; this is the editor,
+/// and what it edits is the list.
+/// Whether this vault has room for the file the user just picked.
+///
+/// Only a *cloud* vault has a ceiling: the server refuses anything over
+/// `MAX_VAULT_BYTES`, and finding that out at save time would leave the user
+/// unable to save at all until they worked out which file to drop. Asked here,
+/// before a byte has been read, nothing has happened yet.
+///
+/// A local vault is deliberately uncapped. Nothing is held in memory any more —
+/// the file is encrypted straight to disk and streamed into the archive — so
+/// the only limit left is the disk's, which the filesystem reports better than
+/// a guess here would.
+///
+/// The estimate is the current archive plus the picked file plus one AES block
+/// of padding, and it is an *under*-estimate by the ZIP member's own header. A
+/// save that squeaks over anyway is refused by the server with its own message;
+/// what this catches is the case worth catching, which is not a near miss.
+fn room_for(
+    path: &std::path::Path,
+    vault: &manager::Vault<manager::Unlocked>,
+) -> Result<(), String> {
+    if !vault.home().is_some_and(|home| home.location().is_server()) {
+        return Ok(());
+    }
+
+    let picked = std::fs::metadata(path)
+        .map_err(|e| format!("Could not read the file: {e}"))?
+        .len();
+    let stored = vault
+        .attachments()
+        .origin()
+        .and_then(|origin| std::fs::metadata(origin).ok())
+        .map_or(0, |meta| meta.len());
+
+    let total = stored.saturating_add(picked).saturating_add(16);
+    if total > askrypt::MAX_VAULT_BYTES as u64 {
+        return Err(format!(
+            "“{}” does not fit: a vault stored on the server may be at most {}, and this one \
+             would come to about {}.",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            data::format_size(askrypt::MAX_VAULT_BYTES as u64),
+            data::format_size(total),
+        ));
+    }
+    Ok(())
+}
+
+fn attachments_section<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> {
+    let stored = session.vault.unlocked().map(|vault| vault.attachments());
+
+    let mut rows = column![].spacing(6);
+    for file in &state.entry.attachments {
+        // A reference whose blob is not in the archive: `SPEC.md` requires a
+        // reader to tolerate one, so it is said plainly rather than hidden.
+        let present = stored.is_some_and(|blobs| blobs.source(&file.id).is_some());
+        let detail = if present {
+            format!(
+                "{} · added {}",
+                data::format_size(file.size),
+                data::format_timestamp_local(file.added)
+            )
+        } else {
+            format!("{} · missing from this vault", data::format_size(file.size))
+        };
+
+        rows = rows.push(
+            container(
+                row![
+                    icon::paperclip(14),
+                    column![
+                        // Out of a file anybody could have written: rendered as
+                        // text, never as markup.
+                        text(&file.name).size(13),
+                        text(detail).size(11).style(text::secondary),
+                    ]
+                    .spacing(2)
+                    .width(Length::Fill),
+                    theme::text_button_icon(icon::trash(14), "Remove this file")
+                        .on_press(Message::Editor(Msg::RemoveAttachment(file.id.clone()))),
+                ]
+                .spacing(8)
+                .align_y(Vertical::Center),
+            )
+            .padding([8, 10])
+            .style(theme::container_border_r5)
+            .width(Length::Fill),
+        );
+    }
+
+    if state.entry.attachments.is_empty() {
+        rows = rows.push(text("No files attached").size(12).style(text::secondary));
+    }
+
+    rows = rows.push(
+        button(
+            row![icon::file_earmark_plus(14), text("Attach file…").size(13)]
+                .spacing(6)
+                .align_y(Vertical::Center),
+        )
+        .padding([8, 14])
+        .style(button::secondary)
+        .on_press(Message::Editor(Msg::AttachFile)),
+    );
+
+    field("Files", rows.into())
 }
 
 fn reveal_button<'a>(

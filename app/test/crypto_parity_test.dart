@@ -16,6 +16,7 @@ import 'package:askrypt/crypto/normalize.dart';
 import 'package:askrypt/crypto/secret_entry.dart';
 import 'package:askrypt/crypto/translit.dart';
 import 'package:askrypt/crypto/vault.dart';
+import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 String _hex(Uint8List b) =>
@@ -97,6 +98,78 @@ void main() {
     // Write stamp (params.host / params.updated_at), pinned by the generator.
     expect(file.host, v['expected_host']);
     expect(file.updatedAt, v['expected_updated_at']);
+
+    // The attachment: not merely carried, but decrypted. Its bytes are a ZIP
+    // member of their own, so this is what pins the multi-member reader — and
+    // `expected_entries` above is what pins the `attachments` key surviving
+    // `toJson`, which is the difference between carrying an attached file and
+    // deleting it on the next mobile save.
+    final id = v['expected_attachment_id'] as String;
+    final blob = file.attachments[id];
+    expect(blob, isNotNull, reason: 'the files/ member was not read');
+    final meta = entries.last.attachments.single;
+    expect(meta.id, id);
+    final opened = await file.decryptWithMaster(qd, answers.sublist(1));
+    expect(
+      utf8.decode(openAttachment(blob!, meta, opened.masterKey)),
+      v['expected_attachment_plaintext'],
+    );
+    expect(opened.entries.last.attachments.single.name, meta.name);
+
+    // The random id is the whole of the member's name, so the archive listing
+    // never says what the attached file is called.
+    final names = ZipDecoder()
+        .decodeBytes(Uint8List.fromList(bytes))
+        .files
+        .map((f) => f.name);
+    expect(names, contains('files/$id'));
+    expect(names.any((n) => n.contains(meta.name)), isFalse);
+  });
+
+  test('carries attachments across a Dart save, and prunes orphans', () async {
+    final v = vectors['vault'] as Map<String, dynamic>;
+    final bytes = base64.decode(v['vault_b64'] as String);
+    final file = AskryptFile.fromBytes(Uint8List.fromList(bytes));
+    final answers = (v['answers'] as List).cast<String>();
+    final qd = await file.getQuestionsData(answers[0]);
+    final opened = await file.decryptWithMaster(qd, answers.sublist(1));
+    final id = v['expected_attachment_id'] as String;
+
+    // A save from this app must keep the blob *and* the reference — it edits
+    // neither, but rebuilds the whole archive.
+    final resaved = await AskryptFile.create(
+      questions: (v['questions'] as List).cast<String>(),
+      answers: answers,
+      entries: opened.entries,
+      iterations: v['iterations'] as int,
+      masterKey: opened.masterKey,
+      attachments: file.attachments,
+    );
+    final reread = AskryptFile.fromBytes(resaved.toBytes());
+    expect(reread.attachments[id], isNotNull);
+    final rq = await reread.getQuestionsData(answers[0]);
+    final rOpened = await reread.decryptWithMaster(rq, answers.sublist(1));
+    expect(
+      utf8.decode(openAttachment(
+          reread.attachments[id]!, rOpened.entries.last.attachments.single, rOpened.masterKey)),
+      v['expected_attachment_plaintext'],
+    );
+
+    // And a blob no entry refers to is dropped rather than written: deleting an
+    // attachment has to actually shrink the vault (SPEC.md).
+    final stripped = opened.entries.map((e) {
+      e.attachments = [];
+      return e;
+    }).toList();
+    final pruned = await AskryptFile.create(
+      questions: (v['questions'] as List).cast<String>(),
+      answers: answers,
+      entries: stripped,
+      iterations: v['iterations'] as int,
+      masterKey: opened.masterKey,
+      attachments: file.attachments,
+    );
+    expect(pruned.attachments, isEmpty);
   });
 
   test('stamps host/updated_at, and omits them when absent', () async {

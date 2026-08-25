@@ -476,6 +476,55 @@ impl AppSettings {
         Self::config_dir().map(|dir| dir.join("settings.json"))
     }
 
+    /// The per-user cache directory, where an open vault's scratch lives.
+    ///
+    /// Separate from [`config_dir`](Self::config_dir) on purpose: what goes in
+    /// here is a freshly attached file's ciphertext and, for a cloud vault, a
+    /// copy of the archive itself — throwaway working files that a backup of
+    /// the user's settings has no business sweeping up, and that the platform
+    /// is entitled to delete when it needs the room.
+    ///
+    /// Deliberately **not** the system temp directory: `/tmp` is a memory-backed
+    /// filesystem on many Linux installs, which would put an attachment right
+    /// back in RAM after all the trouble taken to keep it out.
+    pub(crate) fn cache_dir() -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("LOCALAPPDATA")
+                .ok()
+                .map(|local| PathBuf::from(local).join("askrypt").join("cache"))
+                .or_else(|| Self::config_dir().map(|dir| dir.join("cache")))
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            std::env::var("HOME").ok().map(|home| {
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Caches")
+                    .join("askrypt")
+            })
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            std::env::var("XDG_CACHE_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|home| PathBuf::from(home).join(".cache"))
+                })
+                .map(|dir| dir.join("askrypt"))
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            None
+        }
+    }
+
     /// The per-user config directory holding `settings.json` and, when the user
     /// has signed in to a server, `server_session.json`.
     pub(crate) fn config_dir() -> Option<PathBuf> {

@@ -477,6 +477,28 @@ code {
 
 /* A masked field with its Show and Copy buttons. The input keeps the width it
    would have had on its own; the buttons sit beside it. */
+/* The files attached to an entry. Listed and downloadable but not editable —
+   this page carries attachments, the desktop app adds and removes them. */
+.open-files {
+  margin: 0.3rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.open-files li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+  /* A file name comes out of the vault and can be any length. */
+  overflow-wrap: anywhere;
+}
+
+.open-files li:last-child { border-bottom: none; }
+.open-files .hint { flex: 1 1 auto; margin: 0; white-space: nowrap; }
+.open-files .button { margin-top: 0; margin-right: 0; flex: 0 0 auto; }
+
 .reveal-row { display: flex; gap: 0.6rem; align-items: center; }
 .reveal-row input { flex: 1 1 auto; min-width: 0; }
 .reveal-row .button.secondary { margin-top: 0; margin-right: 0; white-space: nowrap; }

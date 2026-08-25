@@ -77,8 +77,9 @@ Derivation chain per layer (must match exactly):
 5. **Layering** (`SPEC.md` "Algorithm"): first answer → unlocks `qs`
    (remaining questions); all answers combined → unlocks `master`
    (`masterKey` + `iv`); `masterKey`+`iv` → unlocks `data` (entry list).
-6. **Container**: `vault.askrypt` is a ZIP holding `askrypt.json` (+ future
-   attachments). JSON fields per `SPEC.md` File Structure.
+6. **Container**: `vault.askrypt` is a ZIP holding `askrypt.json` plus one
+   `files/<id>` member per file attachment. JSON fields per `SPEC.md` File
+   Structure and "File attachments".
 
 Dart packages: **`cryptography`** + **`cryptography_flutter`** (PBKDF2 — native
 on device, Dart fallback in tests), **`pointycastle`** (AES-CBC + SHA256),
@@ -100,6 +101,17 @@ on device, Dart fallback in tests), **`pointycastle`** (AES-CBC + SHA256),
   (`2026-08-02T10:15:30Z`), not Dart's default `toIso8601String()` millisecond
   form, and both keys are omitted entirely when absent rather than written as
   `null`.
+- **File attachments must be carried, not merely ignored.** A save rebuilds the
+  whole archive from the entry list and writes only the blobs the entries still
+  refer to, so dropping either the `attachments` key on `SecretEntry` or the
+  `files/` members on `AskryptFile` does not leave them alone — it *deletes*
+  every attached file in the vault. This app can list an attachment and save one
+  out; it cannot add or remove one, and that is precisely why the carrying has
+  to be right. The members are written deflated, like `askrypt.json` and like
+  every other writer of the format writes them — which is `ArchiveFile`'s
+  default, so nothing has to be set. The golden fixture holds a real attachment
+  so a regression here fails `crypto_parity_test.dart` rather than passing
+  quietly.
 
 ## Operations to reach feature parity (from desktop `Message` enum)
 
@@ -263,6 +275,17 @@ clipboard.
   never blocking the real operation) on every successful unlock and every
   save; if the file is edited elsewhere the cached copy is a stale snapshot
   and the manual picker remains the fallback.
+
+### File attachments (shipped with the desktop feature)
+
+Mobile is a **custodian, not an editor**: `entry_edit_screen.dart` lists an
+entry's files (name, size, when added) and saves one out through
+`VaultIo.saveAttachment`, and `_save` copies the `attachments` list forward
+untouched the same way it already copies the six `card_*` fields.
+`UnlockedVault` holds the ciphertexts beside `_masterKey` and hands them to
+`AskryptFile.create` on every save, `withQuestions` included. Adding and
+removing an attachment is the desktop app's job; if mobile ever grows it, the
+pieces are `seal_attachment`'s Dart twin and a picker, not a format change.
 
 - **Phase 5 — CI/CD.** Extend `.github/workflows`: run the **Dart parity test
   suite against committed golden vectors** (catches Rust/Dart drift), Flutter

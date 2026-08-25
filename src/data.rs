@@ -10,10 +10,11 @@ use chrono::{DateTime, Local, Utc};
 /// The entry types the editor offers. `SecretEntry::entry_type` is a free-form
 /// string in the format, so this is a convenience, not a constraint — a vault
 /// written elsewhere may carry any type and the rail will still list it.
-pub const ENTRY_TYPES: [&str; 3] = [TYPE_LOGIN, TYPE_CARD, TYPE_NOTE];
+pub const ENTRY_TYPES: [&str; 4] = [TYPE_LOGIN, TYPE_CARD, TYPE_NOTE, TYPE_FILE];
 pub const TYPE_LOGIN: &str = "Login";
 pub const TYPE_CARD: &str = "Card";
 pub const TYPE_NOTE: &str = "Note";
+pub const TYPE_FILE: &str = "File";
 
 /// The card networks the editor offers. Like [`ENTRY_TYPES`], a convenience
 /// rather than a constraint: `card_brand` is a free string in the format, and a
@@ -44,6 +45,7 @@ pub fn new_entry() -> SecretEntry {
         created: now,
         modified: now,
         hidden: false,
+        attachments: Vec::new(),
         card: Default::default(),
     }
 }
@@ -59,11 +61,39 @@ pub fn is_card(entry: &SecretEntry) -> bool {
     entry.entry_type.eq_ignore_ascii_case(TYPE_CARD)
 }
 
+/// Whether an entry is one whose point is the files attached to it, rather than
+/// a login that happens to have some.
+///
+/// Such an entry shows only its name, its notes and its attachments — the
+/// username, password and website rows would all be blank. Compared
+/// case-insensitively for the reason [`is_card`] gives.
+pub fn is_file(entry: &SecretEntry) -> bool {
+    entry.entry_type.eq_ignore_ascii_case(TYPE_FILE)
+}
+
+/// A file size for a list row: `842 bytes`, `4.2 KB`, `1.7 MB`.
+///
+/// Binary units under decimal names, which is what a file manager shows and
+/// therefore what the number next to a file name is read as.
+pub fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    match bytes {
+        b if b < KB => format!("{b} bytes"),
+        b if b < MB => format!("{:.1} KB", b as f64 / KB as f64),
+        b if b < GB => format!("{:.1} MB", b as f64 / MB as f64),
+        b => format!("{:.1} GB", b as f64 / GB as f64),
+    }
+}
+
 /// The search over an entry's *visible* fields.
 ///
 /// The card number, CVV and PIN are left out for the same reason `secret` is:
 /// typing a secret into a search box and watching a row appear confirms the
-/// secret. The cardholder and the brand are on screen anyway, so they match.
+/// secret. The cardholder and the brand are on screen anyway, so they match —
+/// and so do attachment file names, which are visible metadata rather than
+/// secrets.
 pub fn entry_matches_filter(entry: &SecretEntry, filter: &str) -> bool {
     let filter_lower = filter.to_lowercase();
     // Tags are displayed with a leading `#` but stored without one, so a query
@@ -76,6 +106,10 @@ pub fn entry_matches_filter(entry: &SecretEntry, filter: &str) -> bool {
         || entry.notes.to_lowercase().contains(&filter_lower)
         || entry.card.holder.to_lowercase().contains(&filter_lower)
         || entry.card.brand.to_lowercase().contains(&filter_lower)
+        || entry
+            .attachments
+            .iter()
+            .any(|file| file.name.to_lowercase().contains(&filter_lower))
         || entry
             .tags
             .iter()
@@ -234,6 +268,7 @@ mod tests {
             created: 0,
             modified: 0,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }
     }
@@ -291,6 +326,50 @@ mod tests {
         assert!(is_card(&lowercase));
 
         assert!(!is_card(&entry("GitHub")));
+    }
+
+    #[test]
+    fn a_file_entry_is_recognized_however_its_type_is_spelled() {
+        let mut file = entry("Passport");
+        file.entry_type = TYPE_FILE.to_string();
+        assert!(is_file(&file));
+
+        // The clients disagree about the spelling of every other type, so this
+        // one is compared the same forgiving way.
+        file.entry_type = "file".to_string();
+        assert!(is_file(&file));
+
+        assert!(!is_file(&entry("GitHub")));
+        assert!(!is_file(&card("Personal Visa")));
+    }
+
+    #[test]
+    fn the_filter_reaches_attachment_file_names() {
+        // A file name is visible metadata — it is on screen next to the item —
+        // so it searches, unlike the card secrets above.
+        let mut with_file = entry("Travel");
+        with_file.attachments = vec![askrypt::Attachment {
+            id: "0123456789abcdef0123456789abcdef".to_string(),
+            name: "passport-scan.pdf".to_string(),
+            size: 1024,
+            added: 1704067200,
+            iv: String::new(),
+        }];
+
+        assert!(entry_matches_filter(&with_file, "passport"));
+        assert!(entry_matches_filter(&with_file, "PDF"));
+        // The id is machinery, not something anyone would search for, and
+        // matching it would let a search confirm what the archive holds.
+        assert!(!entry_matches_filter(&with_file, "0123456789"));
+    }
+
+    #[test]
+    fn sizes_read_the_way_a_file_manager_writes_them() {
+        assert_eq!(format_size(0), "0 bytes");
+        assert_eq!(format_size(842), "842 bytes");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_size(3 * 1024 * 1024 / 2), "1.5 MB");
     }
 
     #[test]

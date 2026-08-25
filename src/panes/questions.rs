@@ -199,8 +199,11 @@ fn save(state: &mut State, session: &mut Session) -> Action {
     // An open vault contributes its entries, its work factor and — crucially —
     // its master key: changing the answers re-wraps the *existing* key rather
     // than rotating it, which is what keeps everything stored under it
-    // readable. All three are absent when this run is bringing a vault into
-    // existence, which is the one place in the app a key is minted.
+    // readable. Its file attachments ride along for exactly that reason: they
+    // are already ciphertext under that key, so a change of questions carries
+    // them rather than re-encrypting them. All of it is absent when this run is
+    // bringing a vault into existence, which is the one place in the app a key
+    // is minted.
     let open = session.vault.unlocked();
     let inputs = RekeyInputs {
         questions: state.questions.clone(),
@@ -211,6 +214,9 @@ fn save(state: &mut State, session: &mut Session) -> Action {
         iterations: open.map_or(DEFAULT_ITERATIONS, |vault| vault.iterations()),
         translit: state.translit,
         master: open.map(|vault| vault.master().clone()),
+        attachments: open
+            .map(|vault| vault.attachments().clone())
+            .unwrap_or_default(),
     };
 
     session.begin_work("Encrypting…");

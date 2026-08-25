@@ -9,7 +9,7 @@
 use iced::widget::{Text, button, column, container, row, rule, scrollable, text};
 use iced::{Element, Length, alignment::Vertical};
 
-use crate::data::{TYPE_CARD, TYPE_NOTE, make_hash_tag};
+use crate::data::{TYPE_CARD, TYPE_FILE, TYPE_NOTE, make_hash_tag};
 use crate::{App, GlobalMsg, Message, Pane, Section, VaultMsg, icon, theme};
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -255,6 +255,7 @@ fn type_icon(entry_type: &str) -> Text<'static> {
     match entry_type {
         TYPE_CARD => icon::credit_card(14),
         TYPE_NOTE => icon::journal_text(14),
+        TYPE_FILE => icon::file_earmark(14),
         // TYPE_LOGIN and anything unrecognized.
         _ => icon::key(14),
     }

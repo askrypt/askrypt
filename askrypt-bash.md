@@ -254,6 +254,11 @@ round-trips correctly).
   This does **not** affect `translit:true` vaults (the transliteration map
   handles both cases of every Cyrillic letter) nor plain ASCII answers, which
   are by far the common case.
-- Only the secret entries in `askrypt.json` are decrypted. The format reserves
-  room for file attachments, but the current entry schema has no attachment
-  field, so there is nothing else to extract.
+- **File attachments are not extracted.** Only the secret entries in
+  `askrypt.json` are decrypted. An entry's `attachments` array is printed with
+  the rest of its JSON, so the file names, sizes and ids are visible, but the
+  bytes themselves live in separate `files/<id>` ZIP members that this script
+  does not unpack. Each is AES-256-CBC under the same master key with the IV
+  from its metadata, so extracting one by hand is `unzip` plus the same
+  `openssl enc -d` this script already uses — see `SPEC.md`,
+  "File attachments".

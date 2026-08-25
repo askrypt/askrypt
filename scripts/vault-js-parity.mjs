@@ -55,9 +55,20 @@ function check(label, actual, expected) {
 
 function group(name, fn) {
   const before = failed;
-  return Promise.resolve(fn()).then(() => {
+  const countedBefore = checked;
+  return Promise.resolve(fn()).then((value) => {
+    // A group that checked nothing is a group that silently did not run, which
+    // is worse than one that failed: it prints `ok` either way. This caught the
+    // round-trip group being skipped for want of the return value below.
+    if (checked === countedBefore) {
+      failed += 1;
+      console.error(`FAIL  ${name}\n        the group ran no checks at all`);
+    }
     const mark = failed === before ? "ok  " : "FAIL";
     console.log(`${mark}  ${name}`);
+    // Forwarded, so a group can hand its result to the next one. Without this
+    // every `const x = await group(...)` is `undefined`.
+    return value;
   });
 }
 
@@ -157,6 +168,28 @@ const opened = await group("open the golden vault", async () => {
   );
   check("master key length", masterKey.length, 32);
   check("entries", entries.map(serialized), golden.expected_entries);
+
+  // The attachment: not merely carried, but decrypted. The blob is a ZIP member
+  // of its own, so this is the one check that pins the multi-member reader.
+  const blob = file.attachments.get(golden.expected_attachment_id);
+  check("attachment blob is present", blob !== undefined, true);
+  if (blob) {
+    const meta = entries.at(-1).attachments[0];
+    const plaintext = await vault.openAttachment(blob, meta, masterKey);
+    check(
+      "attachment decrypts under the master key",
+      new TextDecoder().decode(plaintext),
+      golden.expected_attachment_plaintext,
+    );
+    check("attachment size matches its metadata", plaintext.length, meta.size);
+    // The random id is the whole of the member's name, so a vault handed to
+    // someone else says how many files it holds but never what they are called.
+    check(
+      "the file name is not in the archive listing",
+      [...vault.readZipIndex(goldenBytes).keys()].some((n) => n.includes("passport.txt")),
+      false,
+    );
+  }
   return { file, entries, masterKey };
 });
 
@@ -180,6 +213,7 @@ await group("save and reopen (round trip)", async () => {
     translit: file.translit,
     kdf: file.kdf,
     masterKey,
+    attachments: file.attachments,
     host: "parity@web",
     updatedAt: new Date("2026-03-04T05:06:07Z"),
   });
@@ -201,6 +235,45 @@ await group("save and reopen (round trip)", async () => {
     vault.hexFromBytes(reopened.masterKey),
     vault.hexFromBytes(masterKey),
   );
+
+  // The writer's multi-member half. `writeZip` has to set each member's
+  // relative local-header offset, a field a one-member archive gets right by
+  // being zero — so a vault with an attachment is the only thing that catches
+  // it, and the failure is silent.
+  //
+  // Attachments are written deflated, like the Rust and Dart cores write every
+  // member, so this also pins `CompressionStream` producing something the
+  // reader's `DecompressionStream` takes back.
+  check(
+    "the attachment was written deflated",
+    vault.readZipIndex(rewritten).get(`files/${golden.expected_attachment_id}`)?.method,
+    8,
+  );
+  const carried = reread.attachments.get(golden.expected_attachment_id);
+  check("attachment survived the round trip", carried !== undefined, true);
+  if (carried) {
+    const meta = reopened.entries.at(-1).attachments[0];
+    check(
+      "round-tripped attachment still decrypts",
+      new TextDecoder().decode(await vault.openAttachment(carried, meta, reopened.masterKey)),
+      golden.expected_attachment_plaintext,
+    );
+  }
+
+  // A writer must not emit a blob no entry refers to: deleting an attachment
+  // has to actually shrink the vault (SPEC.md, "File attachments").
+  const stripped = entries.map((e) => ({ ...e, attachments: [] }));
+  const pruned = await vault.parseVault(await vault.createVault({
+    questions: golden.questions,
+    answers: golden.answers,
+    entries: stripped,
+    iterations: file.iterations,
+    translit: file.translit,
+    kdf: file.kdf,
+    masterKey,
+    attachments: file.attachments,
+  }));
+  check("an unreferenced blob is dropped on write", pruned.attachments.size, 0);
 });
 
 // --- Smart Lock ------------------------------------------------------------
@@ -337,9 +410,13 @@ await group("the password generator follows core/src/passgen.rs", () => {
   check("no character type selected is refused", refused, true);
 });
 
-// The entry as the Rust core serializes it: the six card keys are omitted when
-// empty, so a non-card entry must compare equal to one written before they
-// existed.
+// The entry as the Rust core serializes it: the six card keys and `attachments`
+// are omitted when empty, so a non-card entry with no files must compare equal
+// to one written before either existed.
+//
+// **Every new per-entry key has to be added here.** This function is a
+// whitelist, so one that is missing is invisible to the gate — a port that
+// dropped it would pass while quietly deleting data on every save.
 function serialized(entry) {
   const out = {
     name: entry.name,
@@ -356,6 +433,7 @@ function serialized(entry) {
   for (const key of vault.CARD_KEYS) {
     if (entry[key] !== "") out[key] = entry[key];
   }
+  if (entry.attachments?.length) out.attachments = entry.attachments;
   return out;
 }
 

@@ -13,10 +13,12 @@ mod server;
 pub use local_file::LocalFileStorage;
 #[cfg(feature = "server-storage")]
 pub use server::{
-    BrowserLogin, BrowserLoginStatus, RemoteVault, ServerClient, ServerStorage, normalize_base_url,
+    BrowserLogin, BrowserLoginStatus, MAX_VAULT_BYTES, RemoteVault, ServerClient, ServerStorage,
+    normalize_base_url,
 };
 
 use crate::AskryptFile;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Error from a storage backend.
@@ -44,6 +46,11 @@ pub enum StorageError {
     /// The stored vault changed since it was last fetched, so writing it would
     /// silently discard someone else's edit. The caller has to reload.
     Conflict(String),
+    /// Another process holds this vault open. An open vault is read from for as
+    /// long as it is open — a save streams its unchanged attachments out of the
+    /// archive it is replacing — so two apps editing one file would each be
+    /// pulling blobs out from under the other.
+    Locked(String),
     /// Any other error reported by a remote backend, carrying its
     /// machine-readable code (`quota_exceeded`, `invalid_vault_name`,
     /// `payload_too_large`, ...) so callers can react to specific cases.
@@ -62,6 +69,9 @@ impl std::fmt::Display for StorageError {
             StorageError::Network(msg) => write!(f, "network error: {}", msg),
             StorageError::Auth(msg) => write!(f, "authentication failed: {}", msg),
             StorageError::Conflict(msg) => write!(f, "conflict: {}", msg),
+            StorageError::Locked(location) => {
+                write!(f, "vault is open in another process: {}", location)
+            }
             StorageError::Remote {
                 status,
                 code,
@@ -129,6 +139,54 @@ pub trait VaultStorage: Send + Sync {
 
     /// Write the raw vault bytes.
     fn write(&self, bytes: &[u8]) -> Result<(), StorageError>;
+
+    /// Claim this vault for as long as this instance lives.
+    ///
+    /// An open vault is *read from* the whole time it is open: a save streams
+    /// its unchanged attachments straight out of the archive it is about to
+    /// replace. Two apps editing one vault would each be pulling blobs out from
+    /// under the other, so the second is turned away with
+    /// [`StorageError::Locked`].
+    ///
+    /// Defaults to granting it. A remote backend has no local file to guard and
+    /// already detects a concurrent write through its revision, which is the
+    /// stronger check of the two — it catches another *machine*, which no lock
+    /// on this one could.
+    fn acquire_lock(&self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    /// The archive's own path, when this backend *is* a plain file.
+    ///
+    /// `Some` means a caller may read the vault's attachments straight out of
+    /// it and write a replacement beside it. `None` — every remote backend —
+    /// means it must spill a copy to a file of its own first, since an
+    /// attachment can only be streamed out of something seekable.
+    fn archive_path(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Write the vault's current bytes to `dest`.
+    ///
+    /// The streaming door's read half. The default buffers, which is right for
+    /// a remote backend whose vaults are capped well below memory; a file
+    /// backend has no reason to be asked at all, since [`archive_path`] already
+    /// answers with the file itself.
+    ///
+    /// [`archive_path`]: Self::archive_path
+    fn read_to_path(&self, dest: &Path) -> Result<(), StorageError> {
+        Ok(std::fs::write(dest, self.read()?)?)
+    }
+
+    /// Publish an archive already assembled at `src`.
+    ///
+    /// The streaming door's write half, and the only write path the desktop
+    /// uses: a save streams the new archive to a staging file — reading the old
+    /// one as it goes — and then hands it over here. The default buffers and
+    /// falls through to [`write`](Self::write).
+    fn write_from_path(&self, src: &Path) -> Result<(), StorageError> {
+        self.write(&std::fs::read(src)?)
+    }
 
     /// Whether the target currently exists (best effort).
     fn exists(&self) -> bool;
@@ -216,7 +274,7 @@ impl VaultStorage for MemoryStorage {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::SecretEntry;
+    use crate::{Attachments, SecretEntry};
 
     /// Build a small vault (low iterations) shared by the storage tests.
     pub(crate) fn test_vault() -> (AskryptFile, Vec<SecretEntry>) {
@@ -236,11 +294,19 @@ pub(crate) mod tests {
             created: 1704067200,
             modified: 1704067200,
             hidden: false,
+            attachments: Vec::new(),
             card: Default::default(),
         }];
-        let file =
-            AskryptFile::create(questions, answers, secrets.clone(), Some(6000), false, None)
-                .expect("failed to create vault");
+        let file = AskryptFile::create(
+            questions,
+            answers,
+            secrets.clone(),
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .expect("failed to create vault");
         (file, secrets)
     }
 

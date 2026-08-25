@@ -24,6 +24,26 @@ const String _defaultKdf = 'pbkdf2';
 const int defaultIterations = 600000;
 const String _zipEntryName = 'askrypt.json';
 
+/// The prefix every file-attachment ZIP member carries. The rest of the name is
+/// the attachment's id and nothing else, so the archive listing of a vault says
+/// how many files it holds but never what they are called. Mirrors
+/// `ATTACHMENT_PREFIX` in `core/src/lib.rs`.
+const String attachmentPrefix = 'files/';
+
+/// Ceiling on the *inflated* bytes of all attachments in one archive.
+///
+/// A bound on what a **crafted** file can make a reader allocate, not a limit
+/// on what anyone may attach: this app inflates every member into memory to
+/// open a vault, so a hundred deflated members of zeros would be a zip bomb
+/// waiting to be handed to it.
+///
+/// It is a property of *this reader*, not of the format — `SPEC.md` says so —
+/// and the Rust core no longer has a counterpart: it streams members instead of
+/// inflating them, so there is nothing for a ceiling to bound. A vault whose
+/// attachments exceed this opens on the desktop and not here, which is the
+/// honest trade for an app that holds them in memory.
+const int maxAttachmentBytes = 256 * 1024 * 1024;
+
 /// Remaining questions + the second-level salt (the decrypted `qs` blob).
 class QuestionsData {
   QuestionsData(this.questions, this.saltB64);
@@ -57,7 +77,8 @@ class AskryptFile {
     required this.qs,
     required this.master,
     required this.data,
-  });
+    Map<String, Uint8List>? attachments,
+  }) : attachments = attachments ?? <String, Uint8List>{};
 
   final String version;
   final String question0;
@@ -77,6 +98,14 @@ class AskryptFile {
   final String qs;
   final String master;
   final String data;
+
+  /// The encrypted bytes of every file attached to an entry, keyed by
+  /// [Attachment.id]. **Not part of `askrypt.json`** — these are ZIP members of
+  /// their own, read by [fromBytes] and written by [toBytes].
+  ///
+  /// This app does not add or remove attachments, but it must carry these
+  /// across a save or one edit here deletes every attached file in the vault.
+  final Map<String, Uint8List> attachments;
 
   // --- parsing / serialization (ZIP <-> askrypt.json) ---
 
@@ -125,6 +154,22 @@ class AskryptFile {
     if (file.version != _version) {
       throw VaultException('unsupported version: ${file.version}');
     }
+    // Every `files/` member is an attachment's ciphertext, named by its id.
+    // Anything else in the archive is ignored, as it was before attachments
+    // existed.
+    var total = 0;
+    for (final member in archive.files) {
+      if (!member.name.startsWith(attachmentPrefix)) continue;
+      final id = member.name.substring(attachmentPrefix.length);
+      if (id.isEmpty) continue;
+      // Checked against the declared size before touching `content`, which is
+      // what triggers the decompression.
+      total += member.size;
+      if (total > maxAttachmentBytes) {
+        throw VaultException('vault attachments are implausibly large');
+      }
+      file.attachments[id] = Uint8List.fromList(member.content as List<int>);
+    }
     return file;
   }
 
@@ -132,6 +177,15 @@ class AskryptFile {
     final json = utf8.encode(jsonEncode(toJson()));
     final archive = Archive()
       ..addFile(ArchiveFile(_zipEntryName, json.length, json));
+    // Deflated, like `askrypt.json` — every member of the archive is written
+    // the same way, which is `ArchiveFile.compress`'s default. It buys no space
+    // (the body is AES-CBC ciphertext, which does not compress), so this is
+    // uniformity rather than economy.
+    final ids = attachments.keys.toList()..sort();
+    for (final id in ids) {
+      final blob = attachments[id]!;
+      archive.addFile(ArchiveFile('$attachmentPrefix$id', blob.length, blob));
+    }
     final encoded = ZipEncoder().encode(archive);
     return Uint8List.fromList(encoded!);
   }
@@ -202,6 +256,13 @@ class AskryptFile {
   /// AES-CBC under a repeated key *and* IV would let anyone holding two versions
   /// of a vault read off how long a prefix of the entry list went unchanged.
   ///
+  /// [attachments] is the vault's attachment ciphertexts, which must be handed
+  /// back on every save for the same reason [masterKey] must: they are
+  /// encrypted under it and this call rebuilds the whole archive. Blobs no
+  /// entry in [entries] refers to are **dropped** here rather than written —
+  /// `SPEC.md` makes that a rule, so that deleting an attachment shrinks the
+  /// vault.
+  ///
   /// Note for the [rng] seam: the draw order is salt0, salt1, master key, IV,
   /// and supplying [masterKey] skips the third draw. The golden parity fixtures
   /// pass [rng] without a [masterKey], so they are unaffected — keep it that way.
@@ -214,6 +275,7 @@ class AskryptFile {
     String? host,
     DateTime? updatedAt,
     List<int>? masterKey,
+    Map<String, Uint8List>? attachments,
     Random? rng,
   }) async {
     if (questions.length < 2) {
@@ -259,6 +321,17 @@ class AskryptFile {
     final dataJson = entries.map((e) => e.toJson()).toList();
     final data = base64.encode(aesCbcEncrypt(_jsonBytes(dataJson), key, iv));
 
+    // Carry the attachment blobs across, less any the entries being written no
+    // longer refer to.
+    final referenced = <String>{
+      for (final e in entries)
+        for (final a in e.attachments) a.id,
+    };
+    final kept = <String, Uint8List>{
+      for (final entry in (attachments ?? const <String, Uint8List>{}).entries)
+        if (referenced.contains(entry.key)) entry.key: entry.value,
+    };
+
     return AskryptFile(
       version: _version,
       question0: questions[0],
@@ -271,8 +344,27 @@ class AskryptFile {
       qs: qs,
       master: master,
       data: data,
+      attachments: kept,
     );
   }
+}
+
+/// Decrypt one attachment's bytes, given its metadata and the vault's master
+/// key. Mirrors `open_attachment` in `core/src/lib.rs`.
+///
+/// `attachment.size` is deliberately not checked against the result: the format
+/// offers no integrity (`SPEC.md`, "Integrity: not provided"), so a mismatch
+/// would be a hint rather than a verdict.
+Uint8List openAttachment(
+  Uint8List ciphertext,
+  Attachment attachment,
+  List<int> masterKey,
+) {
+  final iv = base64.decode(attachment.iv);
+  if (iv.length != 16) {
+    throw VaultException('invalid attachment IV length');
+  }
+  return aesCbcDecrypt(ciphertext, Uint8List.fromList(masterKey), iv);
 }
 
 /// Mint a fresh 32-byte master key. Only a vault coming into existence should

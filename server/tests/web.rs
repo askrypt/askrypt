@@ -265,6 +265,29 @@ fn vault_archive(json: &str, pad: usize) -> Vec<u8> {
     buf
 }
 
+/// A vault archive carrying a file attachment: `askrypt.json` plus a stored
+/// `files/<id>` member. The id is what the real format uses in place of the
+/// name, so this fixture is also what proves the name never reaches the server.
+fn vault_with_attachment() -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        zip.start_file("askrypt.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, br#"{"version":"0.9"}"#).unwrap();
+        zip.start_file(
+            "files/0123456789abcdef0123456789abcdef",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+        // Stands in for the ciphertext; the server never looks inside it.
+        std::io::Write::write_all(&mut zip, &[0xAB; 64]).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
 /// A valid vault archive of at least `size` bytes.
 fn vault_bytes_of(size: usize) -> Vec<u8> {
     vault_archive(r#"{"version":"0.9"}"#, size)
@@ -1838,6 +1861,84 @@ async fn the_viewer_ships_the_smart_lock_controls() {
         assert!(
             html.contains(r#"<section class="card" id="open-smart" hidden>"#),
             "the armed card is not hidden"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_viewer_ships_the_attachment_list() {
+    let app = app();
+
+    // Attachments are entirely in the page: the server stores the vault as
+    // opaque bytes and has no idea it holds files, so the markup is all it
+    // owes — and it owes it to a signed-out visitor too, since opening a
+    // `.askrypt` file off the device needs no account.
+    for html in [send(&app, get("/open")).await.2, {
+        let cookies = register(&app, "files@example.com").await;
+        send(&app, get_with_cookies("/open", &cookies)).await.2
+    }] {
+        // `File` is offered as an entry type. The list is written by
+        // `vault-open.js`, so all the server owes is the empty container.
+        assert!(
+            html.contains(r#"<option value="File">File</option>"#),
+            "the File entry type is not offered"
+        );
+        assert!(
+            html.contains(r#"<div id="entry-files" hidden>"#),
+            "the attachment list is not hidden to start with"
+        );
+        assert!(
+            html.contains(r#"id="entry-file-list""#),
+            "no container for the attachment rows"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_vault_with_attachments_uploads_and_stays_opaque() {
+    // A vault with attachments is still just bytes to the server: the extra
+    // `files/` members must pass `check_upload` (which looks only for
+    // `askrypt.json`), download byte-identically, and — since the server reads
+    // only `params` out of a vault — tell no page anything about them. The
+    // random member name is what makes that last part hold: the archive listing
+    // carries an id, never a file name.
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "opaque@example.com").await;
+    let bytes = vault_with_attachment();
+
+    let (status, _, _) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &csrf_field(&html),
+            &[("name", "Holiday")],
+            Some(("holiday.askrypt", &bytes)),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "an archive with extra members was refused"
+    );
+
+    let (_, _, listing) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = listing
+        .split_once(r#"data-vault-id=""#)
+        .or_else(|| listing.split_once(r#"/vaults/"#))
+        .map(|(_, rest)| rest.split(['"', '/']).next().unwrap().to_string())
+        .expect("the vault should be listed");
+
+    // Byte-identical: the attachment members survived a store-and-fetch.
+    let downloaded = download_bytes(&app, &format!("/vaults/{id}/download"), &cookies).await;
+    assert_eq!(downloaded, bytes, "the archive did not round-trip");
+
+    for path in ["/vaults", "/open", "/open/vaults"] {
+        let (_, _, html) = send(&app, get_with_cookies(path, &cookies)).await;
+        assert!(
+            !html.contains("passport.txt"),
+            "{path} named an attachment, which the server cannot know"
         );
     }
 }

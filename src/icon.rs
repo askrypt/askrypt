@@ -58,6 +58,18 @@ pub fn journal_text(size: u16) -> Text<'static> {
     glyph('\u{F444}', size)
 }
 
+pub fn paperclip(size: u16) -> Text<'static> {
+    glyph('\u{F4B3}', size)
+}
+
+pub fn file_earmark(size: u16) -> Text<'static> {
+    glyph('\u{F392}', size)
+}
+
+pub fn file_earmark_arrow_down(size: u16) -> Text<'static> {
+    glyph('\u{F356}', size)
+}
+
 pub fn plus_lg(size: u16) -> Text<'static> {
     glyph('\u{F64D}', size)
 }

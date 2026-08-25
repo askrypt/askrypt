@@ -16,6 +16,26 @@
 
 const VERSION = "0.9";
 const ZIP_ENTRY = "askrypt.json";
+
+/** The prefix every file-attachment ZIP member carries. The rest of the name is
+ *  the attachment's id and nothing else, so the archive listing of a vault says
+ *  how many files it holds but never what they are called. Mirrors
+ *  `ATTACHMENT_PREFIX` in `core/src/lib.rs`. */
+export const ATTACHMENT_PREFIX = "files/";
+
+/** Ceiling on the *inflated* bytes of all attachments in one archive.
+ *
+ *  A bound on what a **crafted** file can make this page allocate, not a limit
+ *  on what anyone may attach: this page inflates every member into memory to
+ *  open a vault, so a hundred deflated members of zeros would be a zip bomb
+ *  waiting to be handed to it.
+ *
+ *  It is a property of *this reader*, not of the format — `SPEC.md` says so —
+ *  and the Rust core no longer has a counterpart: it streams members instead of
+ *  inflating them, so there is nothing for a ceiling to bound. A tab has far
+ *  less room than a desktop app anyway, and `MAX_VAULT_BYTES` below is the
+ *  limit that actually bites here. */
+const MAX_ATTACHMENT_BYTES = 256 * 1024 * 1024;
 const DEFAULT_KDF = "pbkdf2";
 
 /** The work factor a vault created here is born with, matching the
@@ -229,13 +249,14 @@ const SIG_LOCAL = 0x04034b50;
 const SIG_CENTRAL = 0x02014b50;
 const SIG_EOCD = 0x06054b50;
 
-/** Reads one named member out of a ZIP archive.
+/** Indexes a ZIP archive's central directory: name -> where and how to read it.
  *
- *  The Rust core writes with `SimpleFileOptions::default()`, i.e. deflate, so
- *  method 8 is the common case; method 0 (stored) is what *this* module
- *  writes and is handled too. No ZIP64: `large_file` is off in every writer
- *  that produces a vault, and a vault is tens of KB. */
-export async function readZipEntry(bytes, name) {
+ *  Split out of `readZipEntry` because a vault is no longer a one-member
+ *  archive: attachments are members of their own, and the caller has to be able
+ *  to *enumerate* them (their names are random ids, so it cannot guess them).
+ *
+ *  No ZIP64: `large_file` is off in every writer that produces a vault. */
+export function readZipIndex(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   // The end-of-central-directory record sits at the tail, after a comment of
@@ -253,6 +274,7 @@ export async function readZipEntry(bytes, name) {
     throw new VaultError("ZIP64 archives are not supported");
   }
 
+  const index = new Map();
   let at = cdOffset;
   for (let i = 0; i < count; i += 1) {
     if (at + 46 > bytes.length || view.getUint32(at, true) !== SIG_CENTRAL) {
@@ -265,20 +287,36 @@ export async function readZipEntry(bytes, name) {
     const extraLen = view.getUint16(at + 30, true);
     const commentLen = view.getUint16(at + 32, true);
     const localOffset = view.getUint32(at + 42, true);
-    const entryName = decodeUtf8(bytes.subarray(at + 46, at + 46 + nameLen));
-
-    if (entryName === name) {
-      if (uncompressedSize > MAX_JSON_BYTES) {
-        throw new VaultError(`${name} is implausibly large`);
-      }
-      return readLocal(bytes, view, localOffset, method, compressedSize);
+    const name = decodeUtf8(bytes.subarray(at + 46, at + 46 + nameLen));
+    if (!index.has(name)) {
+      index.set(name, { method, compressedSize, uncompressedSize, localOffset });
     }
     at += 46 + nameLen + extraLen + commentLen;
   }
-  throw new VaultError(`archive is missing ${name}`);
+  return index;
 }
 
-async function readLocal(bytes, view, offset, method, compressedSize) {
+/** Reads one member out of an archive already indexed by `readZipIndex`.
+ *
+ *  `limit` is the caller's ceiling on the inflated size, and it is the caller's
+ *  because the two kinds of member differ by three orders of magnitude: the
+ *  vault JSON is tens of KB against `MAX_JSON_BYTES`, an attachment is whatever
+ *  someone attached. Both are bounds on what a *crafted* archive can make this
+ *  page allocate, not statements about the format.
+ *
+ *  Method 8 (deflate) is the common case: the Rust and Dart cores write every
+ *  member that way and this module writes attachments that way. Method 0
+ *  (stored) is handled too — this module stores `askrypt.json`, and a writer
+ *  with no deflate implementation to hand may store an attachment. */
+export async function readZipMember(bytes, index, name, limit = MAX_JSON_BYTES) {
+  const entry = index.get(name);
+  if (entry === undefined) throw new VaultError(`archive is missing ${name}`);
+  if (entry.uncompressedSize > limit) {
+    throw new VaultError(`${name} is implausibly large`);
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const offset = entry.localOffset;
   if (offset + 30 > bytes.length || view.getUint32(offset, true) !== SIG_LOCAL) {
     throw new VaultError("damaged ZIP local header");
   }
@@ -287,18 +325,49 @@ async function readLocal(bytes, view, offset, method, compressedSize) {
   const nameLen = view.getUint16(offset + 26, true);
   const extraLen = view.getUint16(offset + 28, true);
   const start = offset + 30 + nameLen + extraLen;
-  const data = bytes.subarray(start, start + compressedSize);
+  const data = bytes.subarray(start, start + entry.compressedSize);
 
-  if (method === 0) return capped(data);
-  if (method !== 8) throw new VaultError(`unsupported ZIP compression (${method})`);
-  return capped(await inflateRaw(data));
+  const out = entry.method === 0
+    ? data
+    : entry.method === 8
+      ? await inflateRaw(data)
+      : null;
+  if (out === null) {
+    throw new VaultError(`unsupported ZIP compression (${entry.method})`);
+  }
+  return capped(out, name, limit);
 }
 
-function capped(bytes) {
-  if (bytes.length > MAX_JSON_BYTES) {
-    throw new VaultError("vault JSON is implausibly large");
+/** Reads one named member out of a ZIP archive, indexing it first.
+ *
+ *  Kept for callers that want exactly one member and nothing else. */
+export async function readZipEntry(bytes, name, limit = MAX_JSON_BYTES) {
+  return readZipMember(bytes, readZipIndex(bytes), name, limit);
+}
+
+function capped(bytes, name, limit) {
+  if (bytes.length > limit) {
+    throw new VaultError(`${name} is implausibly large`);
   }
   return bytes;
+}
+
+/** Raw-deflate, the mirror of `inflateRaw`.
+ *
+ *  `CompressionStream` is native in every browser that has the
+ *  `DecompressionStream` the reader already depends on, so writing deflated
+ *  members costs no library, no CDN and no change to the page's CSP.
+ *
+ *  Answers `null` rather than throwing when the platform lacks it: the ZIP
+ *  method is recorded per member, so a stored member is still a perfectly good
+ *  archive that every implementation reads. Refusing to save at all would be a
+ *  far worse outcome than saving a slightly larger file. */
+async function deflateRaw(data) {
+  if (typeof CompressionStream !== "function") return null;
+  const stream = new Blob([data]).stream().pipeThrough(
+    new CompressionStream("deflate-raw"),
+  );
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 async function inflateRaw(data) {
@@ -329,61 +398,96 @@ function crc32(bytes) {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-/** Writes a single-member archive, **stored** rather than deflated.
+/** Writes an archive from `[name, contents, deflate]` members.
  *
- *  Both the Rust `zip` crate and Dart's `archive` read a stored entry without
- *  comment, and a vault's JSON is tens of KB against a 10 MiB ceiling, so
- *  compressing it would buy nothing and cost a second stream round trip. */
-export function writeZipEntry(name, contents, at = new Date()) {
-  const nameBytes = utf8.encode(name);
-  const crc = crc32(contents);
+ *  `deflate` is per member because the two kinds differ: `askrypt.json` is tens
+ *  of KB and is stored, while an attachment is deflated so that every writer of
+ *  the format agrees on how a `files/` member is written. Deflating ciphertext
+ *  buys no space — it cannot compress, and falls back to stored blocks costing
+ *  a few bytes per 64 KB — so this is uniformity rather than economy.
+ *
+ *  Async because deflating is `CompressionStream`, which is a stream. When the
+ *  platform has none, the member is written stored instead: the method is
+ *  recorded per member, so the archive stays readable everywhere.
+ *
+ *  Two fields make this multi-member rather than one-member-repeated, and both
+ *  are silent when wrong: the central directory's **relative offset of local
+ *  header** (offset 42), which a single-member archive gets right by being
+ *  zero, and the EOCD's counts and sizes, which are sums over the members. */
+export async function writeZip(members, at = new Date()) {
   const { time, date } = dosTimestamp(at);
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
 
-  const local = new Uint8Array(30 + nameBytes.length);
-  const lv = new DataView(local.buffer);
-  lv.setUint32(0, SIG_LOCAL, true);
-  lv.setUint16(4, 20, true); // version needed to extract: 2.0
-  lv.setUint16(6, 0, true); // flags
-  lv.setUint16(8, 0, true); // method: stored
-  lv.setUint16(10, time, true);
-  lv.setUint16(12, date, true);
-  lv.setUint32(14, crc, true);
-  lv.setUint32(18, contents.length, true);
-  lv.setUint32(22, contents.length, true);
-  lv.setUint16(26, nameBytes.length, true);
-  lv.setUint16(28, 0, true); // extra length
-  local.set(nameBytes, 30);
+  for (const [name, contents, deflate = false] of members) {
+    const nameBytes = utf8.encode(name);
+    // Always over the *uncompressed* bytes, whichever method is used.
+    const crc = crc32(contents);
+    const packed = deflate ? await deflateRaw(contents) : null;
+    const body = packed ?? contents;
+    const method = packed ? 8 : 0;
 
-  const central = new Uint8Array(46 + nameBytes.length);
-  const cv = new DataView(central.buffer);
-  cv.setUint32(0, SIG_CENTRAL, true);
-  cv.setUint16(4, 20, true); // version made by
-  cv.setUint16(6, 20, true); // version needed
-  cv.setUint16(8, 0, true);
-  cv.setUint16(10, 0, true);
-  cv.setUint16(12, time, true);
-  cv.setUint16(14, date, true);
-  cv.setUint32(16, crc, true);
-  cv.setUint32(20, contents.length, true);
-  cv.setUint32(24, contents.length, true);
-  cv.setUint16(28, nameBytes.length, true);
-  central.set(nameBytes, 46);
+    const local = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, SIG_LOCAL, true);
+    lv.setUint16(4, 20, true); // version needed to extract: 2.0
+    lv.setUint16(6, 0, true); // flags
+    lv.setUint16(8, method, true);
+    lv.setUint16(10, time, true);
+    lv.setUint16(12, date, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, body.length, true); // compressed size
+    lv.setUint32(22, contents.length, true); // uncompressed size
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true); // extra length
+    local.set(nameBytes, 30);
 
-  const cdOffset = local.length + contents.length;
+    const central = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(central.buffer);
+    cv.setUint32(0, SIG_CENTRAL, true);
+    cv.setUint16(4, 20, true); // version made by
+    cv.setUint16(6, 20, true); // version needed
+    cv.setUint16(8, 0, true);
+    cv.setUint16(10, method, true);
+    cv.setUint16(12, time, true);
+    cv.setUint16(14, date, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, body.length, true);
+    cv.setUint32(24, contents.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    // Where this member's local header starts. Zero is only right for the
+    // first member; without this every later one reads as garbage.
+    cv.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+
+    locals.push(local, body);
+    centrals.push(central);
+    offset += local.length + body.length;
+  }
+
+  const cdOffset = offset;
+  const cdSize = centrals.reduce((n, c) => n + c.length, 0);
+
   const eocd = new Uint8Array(22);
   const ev = new DataView(eocd.buffer);
   ev.setUint32(0, SIG_EOCD, true);
-  ev.setUint16(8, 1, true); // entries on this disk
-  ev.setUint16(10, 1, true); // entries total
-  ev.setUint32(12, central.length, true);
+  ev.setUint16(8, members.length, true); // entries on this disk
+  ev.setUint16(10, members.length, true); // entries total
+  ev.setUint32(12, cdSize, true);
   ev.setUint32(16, cdOffset, true);
 
-  const out = new Uint8Array(cdOffset + central.length + eocd.length);
-  out.set(local, 0);
-  out.set(contents, local.length);
-  out.set(central, cdOffset);
-  out.set(eocd, cdOffset + central.length);
+  const out = new Uint8Array(cdOffset + cdSize + eocd.length);
+  let cursor = 0;
+  for (const chunk of locals) { out.set(chunk, cursor); cursor += chunk.length; }
+  for (const chunk of centrals) { out.set(chunk, cursor); cursor += chunk.length; }
+  out.set(eocd, cursor);
   return out;
+}
+
+/** Writes a single stored member. A thin wrapper over `writeZip`. */
+export async function writeZipEntry(name, contents, at = new Date()) {
+  return writeZip([[name, contents]], at);
 }
 
 function dosTimestamp(at) {
@@ -434,7 +538,24 @@ function entryFromJson(raw) {
     hidden: raw.hidden === true,
   };
   for (const key of CARD_KEYS) entry[key] = text(raw[key]);
+  entry.attachments = Array.isArray(raw.attachments)
+    ? raw.attachments.map(attachmentFromJson).filter((a) => a.id !== "")
+    : [];
   return entry;
+}
+
+/** One `attachments[]` element, normalized. Everything in here came out of a
+ *  file anybody could have written, so nothing is trusted to be the right type
+ *  — and an element with no id names no ZIP member, so it is dropped. */
+function attachmentFromJson(raw) {
+  if (raw === null || typeof raw !== "object") return { id: "" };
+  return {
+    id: text(raw.id),
+    name: text(raw.name),
+    size: Math.max(0, Math.trunc(Number(raw.size) || 0)),
+    added: Math.trunc(Number(raw.added) || 0),
+    iv: text(raw.iv),
+  };
 }
 
 /** The inverse, matching serde exactly.
@@ -463,6 +584,17 @@ function entryToJson(entry) {
     const value = text(entry[key]);
     if (value !== "") out[key] = value;
   }
+  // Omitted when empty, like the card keys: an entry with no attachments must
+  // serialize exactly as it did before they existed.
+  if (Array.isArray(entry.attachments) && entry.attachments.length > 0) {
+    out.attachments = entry.attachments.map((a) => ({
+      id: text(a.id),
+      name: text(a.name),
+      size: Math.max(0, Math.trunc(Number(a.size) || 0)),
+      added: Math.trunc(Number(a.added) || 0),
+      iv: text(a.iv),
+    }));
+  }
   return out;
 }
 
@@ -471,6 +603,7 @@ export function blankEntry() {
   const entry = {
     name: "", user_name: "", secret: "", url: "", notes: "",
     type: "Login", tags: [], created: now, modified: now, hidden: false,
+    attachments: [],
   };
   for (const key of CARD_KEYS) entry[key] = "";
   return entry;
@@ -489,7 +622,8 @@ export async function parseVault(bytes) {
   if (bytes.length > MAX_VAULT_BYTES) {
     throw new VaultError("that file is too large to be a vault");
   }
-  const json = JSON.parse(decodeUtf8(await readZipEntry(bytes, ZIP_ENTRY)));
+  const index = readZipIndex(bytes);
+  const json = JSON.parse(decodeUtf8(await readZipMember(bytes, index, ZIP_ENTRY)));
   const params = json.params;
   if (params === null || typeof params !== "object") {
     throw new VaultError("vault is missing its parameters");
@@ -520,7 +654,32 @@ export async function parseVault(bytes) {
     qs: text(json.qs),
     master: text(json.master),
     data: text(json.data),
+    // Every `files/` member is an attachment's ciphertext, named by its id.
+    // Read here because the entry list is still encrypted at this point, so the
+    // names have to come off the archive rather than off the references. The
+    // ceiling is the vault's own: a single attachment cannot be larger than the
+    // file it lives in.
+    attachments: await readAttachments(bytes, index),
   };
+}
+
+/** The `files/` members of an archive, as a `Map` of id -> ciphertext. */
+async function readAttachments(bytes, index) {
+  const blobs = new Map();
+  let total = 0;
+  for (const [name, entry] of index) {
+    if (!name.startsWith(ATTACHMENT_PREFIX)) continue;
+    const id = name.slice(ATTACHMENT_PREFIX.length);
+    if (id === "") continue;
+    // Checked against the declared size before inflating, so a bomb is refused
+    // rather than expanded and then measured.
+    total += entry.uncompressedSize;
+    if (total > MAX_ATTACHMENT_BYTES) {
+      throw new VaultError("vault attachments are implausibly large");
+    }
+    blobs.set(id, await readZipMember(bytes, index, name, MAX_ATTACHMENT_BYTES));
+  }
+  return blobs;
 }
 
 /** Layer 1: the first answer decrypts the remaining questions and salt1. */
@@ -584,8 +743,12 @@ export async function decryptWithMaster(file, questionsData, answers) {
  *  `create` mints one when handed none: a brand-new vault gets its key from
  *  [`generateMasterKey`] before it ever reaches this function, so there is no
  *  mint-on-write branch here to get wrong. Everything encrypted under that key
- *  — today the entry list, in future file attachments — survives a write only
+ *  — the entry list and every file attachment — survives a write only
  *  because it is re-wrapped rather than rotated.
+ *
+ *  `attachments` is a `Map` of id -> ciphertext, as `parseVault` returns. It
+ *  must be handed back on every save for the same reason `masterKey` must; the
+ *  blobs no entry refers to are dropped here rather than written.
  *
  *  `salt0`, `salt1` and the data IV *are* drawn fresh every time, and the IV
  *  especially: AES-CBC under a repeated key and IV encrypts identical
@@ -593,6 +756,7 @@ export async function decryptWithMaster(file, questionsData, answers) {
  *  off how long a prefix of the entry list went unchanged. */
 export async function createVault({
   questions, answers, entries, iterations, translit, kdf, masterKey,
+  attachments = null,
   host = null, updatedAt = new Date(),
 }) {
   if (questions.length < 2) throw new VaultError("at least 2 questions are required");
@@ -642,7 +806,59 @@ export async function createVault({
   params.updated_at = formatUtcStamp(updatedAt);
 
   const json = { version: VERSION, question0: questions[0], params, qs, master, data };
-  return writeZipEntry(ZIP_ENTRY, jsonBytes(json), updatedAt);
+
+  // Carry the attachment blobs across, less any the entries being written no
+  // longer refer to. `SPEC.md` makes that a rule rather than an optimization:
+  // deleting an attachment has to actually shrink the vault. Sorted by id so
+  // two saves of an unchanged vault do not differ for no reason.
+  const referenced = new Set(
+    entries.flatMap((e) => (e.attachments ?? []).map((a) => a.id)),
+  );
+  const members = [[ZIP_ENTRY, jsonBytes(json)]];
+  for (const id of [...(attachments?.keys() ?? [])].sort()) {
+    // Deflated, like every other writer of the format writes a `files/` member.
+    if (referenced.has(id)) {
+      members.push([ATTACHMENT_PREFIX + id, attachments.get(id), true]);
+    }
+  }
+  return writeZip(members, updatedAt);
+}
+
+/** Encrypt one file's bytes as a vault attachment, minting its id and IV.
+ *  Mirrors `seal_attachment` in `core/src/lib.rs`.
+ *
+ *  The id is 16 random bytes as 32 hex characters and is the whole of the ZIP
+ *  member's name, so the archive listing never says what the file is called.
+ *  The IV is drawn fresh every time: reusing one under a key that never
+ *  rotates would let anyone holding two versions of a vault read off how much
+ *  of an attachment went unchanged.
+ *
+ *  The returned metadata carries an empty `name` — this function deals in
+ *  bytes and has no opinion about what the file is called. */
+export async function sealAttachment(plaintext, masterKey) {
+  const iv = randomBytes(16);
+  return {
+    attachment: {
+      id: hexFromBytes(randomBytes(16)),
+      name: "",
+      size: plaintext.length,
+      added: Math.floor(Date.now() / 1000),
+      iv: base64FromBytes(iv),
+    },
+    ciphertext: await aesCbcEncrypt(plaintext, masterKey, iv),
+  };
+}
+
+/** Decrypt one attachment's bytes. Mirrors `open_attachment` in
+ *  `core/src/lib.rs`.
+ *
+ *  `attachment.size` is deliberately not checked against the result: the format
+ *  offers no integrity (SPEC.md, "Integrity: not provided"), so a mismatch
+ *  would be a hint rather than a verdict. */
+export async function openAttachment(ciphertext, attachment, masterKey) {
+  const iv = bytesFromBase64(attachment.iv);
+  if (iv.length !== 16) throw new VaultError("invalid attachment IV");
+  return aesCbcDecrypt(ciphertext, masterKey, iv);
 }
 
 function jsonBytes(value) {

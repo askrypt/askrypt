@@ -26,6 +26,14 @@ abstract class VaultIo {
   /// Let the user choose where to write [bytes]. Returns the chosen path/uri,
   /// or `null` if cancelled.
   Future<String?> saveVault(Uint8List bytes, {String suggestedName});
+
+  /// Let the user choose where to write one decrypted file attachment.
+  /// Returns the chosen path/uri, or `null` if cancelled.
+  ///
+  /// Separate from [saveVault] because the two differ in what they suggest and
+  /// in what a failure means: a vault that does not get written is unsaved
+  /// work, a copy of an attachment that does not get written is nothing lost.
+  Future<String?> saveAttachment(String name, Uint8List bytes);
 }
 
 /// Production implementation backed by `file_picker`.
@@ -51,6 +59,15 @@ class FilePickerVaultIo implements VaultIo {
     return FilePicker.saveFile(
       dialogTitle: 'Save vault',
       fileName: suggestedName,
+      bytes: bytes,
+    );
+  }
+
+  @override
+  Future<String?> saveAttachment(String name, Uint8List bytes) {
+    return FilePicker.saveFile(
+      dialogTitle: 'Save file',
+      fileName: name,
       bytes: bytes,
     );
   }

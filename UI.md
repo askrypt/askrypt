@@ -56,7 +56,8 @@ container — the panes are full-bleed.
 | `tray.rs` | `AppTray`/`TrayEvent`, polled from the subscription |
 | `theme.rs` | the styled-widget helpers plus pane styles, the spinner and layout constants |
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf` |
-| `data.rs` | pure item helpers over `SecretEntry`: the filter, tags, the write stamp, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
+| `scratch.rs` | this run's working directory (`<cache>/session-<pid>/`): a freshly attached file's ciphertext and, for a cloud vault, a copy of its archive. Holds an exclusive lock on its own `.lock` for the life of the process, which is what makes the startup sweep exact — a sibling session directory whose lock can be *taken* belongs to a process that has exited. Removed on drop |
+| `data.rs` | pure item helpers over `SecretEntry`: the four entry types (`Login`/`Card`/`Note`/`File`) and the `is_card`/`is_file` predicates, the filter (which reaches attachment file names — visible metadata, unlike the card secrets it skips), tags, the write stamp, `format_size`, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
 | `follow.rs` | following the stored vault: the probe, the `decide` policy, `Notice` and the banner. Not a pane, for `link.rs`'s reason — the banner sits above the working area, over whichever pane is showing |
 | `panes/mod.rs` | `Action` — the pane → shell navigation contract |
 | `panes/sidebar.rs` | the nav rail: filters, the vault actions, Quit, Settings |
@@ -83,13 +84,52 @@ Rules that are easy to undo by accident:
   `panes::Action`, and `App::apply` does the switching.
 - **The editor's form is chosen by the Type picker, and switching it clears
   nothing.** `Card` draws Cardholder / Brand / Number / Expiry / CVV / PIN where
-  `Login` draws Username / Password / Website; Name, Type, Tags, Notes and
-  Hidden are common to both. The draft is a whole `SecretEntry` and `save`
-  writes all of it, so what was typed into the *other* set survives a round trip
-  through the picker — tidying the hidden fields on a type change would be a
-  silent data loss. `detail.rs` and `list.rs` branch on the same
-  `data::is_card`, and one `revealed` flag covers the number, the CVV and the
+  `Login` draws Username / Password / Website, and `File` draws neither — its
+  point is what is attached to it, so a username and password row would be two
+  labelled blanks. Name, Type, Tags, Notes, Hidden and the **Files** section are
+  common to all three. The draft is a whole `SecretEntry` and `save` writes all
+  of it, so what was typed into the *other* set survives a round trip through
+  the picker — tidying the hidden fields on a type change would be a silent data
+  loss. `detail.rs` and `list.rs` branch on the same `data::is_card` /
+  `data::is_file`, and one `revealed` flag covers the number, the CVV and the
   PIN together: they are three halves of one secret.
+
+- **Files attach to any entry, not just a `File` one.** Keeping a
+  recovery-codes PDF with the login it belongs to is the ordinary case; the
+  `File` type is for the entry whose *only* content is what is attached.
+  `detail.rs` draws the section for any entry that has files (and for a `File`
+  entry even when it has none, since there the emptiness is worth saying);
+  `entry_editor.rs` draws it always, with Attach and a per-row remove.
+  Attaching runs `manager::AttachInputs` on a worker (read + encrypt) and
+  saving one out runs `manager::ExtractInputs` (decrypt + write), both keyed on
+  `Unlocked.master`. **Removing an attachment only drops the reference**: the
+  blob goes when the next save prunes, which is what makes cancelling the
+  editor put the file back — and, symmetrically, why attaching does not mark
+  the vault dirty. A reference whose blob is missing from the archive gets a
+  row saying so rather than a save button; `SPEC.md` requires readers to
+  tolerate one.
+
+- **The app never holds an attachment's bytes.** What it keeps is an
+  `askrypt::Attachments` — one `AttachmentSource` per file, either `Carried` (a
+  member of the archive the vault was read from) or `Sealed` (a ciphertext file
+  in `scratch::Scratch`, which is what a freshly attached file is until the next
+  save folds it in). Attaching streams the picked file through AES straight into
+  the scratch directory; a save streams each attachment from its source into the
+  archive being written, copying a carried one across *verbatim*; extracting
+  streams it back out to the file the user named. Peak memory is a 64 KiB
+  buffer, whatever the file's size — measured at ~4 MiB RSS for a 1 GiB
+  attachment, where the old design needed roughly three times the vault. Two
+  consequences: **a save reads the archive it is replacing**, which is why
+  `LocalFileStorage` assembles the new one beside it and renames (and why the
+  vault is held under an advisory lock for as long as it is open — a second
+  Askrypt window is refused with `StorageError::Locked`. The lock sits on a
+  sidecar, `<vault>.lock`, because a save *renames* the new archive over the old
+  one, which would orphan a lock held on the vault itself after a single save;
+  and it degrades to no lock at all, rather than to a refusal, when the sidecar
+  cannot be created); and a *cloud* vault,
+  which has no local archive, is spilled to a copy in the scratch directory on
+  open and after every save. Only a cloud vault has a size ceiling, and
+  `entry_editor::room_for` says so before any work rather than at save time.
 
 ---
 
@@ -462,9 +502,9 @@ Three details carry the rest:
      raises the banner instead — editing during those two derivations is
      otherwise exactly the window in which a reload eats what was typed.
 9. **A vault's master key is minted once and never rotated.** It is a property
-   of the *vault*, not of a write, and it is what the coming file attachments
-   will be encrypted under — rotating it per save would mean re-encrypting all
-   of them each time. → `Unlocked.master`, which is **not** an `Option`: every
+   of the *vault*, not of a write, and it is what every file attachment is
+   encrypted under — rotating it per save would mean re-encrypting all of them
+   each time. → `Unlocked.master`, which is **not** an `Option`: every
    path into that state has a key, from `AskryptFile::decrypt_with_master` or
    from the one place in the app that mints one, `RekeyInputs::run`. It is
    carried in `SaveRequest.master` and handed to `AskryptFile::create`, so the
@@ -521,7 +561,7 @@ Three details carry the rest:
 
 | Here | Would be |
 |---|---|
-| each item's icon is `icon::placeholder(name)` — one of 16 glyphs picked by hashing the name, except a `Card`, which gets `icon::credit_card` | a real per-item icon: a site favicon, a card issuer's logo. Nothing derives one yet; replace the whole function, not the pool |
+| each item's icon is `icon::placeholder(name)` — one of 16 glyphs picked by hashing the name, except a `Card` (`icon::credit_card`) and a `File` (`icon::paperclip`) | a real per-item icon: a site favicon, a card issuer's logo. Nothing derives one yet; replace the whole function, not the pool |
 | the cloud-folder card | nothing at all — a reserved slot for Dropbox/Drive sync |
 
 Everything else — unlock, Smart Lock, save, Save As, the server, settings, the

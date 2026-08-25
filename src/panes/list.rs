@@ -69,9 +69,17 @@ fn row_widget(index: usize, entry: &SecretEntry, selected: bool) -> Element<'_, 
     }
 
     // A card leaves `user_name` empty, so the second line would be blank; it
-    // gets `Visa •••• 4242` instead.
+    // gets `Visa •••• 4242` instead, and a File entry gets what it holds. The
+    // count rather than the first file name: a list row is glanced at, and one
+    // name out of several says less than how many there are.
     let subtitle = if data::is_card(entry) {
         data::card_subtitle(entry)
+    } else if data::is_file(entry) {
+        match entry.attachments.len() {
+            0 => "No files".to_string(),
+            1 => "1 file".to_string(),
+            n => format!("{n} files"),
+        }
     } else {
         entry.user_name.clone()
     };
@@ -83,6 +91,8 @@ fn row_widget(index: usize, entry: &SecretEntry, selected: bool) -> Element<'_, 
     // logo is what would replace it.
     let icon = if data::is_card(entry) {
         icon::credit_card(16)
+    } else if data::is_file(entry) {
+        icon::paperclip(16)
     } else {
         icon::placeholder(&entry.name, 16)
     };
