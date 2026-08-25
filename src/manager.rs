@@ -1708,6 +1708,30 @@ pub fn retire_origin(previous: Option<PathBuf>, scratch: Option<&Scratch>) {
     }
 }
 
+/// Drop the working files of a vault being replaced by another.
+///
+/// The open-over-open counterpart to [`Scratch::clear`]: a vault opened over
+/// one that was already open leaves that one's spilled archive — and any
+/// attachment sealed for it but never saved — with nobody to read them, and
+/// the directory cannot simply be emptied because the *incoming* vault's own
+/// copy was spilled into it a moment ago. `retire_origin`'s test applies to
+/// each path: only a file this app made is one it may delete, so a local
+/// vault's own archive is left exactly where it is.
+pub fn retire_working_files(file: Option<&AskryptFile>, scratch: Option<&Scratch>) {
+    let (Some(file), Some(scratch)) = (file, scratch) else {
+        return;
+    };
+    for path in file.attachments.sealed_paths() {
+        if scratch.owns(path) {
+            Scratch::discard(path);
+        }
+    }
+    retire_origin(
+        file.attachments.origin().map(Path::to_path_buf),
+        Some(scratch),
+    );
+}
+
 /// Stream one vault into a file, creating its directory if it is missing.
 fn write_archive_to(file: &AskryptFile, dest: &Path) -> Result<(), VaultError> {
     if let Some(dir) = dest.parent() {

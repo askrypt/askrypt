@@ -18,7 +18,7 @@
 //! every save is worker-thread work exactly as unlocking is; see the module
 //! documentation of [`crate::manager`] for the shape every transition takes.
 
-use crate::manager::{Vault, VaultState};
+use crate::manager::{self, OpenedVault, Vault, VaultState};
 use crate::scratch::Scratch;
 use crate::settings::{AppSettings, ServerSession, VaultLocation};
 use crate::tray::AppTray;
@@ -357,10 +357,29 @@ impl Session {
     }
 
     /// The full close: forget the vault entirely, and stop reopening it.
+    ///
+    /// The scratch directory goes with it. Nothing is open afterwards, so
+    /// every working file in there — a cloud vault's copy of its archive above
+    /// all — is one nothing can read again, and leaving it for `Scratch`'s own
+    /// `Drop` would keep it on disk until the app exits.
     pub fn close_vault(&mut self) {
         self.vault.close();
+        if let Some(scratch) = &self.scratch {
+            scratch.clear();
+        }
         self.settings.last_opened_file = None;
         self.reset_follow();
+    }
+
+    /// Adopt a freshly read vault, retiring the working files of the one it
+    /// replaces.
+    ///
+    /// Opening is the other place a vault stops being readable, and unlike a
+    /// close it cannot empty the directory: the incoming vault's own spilled
+    /// archive is already in there.
+    pub fn open_vault(&mut self, opened: OpenedVault) {
+        manager::retire_working_files(self.vault.file(), self.scratch.as_deref());
+        self.vault.open(opened);
     }
 
     /// Update user activity timestamp (for auto Smart Lock after inactivity)

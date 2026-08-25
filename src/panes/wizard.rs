@@ -307,7 +307,7 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
             match *result {
                 Ok(opened) => {
                     let name = opened.home.location().display_name();
-                    session.vault.open(opened);
+                    session.open_vault(opened);
                     // A different vault at a different revision: everything the
                     // old one's follow state described is now about a file that
                     // is no longer open.

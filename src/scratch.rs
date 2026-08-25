@@ -113,6 +113,35 @@ impl Scratch {
         path.parent() == Some(self.dir.as_path())
     }
 
+    /// Empty this session's directory, keeping the lock.
+    ///
+    /// The counterpart to [`Self::discard`] for the moment there is nothing
+    /// left to discard *for*: with no vault open, every file in here — a
+    /// closed cloud vault's copy of its archive, an attachment sealed for an
+    /// editor that was cancelled — belongs to nobody, and waiting for
+    /// [`Drop`] would leave them on disk for the rest of the run. Only this
+    /// session's own directory is touched, so a live sibling is as safe from
+    /// it as it is from the sweep.
+    ///
+    /// Best effort throughout: a file a worker is still writing reappears, and
+    /// the directory goes on exit either way.
+    pub fn clear(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name() == LOCK_NAME {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path).ok();
+            } else {
+                std::fs::remove_file(&path).ok();
+            }
+        }
+    }
+
     /// Delete a working file we no longer need, best effort.
     ///
     /// Never a reason to fail anything: the directory goes on shutdown, and a
@@ -240,6 +269,56 @@ mod tests {
             "the sweep deleted a live instance's working files"
         );
         lock.unlock().ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A scratch directory rooted wherever the test wants one, since
+    /// `Scratch::open` reads the real cache directory.
+    fn scratch_at(dir: PathBuf) -> Scratch {
+        std::fs::create_dir_all(&dir).expect("session directory");
+        let lock = File::create(dir.join(LOCK_NAME)).expect("lock file");
+        lock.try_lock().expect("lock should be free");
+        Scratch {
+            dir,
+            _lock: lock,
+            counter: AtomicU64::new(0),
+        }
+    }
+
+    #[test]
+    fn clearing_takes_the_working_files_and_keeps_the_lock() {
+        let root = root("clear");
+        let scratch = scratch_at(root.join(format!("{SESSION_PREFIX}999003")));
+        let vault = scratch.vault_path();
+        let blob = scratch.sealed_path();
+        std::fs::write(&vault, b"spilled archive").expect("vault copy");
+        std::fs::write(&blob, b"sealed bytes").expect("blob");
+
+        scratch.clear();
+
+        assert!(!vault.exists(), "a closed vault's copy survived the clear");
+        assert!(!blob.exists(), "an orphaned attachment survived the clear");
+        assert!(
+            scratch.dir.join(LOCK_NAME).exists(),
+            "the clear took the lock the sweep reads"
+        );
+        drop(scratch);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn clearing_touches_only_this_session() {
+        let root = root("clear_siblings");
+        let scratch = scratch_at(root.join(format!("{SESSION_PREFIX}999004")));
+        let other = abandoned(&root, 999_005);
+
+        scratch.clear();
+
+        assert!(
+            other.join("deadbeef.blob").exists(),
+            "the clear reached into another session's directory"
+        );
+        drop(scratch);
         std::fs::remove_dir_all(&root).ok();
     }
 

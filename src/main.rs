@@ -348,7 +348,7 @@ impl App {
                 // be streamed out of later.
                 manager::read_vault(&storage, scratch.as_ref()).map(|file| (storage, file))
             }) {
-                Ok((storage, file)) => app.session.vault.open(OpenedVault {
+                Ok((storage, file)) => app.session.open_vault(OpenedVault {
                     file,
                     home: VaultHome::new(location, storage),
                 }),
