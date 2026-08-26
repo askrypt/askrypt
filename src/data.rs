@@ -10,10 +10,9 @@ use chrono::{DateTime, Local, Utc};
 /// The entry types the editor offers. `SecretEntry::entry_type` is a free-form
 /// string in the format, so this is a convenience, not a constraint — a vault
 /// written elsewhere may carry any type and the rail will still list it.
-pub const ENTRY_TYPES: [&str; 4] = [TYPE_LOGIN, TYPE_CARD, TYPE_NOTE, TYPE_FILE];
+pub const ENTRY_TYPES: [&str; 3] = [TYPE_LOGIN, TYPE_CARD, TYPE_FILE];
 pub const TYPE_LOGIN: &str = "Login";
 pub const TYPE_CARD: &str = "Card";
-pub const TYPE_NOTE: &str = "Note";
 pub const TYPE_FILE: &str = "File";
 
 /// The card networks the editor offers. Like [`ENTRY_TYPES`], a convenience

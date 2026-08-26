@@ -54,10 +54,6 @@ pub fn credit_card(size: u16) -> Text<'static> {
     glyph('\u{F2DC}', size)
 }
 
-pub fn journal_text(size: u16) -> Text<'static> {
-    glyph('\u{F444}', size)
-}
-
 pub fn paperclip(size: u16) -> Text<'static> {
     glyph('\u{F4B3}', size)
 }
