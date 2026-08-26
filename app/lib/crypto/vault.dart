@@ -367,10 +367,42 @@ Uint8List openAttachment(
   return aesCbcDecrypt(ciphertext, Uint8List.fromList(masterKey), iv);
 }
 
-/// Mint a fresh 32-byte master key. Only a vault coming into existence should
-/// need one — mirrors `MasterSecret::generate` in `core/src/types.rs`.
+/// Mint a fresh 32-byte master key. Mirrors `MasterSecret::generate` in
+/// `core/src/types.rs`.
 Uint8List generateMasterKey([Random? rng]) =>
     _randomBytes(32, rng ?? Random.secure());
+
+/// The master key the next write of this vault must use — the port of
+/// `master_for_write` in `core/src/lib.rs`, and `SPEC.md`, "Master key
+/// lifetime".
+///
+/// A vault holding **no attachments** is written under a fresh key every time:
+/// only the entry list lives under the key, and that is re-encrypted from
+/// plaintext on every save anyway, so rotating costs one random draw and means
+/// a key recovered from one version does not open the next.
+///
+/// A vault holding **at least one attachment** keeps [current]. Its blobs are
+/// sealed under that key and are carried across a save untouched; minting a new
+/// one would mean re-encrypting every attached file on every save.
+///
+/// [current] is null for a vault that has never been written — there is nothing
+/// to decide, and it gets a key of its own.
+///
+/// The entries decide it rather than the blob map, and the test is "does any
+/// entry refer to a file": a blob no entry refers to is pruned by
+/// [AskryptFile.create], so a vault whose last reference was just removed
+/// rotates on the save that drops it. A dangling reference counts as an
+/// attachment and keeps the key — the conservative way round, since keeping a
+/// key can never make a file unreadable and minting one can.
+Uint8List masterForWrite(
+  List<SecretEntry> entries,
+  List<int>? current, [
+  Random? rng,
+]) {
+  if (current == null) return generateMasterKey(rng);
+  final holdsFiles = entries.any((e) => e.attachments.isNotEmpty);
+  return holdsFiles ? Uint8List.fromList(current) : generateMasterKey(rng);
+}
 
 /// Format [t] as RFC 3339 UTC with second precision — the `params.updated_at`
 /// shape written by `AskryptFile::touch` in `core/src/lib.rs`.

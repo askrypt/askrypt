@@ -276,6 +276,62 @@ await group("save and reopen (round trip)", async () => {
   check("an unreferenced blob is dropped on write", pruned.attachments.size, 0);
 });
 
+// --- Which key the next write uses -----------------------------------------
+//
+// SPEC.md, "Master key lifetime": a vault with no attachments is written under
+// a fresh key every time, one holding a file keeps the key its blobs are
+// sealed under. `createVault` still re-wraps whatever key it is handed — the
+// group above pins that — so what this checks is the decision the callers make
+// first, and the edges `core/src/lib.rs` states as rules.
+
+await group("the write key depends on whether a file is attached", async () => {
+  if (!opened) return;
+  const { entries, masterKey } = opened;
+
+  // The golden vault's last entry is the one carrying the attachment.
+  const withFile = entries.at(-1);
+  check(
+    "the fixture entry really does carry one",
+    (withFile.attachments ?? []).length,
+    1,
+  );
+  check(
+    "a vault holding a file keeps its key",
+    vault.hexFromBytes(vault.masterForWrite([withFile], masterKey)),
+    vault.hexFromBytes(masterKey),
+  );
+
+  const plain = entries.filter((e) => (e.attachments ?? []).length === 0);
+  check("the fixture has attachment-free entries too", plain.length > 0, true);
+  const first = vault.masterForWrite(plain, masterKey);
+  check(
+    "a vault with no files is written under a new key",
+    vault.hexFromBytes(first) !== vault.hexFromBytes(masterKey),
+    true,
+  );
+  check("and the new key is 32 bytes", first.length, 32);
+  // Per write, not once: two calls must not agree either.
+  check(
+    "every write mints its own",
+    vault.hexFromBytes(vault.masterForWrite(plain, masterKey))
+      !== vault.hexFromBytes(first),
+    true,
+  );
+
+  // Dropping the last reference is what lets the next write rotate — the blob
+  // is pruned by that same write.
+  const stripped = entries.map((e) => ({ ...e, attachments: [] }));
+  check(
+    "dropping the last reference lets the next write rotate",
+    vault.hexFromBytes(vault.masterForWrite(stripped, masterKey))
+      !== vault.hexFromBytes(masterKey),
+    true,
+  );
+
+  // A vault that has never been written gets a key of its own.
+  check("an unwritten vault is a plain mint", vault.masterForWrite([], null).length, 32);
+});
+
 // --- Smart Lock ------------------------------------------------------------
 //
 // Not part of the format — nothing here is ever written to a file, and no

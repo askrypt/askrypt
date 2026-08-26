@@ -861,6 +861,34 @@ export async function openAttachment(ciphertext, attachment, masterKey) {
   return aesCbcDecrypt(ciphertext, masterKey, iv);
 }
 
+/** The master key the next write of this vault must use — the port of
+ *  `master_for_write` in `core/src/lib.rs`, and SPEC.md, "Master key
+ *  lifetime".
+ *
+ *  A vault holding **no attachments** is written under a fresh key every time:
+ *  only the entry list lives under the key, and that is re-encrypted from
+ *  plaintext on every save anyway, so rotating costs one random draw and means
+ *  a key recovered from one version does not open the next.
+ *
+ *  A vault holding **at least one attachment** keeps `current`. Its blobs are
+ *  sealed under that key and are carried across a save untouched; minting a new
+ *  one would mean re-encrypting every attached file on every save.
+ *
+ *  `current` may be null for a vault that has never been written — there is
+ *  nothing to decide, and it gets a key of its own.
+ *
+ *  The entries decide it rather than the blob map, and the test is "does any
+ *  entry refer to a file": a blob no entry refers to is pruned by
+ *  `createVault`, so a vault whose last reference was just removed rotates on
+ *  the save that drops it. A dangling reference counts as an attachment and
+ *  keeps the key — the conservative way round, since keeping a key can never
+ *  make a file unreadable and minting one can. */
+export function masterForWrite(entries, current) {
+  if (!current) return generateMasterKey();
+  const holdsFiles = entries.some((e) => (e.attachments ?? []).length > 0);
+  return holdsFiles ? current : generateMasterKey();
+}
+
 function jsonBytes(value) {
   return utf8.encode(JSON.stringify(value));
 }

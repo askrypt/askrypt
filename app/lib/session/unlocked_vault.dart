@@ -248,9 +248,9 @@ class UnlockedVault {
 
   /// Serialize the current state to a byte-compatible `vault.askrypt`.
   ///
-  /// Re-creates the whole file — fresh salts and a fresh data IV, but the
-  /// vault's *existing* master key — like the desktop save path, then clears
-  /// [isModified]. The bytes are ready to write to a file/SAF document. Each
+  /// Re-creates the whole file — fresh salts, a fresh data IV, and a fresh
+  /// master key unless this vault holds an attachment — like the desktop save
+  /// path, then clears [isModified]. The bytes are ready to write to a file/SAF document. Each
   /// save stamps `params.host`/`params.updated_at` with this device and the
   /// current UTC time.
   ///
@@ -258,9 +258,13 @@ class UnlockedVault {
   /// native platform crypto (see [pbkdf2]); awaiting keeps a save responsive
   /// without an isolate.
   Future<Uint8List> toBytes() async {
-    // Minted here rather than left to `create`, so this vault keeps the key its
-    // first write used instead of minting another on the next save.
-    final key = _masterKey ??= generateMasterKey();
+    // A vault with nothing sealed under its key is written under a new one, so
+    // the key that opened the previous version does not open this one. A vault
+    // holding an attachment keeps its key — the blobs ride across untouched,
+    // and rotating would mean re-encrypting every one of them on every save.
+    // Decided here rather than in `create`, so this vault carries on under the
+    // very key it was written with.
+    final key = _masterKey = masterForWrite(_entries, _masterKey);
     final file = await AskryptFile.create(
       questions: questions,
       answers: _answers,

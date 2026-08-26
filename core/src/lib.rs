@@ -482,8 +482,9 @@ impl AskryptFile {
     ///   at [`Attachments::origin`], compressed bytes, method and CRC intact.
     ///   Nothing is inflated, deflated or decrypted, which is what makes
     ///   carrying a large attachment across a save nearly free. It is legal
-    ///   because the master key is never rotated (`SPEC.md`, "Master key
-    ///   lifetime"), so a member encrypted under it stays valid forever.
+    ///   because a vault holding an attachment does not rotate its master key
+    ///   (`SPEC.md`, "Master key lifetime"), so a member encrypted under it
+    ///   stays valid for as long as the vault holds it.
     /// * [`AttachmentSource::Sealed`] — copied from its ciphertext file and
     ///   deflated, like `askrypt.json`. Every member of the archive is written
     ///   the same way. It buys no space (the body is AES-CBC ciphertext, which
@@ -1125,6 +1126,42 @@ pub fn open_attachment_to_file<R: std::io::Read>(
     std::io::Write::flush(&mut output)?;
 
     Ok(())
+}
+
+/// The master key the next write of this vault must use.
+///
+/// **A vault holding no attachments gets a fresh key on every write.** Nothing
+/// but the entry list lives under the key, and that is re-encrypted from
+/// plaintext on every save regardless, so rotating costs a single random draw —
+/// and it buys the guarantee that a key recovered from one version of a vault
+/// does not open the next.
+///
+/// **A vault holding at least one attachment keeps the key it has.** Its blobs
+/// are already sealed under that key and are carried across a save verbatim
+/// (`SPEC.md`, "File attachments" rule 5). Minting a new key would mean
+/// decrypting and re-encrypting every attached file on every save — a vault
+/// with a gigabyte attached would move a gigabyte per save — which is precisely
+/// the cost the master-key indirection exists to avoid.
+///
+/// `current` is the key the vault is under now, recovered by
+/// [`AskryptFile::decrypt_with_master`]. There is no `None` case: a vault with
+/// no key yet has nothing to decide, and its first
+/// [`create`](AskryptFile::create) mints one by being handed `None`.
+///
+/// The **entries** decide this, not the attachment store, and the test is
+/// deliberately "does any entry refer to a file" rather than "does any blob
+/// exist": a blob no entry refers to is pruned by `create`, so a vault whose
+/// last reference was just removed is attachment-free here and rotates on the
+/// save that drops it. A *dangling* reference — an entry naming a blob the
+/// archive does not hold — counts as an attachment and keeps the key, which is
+/// the conservative way round: keeping a key can never make a file unreadable,
+/// minting one can.
+pub fn master_for_write(entries: &[SecretEntry], current: &MasterSecret) -> MasterSecret {
+    if entries.iter().any(|entry| !entry.attachments.is_empty()) {
+        current.clone()
+    } else {
+        MasterSecret::generate()
+    }
 }
 
 /// Decrypt one carried attachment straight out of the archive at `origin`.
@@ -2420,6 +2457,102 @@ mod tests {
         let opened =
             decrypt_with_aes(&sealed, master_after_save.as_bytes(), &attachment_iv).unwrap();
         assert_eq!(opened, attachment);
+    }
+
+    // -----------------------------------------------------------------------
+    // Master key rotation
+    //
+    // A vault with no attachments mints a fresh key on every write; one that
+    // holds a file keeps its key, so the blobs under it stay readable and a
+    // save still carries them across verbatim. See `SPEC.md`, "Master key
+    // lifetime".
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_vault_without_attachments_rotates_on_every_write() {
+        let (_, _, data) = master_test_vault();
+        let current = MasterSecret::generate();
+
+        let first = master_for_write(&data, &current);
+        assert_ne!(first, current);
+        // ...and again, so it is per write rather than once.
+        let second = master_for_write(&data, &current);
+        assert_ne!(second, current);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_vault_with_an_attachment_keeps_its_key() {
+        // The whole point: the blobs are sealed under it and are carried across
+        // a save without being decrypted.
+        let (_, _, mut data) = master_test_vault();
+        let current = MasterSecret::generate();
+
+        data[0].attachments = vec![Attachment {
+            id: "00112233445566778899aabbccddeeff".to_string(),
+            name: "passport.pdf".to_string(),
+            size: 10,
+            added: 1704067200,
+            iv: encode_base64(&generate_bytes(16)),
+        }];
+
+        assert_eq!(master_for_write(&data, &current), current);
+    }
+
+    #[test]
+    fn dropping_the_last_reference_lets_the_next_write_rotate() {
+        // `create` prunes a blob no entry refers to, so a vault that has just
+        // lost its last attachment is attachment-free for this purpose.
+        let (_, _, mut data) = master_test_vault();
+        let current = MasterSecret::generate();
+
+        data[0].attachments = vec![Attachment {
+            id: "00112233445566778899aabbccddeeff".to_string(),
+            name: "passport.pdf".to_string(),
+            size: 10,
+            added: 1704067200,
+            iv: encode_base64(&generate_bytes(16)),
+        }];
+        assert_eq!(master_for_write(&data, &current), current);
+
+        data[0].attachments.clear();
+        assert_ne!(master_for_write(&data, &current), current);
+    }
+
+    #[test]
+    fn a_rotated_vault_reopens_and_the_old_key_is_left_behind() {
+        // End to end: write, rotate, write again, and check the file on disk is
+        // under the new key and opens with nothing but the answers.
+        let (questions, answers, data) = master_test_vault();
+
+        let first = AskryptFile::create(
+            questions.clone(),
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .unwrap();
+        let (entries, previous) = open(&first, &answers);
+
+        let next = master_for_write(&entries, &previous);
+        let second = AskryptFile::create(
+            questions,
+            answers.clone(),
+            entries,
+            Some(6000),
+            false,
+            Some(&next),
+            &Attachments::new(),
+        )
+        .unwrap();
+
+        let (reopened, on_disk) = open(&second, &answers);
+        assert_eq!(on_disk, next);
+        assert_ne!(on_disk, previous);
+        assert_eq!(reopened.len(), 1);
     }
 
     #[test]

@@ -132,6 +132,12 @@ pub struct OpenedVault {
 pub struct SavedVault {
     pub file: AskryptFile,
     pub home: VaultHome,
+    /// The key this write used, which is a *new* one whenever the vault holds
+    /// no attachments (`SPEC.md`, "Master key lifetime"). The session must
+    /// adopt it: the key it held a moment ago opens the version this one
+    /// replaced, and a later `add_attachment` would otherwise seal a file under
+    /// a key the vault is no longer on.
+    pub master: MasterSecret,
     /// What became of the local copy a cloud save leaves behind: where it
     /// landed, or why it did not.
     ///
@@ -522,10 +528,18 @@ impl Vault<Unlocked> {
         self.home.clone()
     }
 
-    /// Adopt a written vault: new bytes, its home, and no unsaved changes.
+    /// Adopt a written vault: new bytes, its home, its key, and no unsaved
+    /// changes.
+    ///
+    /// The key is not always the one this vault handed over — a vault with no
+    /// attachments is written under a fresh one every time — so taking it back
+    /// is what keeps the session on the same key as the file it just wrote.
+    /// The entries are untouched by that: rotation only happens when there is
+    /// nothing sealed under the old key, so no attachment metadata moves.
     pub fn saved(mut self, saved: SavedVault) -> Self {
         self.file = saved.file;
         self.home = Some(saved.home);
+        self.state.master = saved.master;
         self.state.modified = false;
         self
     }
@@ -1419,6 +1433,10 @@ pub struct SaveRequest {
     pub translit: bool,
     /// The vault's existing master key. Not an `Option`: only an unlocked vault
     /// can be saved, and an unlocked vault always has one.
+    ///
+    /// Whether the write actually uses it is `askrypt::master_for_write`'s
+    /// call — a vault with no attachments is written under a fresh key — but
+    /// the decision needs this one either way.
     pub master: MasterSecret,
     /// Where each of the vault's attachments can be read from, exactly as the
     /// open vault has it. They are already ciphertext under `master`, so a save
@@ -1448,8 +1466,9 @@ pub struct AttachInputs {
     /// Where its ciphertext goes — a file in this session's scratch directory,
     /// which is the *only* copy of it until a save folds it into the archive.
     pub dest: PathBuf,
-    /// The vault's master key. Attachments live under it, which is the reason
-    /// it is preserved for the life of the vault.
+    /// The vault's master key. Attachments live under it, which is exactly why
+    /// a vault that has one stops rotating on save — see
+    /// `askrypt::master_for_write`.
     pub master: MasterSecret,
 }
 
@@ -1590,13 +1609,19 @@ pub fn write_vault(
     backup_dir: Option<PathBuf>,
     scratch: Option<Arc<Scratch>>,
 ) -> Result<SavedVault, VaultError> {
+    // A vault with nothing sealed under its key is written under a new one, so
+    // the key that opened the previous version does not open this one. A vault
+    // holding an attachment keeps its key: the blobs ride across untouched, and
+    // rotating would mean re-encrypting every one of them on every save.
+    let master = askrypt::master_for_write(&request.entries, &request.master);
+
     let mut file = AskryptFile::create(
         request.questions.clone(),
         request.answers.clone(),
         request.entries.clone(),
         Some(request.iterations),
         request.translit,
-        Some(&request.master),
+        Some(&master),
         &request.attachments,
     )
     .map_err(|e| VaultError::log_crypto("Failed to build vault", e.as_ref()))?;
@@ -1648,7 +1673,12 @@ pub fn write_vault(
         .filter(|_| home.location().is_server())
         .map(|dir| back_up_locally(&file, home.location(), &dir));
 
-    Ok(SavedVault { file, home, backup })
+    Ok(SavedVault {
+        file,
+        home,
+        master,
+        backup,
+    })
 }
 
 /// Where a replacement archive is assembled.
@@ -2231,41 +2261,82 @@ mod tests {
         assert!(!vault.is_modified());
     }
 
-    /// `SPEC.md`, "Master key lifetime": the key is minted once and preserved
-    /// for the life of the vault. Without the hand-back, a second save would
-    /// mint a second key and orphan anything encrypted under the first.
+    /// `SPEC.md`, "Master key lifetime": a vault with no attachments is written
+    /// under a fresh key every time, and the session adopts it.
     #[test]
-    fn saving_preserves_the_master_key() {
+    fn saving_a_vault_without_attachments_rotates_the_key() {
         let (mut vault, home) = stored_vault();
-        let minted = vault.unlocked().unwrap().master().clone();
+        let previous = vault.unlocked().unwrap().master().clone();
 
         vault.unlocked_mut().unwrap().add_entry(entry("GitLab"));
         assert!(vault.is_modified());
 
         let request = vault.unlocked().unwrap().save_request();
-        // The request carries the key it must re-wrap, not an absent one.
-        assert_eq!(request.master, minted);
+        // The request still carries the key the vault is on: it is what the
+        // decision is made against, and what a vault holding a file would keep.
+        assert_eq!(request.master, previous);
         let saved = write_vault(request, home.clone(), None, None)
             .expect("the vault should be written again");
         assert!(vault.apply_saved(saved));
         assert!(!vault.is_modified(), "a save clears the dirty flag");
-        assert_eq!(vault.unlocked().unwrap().master(), &minted);
+        assert_ne!(vault.unlocked().unwrap().master(), &previous);
 
-        // And the key really is the one the file now on disk is keyed on.
+        // And the key the session now holds is the one the file on disk is
+        // keyed on — the whole reason it is handed back.
+        let adopted = vault.unlocked().unwrap().master().clone();
         let reopened = home.storage().load_vault().expect("the vault should load");
         let questions_data = reopened.get_questions_data("Rex".to_string()).unwrap();
         let (entries, on_disk) = reopened
             .decrypt_with_master(&questions_data, vec!["Baker Street".to_string()])
             .expect("the remaining answers should decrypt the entries");
-        assert_eq!(on_disk, minted);
+        assert_eq!(on_disk, adopted);
+        assert_ne!(on_disk, previous);
         assert_eq!(entries.len(), 2);
     }
 
-    /// Changing the questions re-wraps the same key under the new answers, so
-    /// everything stored under it stays readable — and the old answers stop
-    /// working.
+    /// The other half of the same rule, and the one that would cost data if it
+    /// were wrong: a vault holding a file keeps its key, because that file is
+    /// sealed under it and rides across the save untouched.
     #[test]
-    fn changing_the_questions_keeps_the_master_key() {
+    fn saving_a_vault_with_an_attachment_keeps_the_key() {
+        let dir = TestDir::new("attachment_keeps_key");
+        let (mut vault, home) = stored_vault();
+
+        let meta = attach(&mut vault, &dir, "codes.txt", b"recovery codes");
+        let key = vault.unlocked().unwrap().master().clone();
+
+        save(&mut vault, &home);
+        assert_eq!(
+            vault.unlocked().unwrap().master(),
+            &key,
+            "rotating here would orphan the file that was just saved"
+        );
+
+        // Save a second time: still the same key, and the file still opens.
+        {
+            let unlocked = vault.unlocked_mut().unwrap();
+            let mut entry = unlocked.entries()[0].clone();
+            entry.notes = "changed".to_string();
+            unlocked.update_entry(0, entry);
+        }
+        save(&mut vault, &home);
+        assert_eq!(vault.unlocked().unwrap().master(), &key);
+
+        let reopened = dir.join("reopened.askrypt");
+        std::fs::write(&reopened, home.storage().read().unwrap()).unwrap();
+        let out = dir.join("codes.out");
+        askrypt::extract_attachment(&reopened, &meta, &key, &out).expect("it should open");
+        assert_eq!(std::fs::read(&out).unwrap(), b"recovery codes");
+
+        cleanup(&vault);
+    }
+
+    /// Changing the questions re-wraps the same key under the new answers — the
+    /// rebuild is not a write, so it decides nothing about rotation — and the
+    /// old answers stop working. The *save* that follows is what mints a new
+    /// key, this vault having no attachments.
+    #[test]
+    fn changing_the_questions_keeps_the_key_until_the_save() {
         let (mut vault, home) = stored_vault();
         let minted = vault.unlocked().unwrap().master().clone();
 
@@ -2306,7 +2377,10 @@ mod tests {
         let (_, on_disk) = reopened
             .decrypt_with_master(&questions_data, vec!["beta".to_string()])
             .expect("the new answers should decrypt the entries");
-        assert_eq!(on_disk, minted);
+        // The write rotated, this vault holding no attachments, and the session
+        // took the new key with it.
+        assert_ne!(on_disk, minted);
+        assert_eq!(&on_disk, vault.unlocked().unwrap().master());
     }
 
     /// A vault built from nothing has no home, which is what makes its first

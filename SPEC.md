@@ -160,16 +160,18 @@ already carries the `data` blob's IV.
    attachment can still be perfectly good custodians of one.
 5. **A writer MAY copy an unchanged member across verbatim** — the same
    compressed bytes, method and CRC — rather than decrypting and re-encrypting
-   it. This follows from the master key never being rotated (see
-   [Master key lifetime](#master-key-lifetime)): a member sealed under it stays
-   valid for the life of the vault, so rule 1's fresh IV is a rule about
-   *encrypting*, not about writing. It is what lets a client carry an
+   it. This follows from the master key not being rotated while a vault has
+   attachments (see [Master key lifetime](#master-key-lifetime)): a member
+   sealed under it stays valid for as long as the vault holds it, so rule 1's
+   fresh IV is a rule about *encrypting*, not about writing. It is what lets a client carry an
    attachment far larger than its own memory: the Rust implementation streams
    each member straight from the archive it is replacing into the one it is
    writing, and never holds an attachment's bytes at all.
 
-Attachments are why the master key is preserved rather than rotated: a rotation
-would mean decrypting and re-encrypting every attached file on every save.
+Attachments are why the master key is preserved rather than rotated *for a vault
+that has them*: a rotation would mean decrypting and re-encrypting every attached
+file on every save. A vault with none rotates on every write — see
+[Master key lifetime](#master-key-lifetime), which states both branches.
 
 ### What the archive still reveals
 
@@ -229,7 +231,8 @@ PBKDF2 uses **HMAC-SHA-256** and produces a **32-byte** key, run for
 
 At creation time `salt0`, `salt1`, `masterKey` (32 random bytes) and `iv` are
 generated. On every **later** write, `salt0`, `salt1` and `iv` are generated
-afresh but `masterKey` is **not** — see [Master key lifetime](#master-key-lifetime).
+afresh; whether `masterKey` is too depends on whether the vault holds an
+attachment — see [Master key lifetime](#master-key-lifetime).
 
 1. **first-key** (32 bytes) = `PBKDF2( hash(answer0), salt0, iterations )`,
    where `answer0` is the normalized first answer.
@@ -257,29 +260,49 @@ The master key indirection (encrypting a random `masterKey` rather than the data
 directly) means the answers can be changed by re-encrypting only the small
 `master` blob rather than everything the master key covers.
 
-**A vault's `masterKey` is minted once, when the vault is created, and is
-preserved for the life of the vault.** Every write re-wraps that same key under
-whatever the answers currently are — an ordinary save, a save to a new location,
-and a change of the questions and answers alike. It is a property of the vault,
-not of a particular file on disk: a client that saves a vault must recover the
-existing key first and hand it back, never mint a new one. (Clients recover it as
-a side effect of unlocking, which already decrypts `master`.)
+**Whether a write mints a new `masterKey` depends on one thing: whether the
+vault holds a file attachment.**
 
-This is what lets encrypted file attachments live under the master key (see
-[File attachments](#file-attachments)): were it rotated on every save, each save
-would have to decrypt and re-encrypt every attached file.
+* **No attachments — mint a fresh key on every write.** Nothing but the entry
+  list lives under the key, and the entry list is re-encrypted from plaintext on
+  every save regardless, so rotating costs a single random draw.
+* **At least one attachment — keep the key.** The blobs are sealed under it and
+  a writer carries them across unchanged (see
+  [File attachments](#file-attachments) rule 5). Minting a new key would mean
+  decrypting and re-encrypting every attached file on every save; a vault with a
+  gigabyte attached would move a gigabyte per save. Avoiding exactly that is
+  what the master-key indirection is for.
 
-Two things are **not** preserved. `salt0` and `salt1` are regenerated on every
-write, so the answer-derived keys are never reused. So is `iv`, and that one is
-load-bearing: AES-CBC under a repeated key *and* IV encrypts identical plaintext
-identically, so anyone holding two versions of a vault could read off how long a
-prefix of the entry list went unchanged between them.
+The **entries** decide it, not the archive: a blob no entry refers to is dropped
+by the same write (rule 2), so a vault whose last attachment reference has just
+been removed is attachment-free for this purpose and rotates on the save that
+drops it. A *dangling* reference counts as an attachment and keeps the key —
+the conservative way round, since keeping a key can never make a file
+unreadable and minting one can.
 
-One consequence is worth stating plainly: because changing the answers keeps the
-key, an attacker who learned the old answers *and* kept a copy of the old file
-can derive the master key, and that key still opens copies of the vault written
-after the change. Changing the answers protects a vault whose answers might leak
-in future; it does not undo a leak that already happened.
+A writer must **recover the outgoing key** before it can decide anything, since
+the "keep" branch needs it. Clients recover it as a side effect of unlocking,
+which already decrypts `master`. A client that keeps a vault open after a write
+must adopt whichever key that write used, or its next save will hand back one
+the file is no longer under — and a file attached after that would be sealed
+under a key the vault has left behind.
+
+`salt0` and `salt1` are regenerated on every write whichever branch is taken, so
+the answer-derived keys are never reused, and so is `iv`: AES-CBC under a
+repeated key *and* IV encrypts identical plaintext identically, so anyone
+holding two versions of a vault could read off how long a prefix of the entry
+list went unchanged between them.
+
+One consequence is worth stating plainly, because it is the whole reason for the
+rotating branch. An attacker who learned the old answers *and* kept a copy of an
+old file can derive that file's master key. For a vault of passwords, that key
+dies with the version it belongs to and copies written afterwards are under keys
+that did not exist when the leak occurred, so changing the answers genuinely
+protects everything written from that point on. For a vault holding attachments
+the key persists, so that protection does not apply and the leaked key still
+opens later copies: **changing the answers on a vault with attachments does not
+undo a leak.** That is the price of not re-encrypting the files, and it is
+accepted deliberately rather than overlooked.
 
 ### Integrity: not provided
 
@@ -373,8 +396,9 @@ Requirements, in rough order of how easy each is to get wrong:
    CBC's.** Reusing a GCM nonce under one key is catastrophic in a way CBC IV
    reuse is not: it leaks the authentication subkey and permits forgery, not just
    a plaintext-prefix comparison. This interacts directly with
-   [Master key lifetime](#master-key-lifetime) — the master key is deliberately
-   long-lived, so it is the *nonce* that must carry all the uniqueness. Draw 96
+   [Master key lifetime](#master-key-lifetime) — the master key is long-lived
+   for any vault holding an attachment, so it is the *nonce* that must carry all
+   the uniqueness. Draw 96
    fresh random bits on every single write. Never derive a nonce from anything
    stable (the vault id, a counter persisted in the file, a timestamp), and never
    reuse one across two blobs in the same file.

@@ -15,7 +15,7 @@
 import {
   CARD_KEYS, DEFAULT_ITERATIONS, MAX_VAULT_BYTES, VaultError, blankEntry,
   createVault, decryptWithMaster, generateMasterKey, getQuestionsData, isCard,
-  openAttachment, parseVault,
+  masterForWrite, openAttachment, parseVault,
 } from "./vault-format.js";
 import {
   SMART_LOCK_TIMEOUT_MS, createSmartLock, recoverSmartLock, smartLockRemaining,
@@ -899,11 +899,21 @@ function renderSaveState() {
       : "No changes since you opened this vault.");
 }
 
-/// Re-encrypts the whole vault. Everything but the entries is carried over
-/// from the file that was opened: the same master key (re-wrapped, never
-/// rotated — see SPEC.md, "Master key lifetime"), the same questions and
-/// answers, the same work factor and the same normalization setting.
+/// Re-encrypts the whole vault. The questions, answers, work factor and
+/// normalization setting are carried over from the file that was opened; the
+/// master key is only carried over when this vault holds an attachment.
+///
+/// `masterForWrite` is the rule (SPEC.md, "Master key lifetime"): with nothing
+/// sealed under the key, a write mints a new one, so the key that opened the
+/// previous version does not open this one. With a file attached the key stays,
+/// because the blobs ride across untouched and rotating would mean
+/// re-encrypting every one of them here in the page.
+///
+/// The page adopts the result whether or not the save that follows lands. A key
+/// nobody else ever saw costs nothing, and the alternative — deciding again on
+/// the next attempt — would mint a second one just as freely.
 async function rebuild() {
+  state.masterKey = masterForWrite(state.entries, state.masterKey);
   return createVault({
     questions: state.questions,
     answers: state.answers,

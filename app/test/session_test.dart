@@ -3,6 +3,8 @@
 /// never leak secrets and that saved bytes re-open into an equivalent vault.
 library;
 
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:askrypt/crypto/secret_entry.dart';
@@ -187,12 +189,13 @@ void main() {
     expect(v3.reveal(0).secret, 'sekret');
   });
 
-  /// The master key is minted once, when the vault comes into existence, and
-  /// every later save re-wraps that same key — including a save that changes the
-  /// answers. This is what will let file attachments live under the master key
-  /// without being re-encrypted on every save, and it must hold identically in
-  /// Dart and in `core/` (see `AskryptFile::create`'s `master` parameter).
-  test('the master key survives every save, including a re-key', () async {
+  /// A vault with no attachments is written under a fresh key every time,
+  /// including across a save that changes the answers, so a key recovered from
+  /// one version does not open the next. Must hold identically in Dart and in
+  /// `core/` — see `master_for_write` there, and `SPEC.md`, "Master key
+  /// lifetime".
+  test('every save of an attachment-free vault mints a new master key',
+      () async {
     Future<Uint8List> masterOf(Uint8List bytes, List<String> answers) async {
       final file = AskryptFile.fromBytes(bytes);
       final qd = await file.getQuestionsData(answers[0]);
@@ -211,7 +214,8 @@ void main() {
     // An ordinary save of the same open vault.
     n.addEntry(_entry('second', 'sekret2'));
     final second = Uint8List.fromList(await n.toBytes());
-    expect(await masterOf(second, _answers), minted);
+    final afterSecond = await masterOf(second, _answers);
+    expect(afterSecond, isNot(minted));
 
     // ...and one that changes the answers.
     const newAnswers = ['alpha', 'beta'];
@@ -220,7 +224,12 @@ void main() {
         answers: newAnswers,
         translit: false);
     final rekeyed = Uint8List.fromList(await n.toBytes());
-    expect(await masterOf(rekeyed, newAnswers), minted);
+    expect(await masterOf(rekeyed, newAnswers), isNot(afterSecond));
+
+    // The entries survive all of it: the key moves, the vault does not.
+    final reopened = await UnlockedVault.open(rekeyed, newAnswers);
+    expect(reopened.summaries.length, 2);
+    expect(reopened.reveal(0).secret, 'sekret');
 
     // The salts and the data IV still rotate: AES-CBC under a repeated key
     // *and* IV would leak how long a prefix of the entry list went unchanged.
@@ -234,6 +243,42 @@ void main() {
       ..createNew(questions: _questions, answers: _answers, iterations: _iters);
     final otherBytes = Uint8List.fromList(await other.toBytes());
     expect(await masterOf(otherBytes, _answers), isNot(minted));
+  });
+
+  /// The other half of the rule, and the half that would cost data if it were
+  /// wrong: a vault holding a file keeps its key across a save, so the blob —
+  /// which this app carries but cannot re-encrypt — still opens.
+  test('a vault with an attachment keeps its master key across a save',
+      () async {
+    final vectors = jsonDecode(
+      File('test/fixtures/vectors.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
+    final v = vectors['vault'] as Map<String, dynamic>;
+    final answers = (v['answers'] as List).cast<String>();
+    final bytes = base64.decode(v['vault_b64'] as String);
+
+    final golden = AskryptFile.fromBytes(Uint8List.fromList(bytes));
+    final beforeQd = await golden.getQuestionsData(answers[0]);
+    final before =
+        (await golden.decryptWithMaster(beforeQd, answers.sublist(1))).masterKey;
+
+    final vault = await UnlockedVault.open(Uint8List.fromList(bytes), answers);
+    final saved = await vault.toBytes();
+
+    final file = AskryptFile.fromBytes(saved);
+    final qd = await file.getQuestionsData(answers[0]);
+    final opened = await file.decryptWithMaster(qd, answers.sublist(1));
+    expect(opened.masterKey, before,
+        reason: 'rotating would orphan the attachment this app cannot re-seal');
+
+    // And the carried blob really does still open under it.
+    final meta = opened.entries.last.attachments.single;
+    final blob = file.attachments[meta.id];
+    expect(blob, isNotNull);
+    expect(
+      utf8.decode(openAttachment(blob!, meta, opened.masterKey)),
+      v['expected_attachment_plaintext'],
+    );
   });
 
   test('UnlockedVault.create rejects fewer than 2 questions', () {

@@ -52,8 +52,9 @@ pub enum AttachmentSource {
     ///
     /// A writer copies such a member across **verbatim** — same compression
     /// method, same CRC — so carrying an attachment through a save costs a
-    /// stream copy and no crypto at all. That is only legal because the master
-    /// key is never rotated (`SPEC.md`, "Master key lifetime").
+    /// stream copy and no crypto at all. That is legal because a vault holding
+    /// an attachment does not rotate its master key (`SPEC.md`, "Master key
+    /// lifetime"), which is the entire reason for that branch of the rule.
     Carried,
     /// A file holding exactly this attachment's ciphertext and nothing else,
     /// written by [`crate::seal_attachment_to_file`] into the caller's own
@@ -361,11 +362,13 @@ pub struct MasterData {
 /// A vault's 32-byte master key, in the clear.
 ///
 /// This is the key the `data` blob — and every encrypted file attachment — is
-/// encrypted under. It is minted **once**, when the vault is
-/// created, and preserved for the life of the vault: [`AskryptFile::create`]
-/// takes it back as `Option<&MasterSecret>` so a save re-wraps the existing key
-/// under the answers instead of rotating it. Rotating it would mean decrypting
-/// and re-encrypting every blob beneath it on every save.
+/// encrypted under. Whether a write keeps it or mints a new one depends on
+/// whether the vault holds an attachment, and
+/// [`crate::master_for_write`] is that rule: a vault with none rotates on every
+/// write, one with a file keeps the key its blobs are sealed under, since
+/// rotating would mean decrypting and re-encrypting every one of them on every
+/// save. [`AskryptFile::create`] takes the decision's answer back as
+/// `Option<&MasterSecret>` and simply re-wraps whatever it is handed.
 ///
 /// [`AskryptFile::decrypt_with_master`] is how a caller gets one: it falls out
 /// of the same derivation that opens the vault, so recovering it costs nothing
