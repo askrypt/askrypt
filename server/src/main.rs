@@ -296,8 +296,9 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         },
     };
 
-    // The pages themselves are compiled into the binary; only the stylesheet
-    // and the vendored htmx are loose files, served at /assets. `captcha.js`
+    // The pages themselves are compiled into the binary; only the stylesheet,
+    // the tab icon and the vendored htmx are loose files, served at /assets
+    // (the icon also at the bare /favicon.ico). `captcha.js`
     // joins them when reCAPTCHA is on — and matters more than the others,
     // since without it no token is minted and *nobody* can sign in.
     // `google.js` likewise: without it the sign-in button never renders.
@@ -305,6 +306,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // nav on every page, and without them it is a page that does nothing.
     let mut assets = vec![
         "style.css",
+        "favicon.ico",
         "htmx.min.js",
         "vault-format.js",
         "vault-smartlock.js",

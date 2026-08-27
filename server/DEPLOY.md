@@ -42,7 +42,7 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_ADMIN_EMAIL` | *(the SMTP sender)* | Recipient of the startup notice. Unset sends it to `ASKRYPT_SMTP_FROM`, which is usually a mailbox you already own |
 | `ASKRYPT_DATA_DIR` | `data` | SQLite db + vault blobs. Set an absolute path in production |
 | `ASKRYPT_BACKEND` | `sqlite` | `sqlite` or `memory` (nothing persisted — dev only) |
-| `ASKRYPT_STATIC_DIR` | `server/static` | Assets served at `/assets` (stylesheet + vendored htmx). The default is relative to the working directory |
+| `ASKRYPT_STATIC_DIR` | `server/static` | Assets served at `/assets` (stylesheet, tab icon, vendored htmx, viewer modules); the tab icon is also served at `/favicon.ico`. The default is relative to the working directory |
 | `ASKRYPT_GOOGLE_CLIENT_IDS` | *(empty)* | Comma-separated OAuth client ids accepted as ID-token audiences. Empty disables Google sign-in (501). **The first is also the website's own "Sign in with Google" button**, so it must be a *Web application* client whose authorized JavaScript origins include `https://<your domain>`; list the native ones after it |
 | `ASKRYPT_TRUST_PROXY` | `false` | Believe `X-Real-IP` / `X-Forwarded-For`. **Only when the proxy is the sole route in** |
 | `ASKRYPT_HSTS` | `false` | Send `Strict-Transport-Security`. Enable once TLS is confirmed |

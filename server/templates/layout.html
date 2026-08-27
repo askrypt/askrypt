@@ -13,6 +13,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
 <title>{% block title %}Askrypt{% endblock %}</title>
+{#- The tab icon. Also served at the bare /favicon.ico, which is where a
+    browser looks for a bookmark or a page whose <head> it never parsed. -#}
+<link rel="icon" href="/assets/favicon.ico" sizes="128x128">
 <link rel="stylesheet" href="/assets/style.css">
 <script src="/assets/htmx.min.js" defer></script>
 {#- Pages that need more than the site-wide chrome. Only the auth pages use

@@ -357,6 +357,10 @@ async fn the_landing_page_renders_from_a_template() {
     assert!(html.starts_with("<!doctype html>"), "not a full page");
     assert!(html.contains("/assets/style.css"), "stylesheet not linked");
     assert!(html.contains("/assets/htmx.min.js"), "htmx not linked");
+    assert!(
+        html.contains(r#"<link rel="icon" href="/assets/favicon.ico""#),
+        "tab icon not linked"
+    );
     // The CSP forbids htmx's injected indicator stylesheet.
     assert!(html.contains("includeIndicatorStyles"));
 }
@@ -376,6 +380,36 @@ async fn the_vendored_assets_are_served_under_assets() {
         // Cacheable, but never reused without asking: the file changes while
         // its URL does not, and a stale stylesheet is a visible bug.
         assert_eq!(headers[header::CACHE_CONTROL], "no-cache", "{path}");
+    }
+}
+
+/// The tab icon is linked from every page, and a browser also asks for it at
+/// the root — for a bookmark, or for a response whose `<head>` it never
+/// parsed. Both paths must answer the same image, not the HTML 404 page.
+#[tokio::test]
+async fn the_tab_icon_is_served_at_assets_and_at_the_root() {
+    let app = app();
+    let shipped =
+        std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/favicon.ico"))
+            .expect("server/static/favicon.ico is shipped");
+
+    for path in ["/assets/favicon.ico", "/favicon.ico"] {
+        let response = app.clone().oneshot(get(path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let headers = response.headers().clone();
+        let content_type = headers[header::CONTENT_TYPE].to_str().unwrap().to_string();
+        assert!(
+            content_type.starts_with("image/"),
+            "{path} got {content_type}"
+        );
+        // Same reasoning as the other assets: one URL, a file that may change.
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache", "{path}");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            bytes.as_ref(),
+            shipped.as_slice(),
+            "{path} served other bytes"
+        );
     }
 }
 

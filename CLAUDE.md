@@ -365,7 +365,11 @@ next request.
   device_limiter)` at the
   root (all three limiters shared with their `/api/v1` twins); the configured static dir
   mounted at `/assets` (`tower-http` `ServeDir`, under `hardening::revalidate`
-  so an edited `style.css` can't linger in a browser cache); and an HTML 404
+  so an edited `style.css` can't linger in a browser cache); the tab icon
+  again at the bare `/favicon.ico` (`ServeFile` over the same directory, under
+  the same `revalidate`), since a browser asks for that path for a bookmark or
+  for a response whose `<head>` it never parsed and the HTML 404 fallback
+  would answer a whole page to something that wanted an image; and an HTML 404
   fallback.
   **`POST /api/v1/auth/{register,login}` are opt-in** (`ASKRYPT_PASSWORD_API`,
   default off) and are *not registered* when disabled rather than answering
@@ -914,8 +918,9 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 51 tests:
-  template rendering, `/assets`, the HTML-404-vs-JSON-404 split, cookie
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 54 tests:
+  template rendering, `/assets` (including the tab icon, byte-identical at
+  both of its paths), the HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
   `GET /api/v1/me/sessions` → revoke → signed out, the 7.3 profile round trip
@@ -1031,7 +1036,9 @@ next request.
   client id and every value the viewer reads off a row reach the scripts as
   `data-` attributes. Confirmation steps are `<details>` disclosures,
   not scripted dialogs — the CSP forbids the inline handler. `static/` holds
-  `style.css`, the vendored `htmx.min.js` (2.0.10), `captcha.js`,
+  `style.css`, `favicon.ico` (the tab icon `layout.html` links on every page,
+  a copy of the desktop app's `static/logo-128.ico`), the vendored
+  `htmx.min.js` (2.0.10), `captcha.js`,
   `google.js` and the four viewer modules, served at
   `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN,
   and the viewer keeps it that way: it is four hand-written ES modules with no

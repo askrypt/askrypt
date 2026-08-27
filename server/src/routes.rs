@@ -7,7 +7,8 @@
 //!
 //! Website (Phase 7): the HTML pages in [`crate::web`] are explicit routes at
 //! the root, the configured static dir is mounted at `/assets` for the
-//! stylesheet and the vendored htmx, and unknown paths get an HTML 404. The
+//! stylesheet, the tab icon and the vendored htmx (with the icon also served
+//! at the bare `/favicon.ico`), and unknown paths get an HTML 404. The
 //! Phase 1 SPA fallback (every unknown path served `index.html`) is gone —
 //! the site is server-rendered, so there are no client-side routes to
 //! rescue.
@@ -37,7 +38,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use tokio::sync::Semaphore;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth;
 use crate::clientip::ClientIpPolicy;
@@ -144,6 +145,20 @@ pub fn router(state: AppState, config: &Config) -> Router {
             "/assets",
             Router::new()
                 .fallback_service(ServeDir::new(&config.static_dir))
+                .layer(middleware::from_fn(hardening::revalidate)),
+        )
+        // The tab icon is linked from every page as /assets/favicon.ico, but a
+        // browser also asks for it at the root — for a bookmark, or for a
+        // response whose <head> it never parsed (a download, an error). Served
+        // rather than left to the HTML 404 fallback, which would answer a
+        // whole page to something that only ever wanted an image.
+        .merge(
+            Router::new()
+                .route_service(
+                    "/favicon.ico",
+                    ServeFile::new(config.static_dir.join("favicon.ico")),
+                )
+                // Same reasoning as /assets: one URL, a file that may change.
                 .layer(middleware::from_fn(hardening::revalidate)),
         )
         .merge(web::routes(auth_limiter, profile_limiter, device_limiter))
