@@ -14,6 +14,11 @@
   --danger: #b3261e;
   --danger-ink: #ffffff;
   --ok: #1c6b3c;
+  /* Landing-page-only accents: a warm metal for the unlock mechanism, a
+     muted teal for its secondary layer. Nothing outside landing.html reads
+     these, so they stay separate from --accent rather than replacing it. */
+  --brass: #a97a2e;
+  --steel: #3f6a76;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -28,6 +33,8 @@
        ink rather than the white that works on the light theme's red. */
     --danger-ink: #1b1b1f;
     --ok: #7fd1a0;
+    --brass: #d9a75c;
+    --steel: #7fb0bb;
   }
 }
 
@@ -63,7 +70,12 @@ header.site {
   text-decoration: none;
   color: inherit;
 }
-.brand .lock { color: var(--accent); }
+.brand-mark {
+  width: 1.25rem;
+  height: 1.25rem;
+  vertical-align: -0.3rem;
+  margin-right: 0.35rem;
+}
 header nav {
   display: flex;
   align-items: center;
@@ -126,6 +138,178 @@ p { margin: 0.6rem 0; }
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1.5rem; margin: 1rem 0; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
+
+/* ---------- landing page ---------- */
+
+.landing-eyebrow {
+  margin: 0 0 0.5rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+.landing-fineprint {
+  margin-top: 1.25rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.landing-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(2rem, 5vw, 3.5rem);
+}
+.landing-hero-copy { flex: 1 1 26rem; }
+.landing-hero h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.1rem, 4.4vw, 3.4rem);
+  line-height: 1.1;
+}
+.landing-hero h1 em { font-style: italic; color: var(--brass); }
+
+/* A CSS-drawn combination dial standing in for the layered unlock: four
+   labels (Q1, Q2, MK, AES) tied to the four steps in .landing-sequence
+   below. No image asset, so it costs nothing to keep in step with the copy
+   and nothing to serve. */
+.landing-dial {
+  position: relative;
+  flex: 0 1 18rem;
+  width: 100%;
+  max-width: 18rem;
+  aspect-ratio: 1;
+  margin-inline: auto;
+  padding: 1.6rem;
+}
+.landing-dial-ticks {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: repeating-conic-gradient(
+    from 0deg,
+    var(--brass) 0deg 0.55deg,
+    transparent 0.55deg 15deg
+  );
+  opacity: 0.45;
+}
+.landing-dial-ring { position: absolute; border-radius: 50%; }
+.landing-dial-ring--outer { inset: 9%; background: var(--card); border: 1px solid var(--line); }
+.landing-dial-ring--mid { inset: 24%; border: 1px solid var(--steel); opacity: 0.6; }
+.landing-dial-ring--inner { inset: 38%; border: 1px dashed var(--line); }
+.landing-dial-needle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 30%;
+  background: linear-gradient(var(--brass), transparent);
+  transform-origin: top center;
+  transform: translateX(-50%) rotate(-52deg);
+  animation: landing-dial-settle 1.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.landing-dial-core {
+  position: absolute;
+  inset: 45%;
+  border-radius: 50%;
+  background: var(--brass);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+.landing-dial-label {
+  position: absolute;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.landing-dial-label--q1 { top: 0; left: 50%; transform: translateX(-50%); }
+.landing-dial-label--q2 { right: 0; top: 50%; transform: translateY(-50%); }
+.landing-dial-label--mk { bottom: 0; left: 50%; transform: translateX(-50%); }
+.landing-dial-label--aes { left: 0; top: 50%; transform: translateY(-50%); }
+
+@keyframes landing-dial-settle {
+  from { transform: translateX(-50%) rotate(-140deg); opacity: 0; }
+  to { transform: translateX(-50%) rotate(-52deg); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-dial-needle { animation: none; transform: translateX(-50%) rotate(-52deg); }
+}
+
+/* The three stat cards reuse .cards/article; only the value/label pair
+   inside each is landing-specific. */
+.landing-stats { margin: 2.5rem 0; }
+.landing-stat-value {
+  margin: 0;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--brass);
+}
+.landing-stat-label { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.88rem; }
+
+.landing-block { margin-top: 3rem; }
+.landing-block-head { max-width: 38rem; margin-bottom: 1.75rem; }
+.landing-block-head h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+  margin: 0.4rem 0 0;
+}
+
+/* The unlock sequence is a genuine order (each step depends on the one
+   before it), which is what justifies numbering it. */
+.landing-sequence { list-style: none; margin: 0; padding: 0; max-width: 44rem; }
+.landing-sequence li {
+  display: flex;
+  gap: 1.2rem;
+  padding: 1.4rem 0;
+  border-top: 1px solid var(--line);
+}
+.landing-sequence li:last-child { border-bottom: 1px solid var(--line); }
+.landing-seq-num {
+  flex: 0 0 auto;
+  padding-top: 0.15rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.95rem;
+  color: var(--brass);
+}
+.landing-sequence h3 { margin: 0; font-size: 1.05rem; }
+.landing-sequence p { margin: 0.4rem 0 0; color: var(--muted); }
+
+/* The install manifest: one row per platform, styled like the vault
+   listings' tables rather than app-store buttons, since there is nothing
+   here to click — just what a release actually contains. */
+.landing-ledger {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--card);
+}
+.landing-ledger-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--line);
+}
+.landing-ledger-row:first-child { border-top: none; }
+.landing-code {
+  flex: 0 0 auto;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  color: var(--brass);
+  border: 1px solid var(--brass);
+  border-radius: 6px;
+  padding: 0.25rem 0.45rem;
+}
+.landing-platform { flex: 0 0 auto; min-width: 7rem; font-weight: 600; }
+.landing-detail { flex: 1 1 16rem; color: var(--muted); font-size: 0.92rem; }
 
 /* ---------- forms ---------- */
 

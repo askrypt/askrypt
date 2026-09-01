@@ -1,38 +1,157 @@
 {% extends "layout.html" %}
 
 {% block content %}
-<section class="hero">
-  <h1>Your vaults, backed up. Still unreadable to us.</h1>
-  <p class="lead">Askrypt is a password manager with no master password: you
-  unlock a vault by answering your own security questions. This site keeps
-  your encrypted vault files safe across devices.</p>
+<section class="hero landing-hero">
+  <div class="landing-hero-copy">
+    <p class="landing-eyebrow">No master password</p>
+    <h1>Your memory is the <em>master key.</em></h1>
+    <p class="lead">Askrypt is a password manager with no master password: you
+    unlock a vault by answering your own security questions. Each answer
+    unlocks the next, one layer at a time, until the last one opens your
+    vault.</p>
 {%- if chrome.email.is_none() %}
-  <p class="cta">
-    <a class="button" href="/register">Create account</a>
-    <a href="/login">or sign in</a>
-  </p>
+    <p class="cta">
+      <a class="button" href="/register">Create account</a>
+      <a href="/login">or sign in</a>
+    </p>
 {%- else %}
-  <p class="cta"><a class="button" href="/account">Go to your account</a></p>
+    <p class="cta"><a class="button" href="/account">Go to your account</a></p>
 {%- endif %}
+    <p class="landing-fineprint">AES-256-CBC &nbsp;&middot;&nbsp; PBKDF2, 600,000 rounds &nbsp;&middot;&nbsp; open source</p>
+  </div>
+  <div class="landing-dial" aria-hidden="true">
+    <div class="landing-dial-ticks"></div>
+    <div class="landing-dial-ring landing-dial-ring--outer"></div>
+    <div class="landing-dial-ring landing-dial-ring--mid"></div>
+    <div class="landing-dial-ring landing-dial-ring--inner"></div>
+    <div class="landing-dial-needle"></div>
+    <div class="landing-dial-core">&#128274;</div>
+    <span class="landing-dial-label landing-dial-label--q1">Q1</span>
+    <span class="landing-dial-label landing-dial-label--q2">Q2</span>
+    <span class="landing-dial-label landing-dial-label--mk">MK</span>
+    <span class="landing-dial-label landing-dial-label--aes">AES</span>
+  </div>
 </section>
 
-<section class="cards">
+<section class="cards landing-stats">
   <article>
-    <h2>Encrypted before it leaves your device</h2>
-    <p>Vaults are AES-256 encrypted by the app you run. The server stores
-    opaque bytes and a file name &mdash; nothing else.</p>
+    <p class="landing-stat-value">AES-256-CBC</p>
+    <p class="landing-stat-label">the cipher, start to finish</p>
   </article>
   <article>
-    <h2>Openable from a phone, if you need it</h2>
-    <p><a href="/open">Open a vault</a> unlocks one in your browser, on your
-    device. The server still only ever holds encrypted bytes &mdash; but the
-    page is code we sent you, so the apps remain the stronger option.</p>
+    <p class="landing-stat-value">600,000</p>
+    <p class="landing-stat-label">PBKDF2 rounds per answer</p>
   </article>
   <article>
-    <h2>Same account everywhere</h2>
-    <p>Desktop and mobile sign in with these credentials through the
-    <code>/api/v1</code> API. Every signed-in device shows up in your account
-    and can be revoked from there.</p>
+    <p class="landing-stat-value">0</p>
+    <p class="landing-stat-label">master passwords to remember</p>
   </article>
+</section>
+
+<section class="landing-block">
+  <div class="landing-block-head">
+    <p class="landing-eyebrow">The unlock sequence</p>
+    <h2>Four layers, one at a time.</h2>
+  </div>
+  <ol class="landing-sequence">
+    <li>
+      <span class="landing-seq-num">01</span>
+      <div>
+        <h3>Answer your first question.</h3>
+        <p>What you type is normalized &mdash; lowercased, whitespace and
+        dashes stripped &mdash; never stored as you typed it.</p>
+      </div>
+    </li>
+    <li>
+      <span class="landing-seq-num">02</span>
+      <div>
+        <h3>Each answer unlocks the next question.</h3>
+        <p>One layer at a time, every answer is stretched through
+        PBKDF2-HMAC-SHA256 at 600,000 iterations before it can unlock what
+        comes after it.</p>
+      </div>
+    </li>
+    <li>
+      <span class="landing-seq-num">03</span>
+      <div>
+        <h3>All your answers together unlock the master key.</h3>
+        <p>Get one wrong, and the vault stays exactly as sealed as it was
+        before you started &mdash; no hint, no recovery email.</p>
+      </div>
+    </li>
+    <li>
+      <span class="landing-seq-num">04</span>
+      <div>
+        <h3>The master key decrypts your vault.</h3>
+        <p>AES-256-CBC, entirely on your device. Your vault travels as a
+        single portable <code>.askrypt</code> file.</p>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section class="landing-block">
+  <div class="landing-block-head">
+    <p class="landing-eyebrow">Everywhere, still sealed</p>
+    <h2>Stored anywhere. Readable only by you.</h2>
+  </div>
+  <div class="cards">
+    <article>
+      <h2>Encrypted before it leaves your device</h2>
+      <p>Vaults are AES-256 encrypted by the app you run. The server stores
+      opaque bytes and a file name &mdash; nothing else.</p>
+    </article>
+    <article>
+      <h2>Openable from a phone, if you need it</h2>
+      <p><a href="/open">Open a vault</a> unlocks one in your browser, on
+      your device. The server still only ever holds encrypted bytes &mdash;
+      but the page is code we sent you, so the apps remain the stronger
+      option.</p>
+    </article>
+    <article>
+      <h2>Same account everywhere</h2>
+      <p>Desktop and mobile sign in with these credentials through the
+      <code>/api/v1</code> API. Every signed-in device shows up in your
+      account and can be revoked from there.</p>
+    </article>
+  </div>
+</section>
+
+<section class="landing-block">
+  <div class="landing-block-head">
+    <p class="landing-eyebrow">Get Askrypt</p>
+    <h2>Pick your platform.</h2>
+  </div>
+  <div class="landing-ledger">
+    <div class="landing-ledger-row">
+      <span class="landing-code">LX</span>
+      <span class="landing-platform">Linux</span>
+      <span class="landing-detail">x86_64 tar.gz, a .deb package, or build
+      from source with cargo</span>
+      <span class="tag">checksummed</span>
+    </div>
+    <div class="landing-ledger-row">
+      <span class="landing-code">MA</span>
+      <span class="landing-platform">macOS</span>
+      <span class="landing-detail">Apple Silicon (ARM64) app bundle</span>
+      <span class="tag">checksummed</span>
+    </div>
+    <div class="landing-ledger-row">
+      <span class="landing-code">WN</span>
+      <span class="landing-platform">Windows</span>
+      <span class="landing-detail">MSVC and GNU zip archives, or an Inno
+      Setup installer</span>
+      <span class="tag">checksummed</span>
+    </div>
+    <div class="landing-ledger-row">
+      <span class="landing-code">MB</span>
+      <span class="landing-platform">Android &amp; iOS</span>
+      <span class="landing-detail">A pure-Dart mobile app, not yet on the
+      App Store or Play Store</span>
+      <span class="tag">in development</span>
+    </div>
+  </div>
+  <p class="hint">Every desktop release ships with SHA-256 checksums. Source
+  and releases live on GitHub.</p>
 </section>
 {% endblock %}
