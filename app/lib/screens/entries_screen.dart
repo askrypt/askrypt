@@ -61,7 +61,12 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
 
   bool _matches(EntrySummary s) {
     if (s.hidden && !_showHidden) return false;
-    if (_tagFilter != null && !s.tags.contains(_tagFilter)) return false;
+    // Folded, like the search below and like `src/data.rs::same_tag`: `Work`
+    // and `work` are one tag to whoever typed them.
+    if (_tagFilter != null &&
+        !s.tags.any((t) => t.toLowerCase() == _tagFilter)) {
+      return false;
+    }
     if (_query.isEmpty) return true;
     final q = _query.toLowerCase();
     return s.name.toLowerCase().contains(q) ||
@@ -138,8 +143,14 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
 
     final summaries = vault.summaries.where(_matches).toList()
       ..sort((a, b) => b.modified.compareTo(a.modified));
-    final allTags =
-        (vault.summaries.expand((s) => s.tags).toSet().toList()..sort());
+    // Keyed by the folded tag, valued by the first spelling seen, so a vault
+    // holding both `Work` and `work` offers one chip rather than two that each
+    // show half the entries. `_tagFilter` holds the key.
+    final allTags = <String, String>{};
+    for (final tag in vault.summaries.expand((s) => s.tags)) {
+      allTags.putIfAbsent(tag.toLowerCase(), () => tag);
+    }
+    final tagKeys = allTags.keys.toList()..sort();
 
     return Scaffold(
       appBar: AppBar(
@@ -191,21 +202,21 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
               onChanged: (v) => setState(() => _query = v),
             ),
           ),
-          if (allTags.isNotEmpty)
+          if (tagKeys.isNotEmpty)
             SizedBox(
               height: 48,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 children: [
-                  for (final tag in allTags)
+                  for (final key in tagKeys)
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: FilterChip(
-                        label: Text(tag),
-                        selected: _tagFilter == tag,
+                        label: Text(allTags[key]!),
+                        selected: _tagFilter == key,
                         onSelected: (sel) =>
-                            setState(() => _tagFilter = sel ? tag : null),
+                            setState(() => _tagFilter = sel ? key : null),
                       ),
                     ),
                 ],

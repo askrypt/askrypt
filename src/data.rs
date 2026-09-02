@@ -207,6 +207,23 @@ pub fn clean_hash_tag(tag: &str) -> String {
     tag.strip_prefix('#').unwrap_or(tag).to_string()
 }
 
+/// The key two tags are the same tag under.
+///
+/// Tags are free text typed by hand, once per entry, so `Work` and `work` are
+/// one tag to the person who typed them and must be one tag to the rail: the
+/// alternative is two rows that each hide half the entries. Folded with
+/// `to_lowercase` rather than `eq_ignore_ascii_case` because a vault may carry
+/// Cyrillic tags (see `translit.rs`), which ASCII folding would leave split.
+pub fn tag_key(tag: &str) -> String {
+    tag.to_lowercase()
+}
+
+/// Whether two tags name the same tag, ignoring case. The counterpart of
+/// [`entry_matches_filter`]'s tag search, which is likewise case-insensitive.
+pub fn same_tag(a: &str, b: &str) -> bool {
+    tag_key(a) == tag_key(b)
+}
+
 /// The one datetime format the UI uses, everywhere it shows a date and time:
 /// local time zone, `Aug 9, 2026 14:32`. Every rendering path below goes
 /// through it, so entry stamps, the vault write stamp and the server vault
@@ -405,6 +422,15 @@ mod tests {
         assert_eq!(card_subtitle(&holder_only), "Ruslan A.");
 
         assert_eq!(card_subtitle(&new_entry()), "");
+    }
+
+    #[test]
+    fn tags_are_matched_ignoring_case() {
+        assert!(same_tag("Work", "work"));
+        assert!(same_tag("WORK", "work"));
+        assert!(same_tag("Работа", "работа"));
+        assert!(!same_tag("work", "home"));
+        assert_eq!(tag_key("Work"), tag_key("wOrK"));
     }
 
     #[test]

@@ -26,7 +26,7 @@ mod smartlock;
 mod theme;
 mod tray;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -446,7 +446,10 @@ impl App {
                 Section::All => show_hidden || !entry.hidden,
                 Section::Hidden => entry.hidden,
                 Section::Type(t) => &entry.entry_type == t && (show_hidden || !entry.hidden),
-                Section::Tag(t) => entry.tags.contains(t) && (show_hidden || !entry.hidden),
+                Section::Tag(t) => {
+                    entry.tags.iter().any(|tag| data::same_tag(tag, t))
+                        && (show_hidden || !entry.hidden)
+                }
             })
             .filter(|(_, entry)| {
                 self.query.is_empty() || data::entry_matches_filter(entry, &self.query)
@@ -485,16 +488,24 @@ impl App {
             .collect()
     }
 
-    /// Union of all tags, likewise across hidden entries too.
+    /// Union of all tags, likewise across hidden entries too — one row per
+    /// [`data::tag_key`], keeping the first spelling seen, so a vault holding
+    /// both `Work` and `work` lists one tag rather than two that each show
+    /// half the entries. Ordered by that key, so the rail is not split by case
+    /// the way a plain string sort would split it.
     fn tags(&self) -> Vec<String> {
-        self.session
+        let mut tags: BTreeMap<String, String> = BTreeMap::new();
+        for tag in self
+            .session
             .entries()
             .iter()
-            .flat_map(|entry| entry.tags.iter().cloned())
+            .flat_map(|entry| entry.tags.iter())
             .filter(|t| !t.is_empty())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
+        {
+            tags.entry(data::tag_key(tag))
+                .or_insert_with(|| tag.clone());
+        }
+        tags.into_values().collect()
     }
 
     fn selected_entry(&self) -> Option<&SecretEntry> {

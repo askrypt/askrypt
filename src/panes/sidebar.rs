@@ -9,7 +9,7 @@
 use iced::widget::{Text, button, column, container, row, rule, scrollable, text};
 use iced::{Element, Length, alignment::Vertical};
 
-use crate::data::{TYPE_CARD, TYPE_FILE, make_hash_tag};
+use crate::data::{TYPE_CARD, TYPE_FILE, make_hash_tag, same_tag};
 use crate::{App, GlobalMsg, Message, Pane, Section, VaultMsg, icon, theme};
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -75,7 +75,10 @@ fn filters(app: &App) -> iced::widget::Column<'_, Message> {
     if !tags.is_empty() {
         items = items.push(section_header("TAGS"));
         for tag in tags {
-            let selected = on_items && app.section == Section::Tag(tag.clone());
+            // Compared with `same_tag` rather than by equality because the
+            // detail pane selects a tag with the *entry's* spelling of it,
+            // which need not be the spelling this row carries.
+            let selected = on_items && matches!(&app.section, Section::Tag(t) if same_tag(t, &tag));
             items = items.push(nav_row(
                 icon::tag(14),
                 make_hash_tag(&tag),

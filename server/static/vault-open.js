@@ -532,7 +532,7 @@ function visibleEntries() {
   return state.entries
     .map((entry, index) => ({ entry, index }))
     .filter(({ entry }) => (showHidden || !entry.hidden)
-      && (tag === "" || entry.tags.includes(tag))
+      && (tag === "" || entry.tags.some((t) => tagKey(t) === tag))
       && matches(entry, query));
 }
 
@@ -568,13 +568,26 @@ function renderEntries() {
   }
 }
 
+/// The key two tags are the same tag under, as in `src/data.rs::tag_key`:
+/// `Work` and `work` are one tag to whoever typed them, so the picker must
+/// offer one option rather than two that each hide half the entries.
+function tagKey(tag) {
+  return tag.toLowerCase();
+}
+
 function refreshTags() {
   const select = $("open-tag");
   const chosen = select.value;
-  const tags = [...new Set(state.entries.flatMap((e) => e.tags))].sort();
+  // Keyed by the folded tag, valued by the first spelling seen — the option's
+  // value is the key, which is what `visibleEntries` matches against.
+  const tags = new Map();
+  for (const tag of state.entries.flatMap((e) => e.tags)) {
+    if (!tags.has(tagKey(tag))) tags.set(tagKey(tag), tag);
+  }
+  const keys = [...tags.keys()].sort();
   select.replaceChildren(new Option("All tags", ""));
-  for (const tag of tags) select.append(new Option(`#${tag}`, tag));
-  select.value = tags.includes(chosen) ? chosen : "";
+  for (const key of keys) select.append(new Option(`#${tags.get(key)}`, key));
+  select.value = tags.has(chosen) ? chosen : "";
 }
 
 // ---------------------------------------------------------------------------
