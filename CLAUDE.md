@@ -918,9 +918,11 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 54 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 55 tests:
   template rendering, `/assets` (including the tab icon, byte-identical at
-  both of its paths), the HTML-404-vs-JSON-404 split, cookie
+  both of its paths, and `landing.js` served beside the hero text it
+  animates, which the landing page must carry in full either way), the
+  HTML-404-vs-JSON-404 split, cookie
   attributes, the CSRF rejections for both form and multipart, fragment vs.
   full page, register-in-browser → find the session in
   `GET /api/v1/me/sessions` → revoke → signed out, the 7.3 profile round trip
@@ -1025,7 +1027,8 @@ next request.
   rule: its root is a `<div id="auth-form">` rather than the form, because
   the card holds *two* forms — the password one and the hidden one the Google
   button submits — and HTML forbids nesting them; `hx-target` names the id.
-  `layout.html`'s `{% block head %}` has two callers now:
+  `layout.html`'s `{% block head %}` has three callers now:
+  `landing.html` loading `/assets/landing.js`;
   `auth_page.html` loading Google's `api.js` plus
   `/assets/captcha.js` when a site key is configured, and `/assets/google.js`
   plus `accounts.google.com/gsi/client` when a web client id is; and
@@ -1039,10 +1042,28 @@ next request.
   `style.css`, `favicon.ico` (the tab icon `layout.html` links on every page,
   a copy of the desktop app's `static/logo-128.ico`), the vendored
   `htmx.min.js` (2.0.10), `captcha.js`,
-  `google.js` and the four viewer modules, served at
+  `google.js`, `landing.js` and the four viewer modules, served at
   `/assets` — there is no `index.html` any more. No Node, no bundler, no CDN,
   and the viewer keeps it that way: it is four hand-written ES modules with no
   dependencies and no build step.
+
+  **`landing.js`** is the hero's typing demo and holds nothing but DOM: a
+  strong master password typed out character by character, the question it
+  raises ("but could you remember it?"), and then the questions you already
+  know the answers to, flashed past. It is decoration with a point to make,
+  so it is written to be *skippable in both directions* — the panel's markup
+  in `landing.html` already carries every line in full, and the script only
+  replays text it reads back out of the DOM, so a visitor with no JavaScript
+  and a visitor who asked for `prefers-reduced-motion` (where it never starts
+  at all) read the same static block. Once it does start it marks the panel
+  `aria-hidden`, because a screen reader is served by the transcript beside
+  it rather than by text arriving one character at a time, and it holds each
+  typed line at the height its finished text needs (re-measured on resize),
+  since a sentence wrapping mid-type would otherwise grow the panel and shove
+  the hero beside it. The loop parks itself while the tab is hidden or the
+  panel is off screen. Unconditional in `main`'s startup asset check for a
+  milder reason than the viewer modules: without it the landing page is still
+  the whole landing page.
 
   **`vault-format.js`** is the browser port of the vault format — a port of
   `core/src/lib.rs` + `core/src/types.rs`, following `app/lib/crypto/`

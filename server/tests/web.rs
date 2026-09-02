@@ -365,6 +365,40 @@ async fn the_landing_page_renders_from_a_template() {
     assert!(html.contains("includeIndicatorStyles"));
 }
 
+/// The hero's typing demo is an enhancement, not the page: the script is
+/// external (the CSP allows nothing else) and every line it replays is in the
+/// markup already, so a visitor without JavaScript reads the same thing.
+#[tokio::test]
+async fn the_landing_demo_ships_its_text_and_loads_its_script_externally() {
+    let (_, _, html) = send(&app(), get("/")).await;
+
+    assert!(
+        html.contains(r#"<script src="/assets/landing.js" defer></script>"#),
+        "landing.js not linked"
+    );
+    assert!(html.contains("data-landing-demo"), "demo panel missing");
+    for line in [
+        "Tq7#vB!m92$Lp0Zx",
+        "strong enough",
+        "But could you remember",
+        "You already know a lot of",
+        "The street you lived on when you were ten?",
+        "What did you call your grandma?",
+    ] {
+        assert!(html.contains(line), "static fallback is missing {line:?}");
+    }
+
+    let (status, headers, body) = send(&app(), get("/assets/landing.js")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("javascript")
+    );
+    assert!(!body.is_empty());
+}
+
 #[tokio::test]
 async fn the_vendored_assets_are_served_under_assets() {
     let app = app();

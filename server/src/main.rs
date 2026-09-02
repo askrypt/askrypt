@@ -305,11 +305,15 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // `google.js` likewise: without it the sign-in button never renders.
     // The four viewer modules are unconditional: `/open` is linked from the
     // nav on every page, and without them it is a page that does nothing.
+    // `landing.js` is unconditional for a milder reason — the landing page
+    // stays readable without it, since the panel it animates ships with all
+    // of its text in the markup.
     let mut assets = vec![
         "style.css",
         "favicon.ico",
         "logo.png",
         "htmx.min.js",
+        "landing.js",
         "vault-format.js",
         "vault-smartlock.js",
         "vault-passgen.js",

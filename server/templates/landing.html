@@ -1,5 +1,11 @@
 {% extends "layout.html" %}
 
+{#- The hero's typing demo. External, like every other script here: the CSP
+    forbids an inline one. Deferred, so the panel is parsed before it runs. -#}
+{% block head %}
+<script src="/assets/landing.js" defer></script>
+{% endblock %}
+
 {% block content %}
 <section class="hero landing-hero">
   <div class="landing-hero-copy">
@@ -17,6 +23,38 @@
 {%- else %}
     <p class="cta"><a class="button" href="/account">Go to your account</a></p>
 {%- endif %}
+  </div>
+
+{#- The demo panel. Every line is here in full, so a visitor with no
+    JavaScript — or one who asked for reduced motion, where the script never
+    starts — reads the same thing as one static block; `landing.js` replays
+    what the markup already says. The transcript above it is what a screen
+    reader gets, since the panel marks itself aria-hidden the moment it
+    starts moving. -#}
+  <div class="landing-demo">
+    <p class="visually-hidden">A password like Tq7#vB!m92$Lp0Zx is strong
+    enough &mdash; but could you remember it? You already know a lot of
+    secrets: the street you lived on when you were ten, your first
+    teacher&rsquo;s name, the town where your parents met. Askrypt asks for
+    those instead.</p>
+    <div class="landing-demo-panel" data-landing-demo>
+      <p class="landing-demo-cap">Master password</p>
+      <p class="landing-demo-secret" data-demo-secret>Tq7#vB!m92$Lp0Zx</p>
+      <p class="landing-demo-verdict" data-demo-verdict>strong enough</p>
+      <p class="landing-demo-note" data-demo-note>But could you remember
+      it?</p>
+      <p class="landing-demo-note" data-demo-note>You already know a lot of
+      secrets. Use them.</p>
+      <ul class="landing-demo-questions">
+        <li data-demo-question>The street you lived on when you were ten?</li>
+        <li data-demo-question>Your first teacher&rsquo;s name?</li>
+        <li data-demo-question>The town where your parents met?</li>
+        <li data-demo-question>What did your grandma used to call you?</li>
+        <li data-demo-question>What did you call your grandma?</li>
+      </ul>
+      <p class="landing-demo-close" data-demo-close>Answers only you would
+      give &mdash; and never have to write down.</p>
+    </div>
   </div>
 </section>
 
