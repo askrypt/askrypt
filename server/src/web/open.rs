@@ -22,6 +22,11 @@
 //! `If-Match` check the apps use and runs the same quota, versioning and
 //! upload gates. A second write door would be a second place for those rules
 //! to drift.
+//!
+//! The reuse has one cost the page carries rather than the server: on those
+//! routes a save that landed and a save made without a session are the same
+//! 303, so the viewer classifies by *destination* and re-checks the account
+//! before it encrypts anything. `tests/web.rs` pins the two apart.
 
 use axum::extract::State;
 use axum::http::HeaderMap;

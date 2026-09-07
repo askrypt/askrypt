@@ -103,6 +103,13 @@ async fn lookup(headers: &HeaderMap, state: &AppState) -> Option<WebSession> {
 ///
 /// Also clears the cookie: whatever was in it is worthless, and leaving it
 /// there means paying for a store lookup on every subsequent request.
+///
+/// `LOGIN_PATH` is read here as a *value*, not merely followed:
+/// `static/vault-open.js` saves by posting to `web::vaults`' own routes, where
+/// this redirect and a save that landed are both 303s, and it tells them apart
+/// by which of the two places the response ended up. See
+/// `a_save_and_a_signed_out_save_are_both_303s_to_different_places` in
+/// `tests/web.rs`.
 fn redirect_to_login(headers: &HeaderMap) -> Response {
     let response = if is_htmx(headers) {
         // htmx follows `HX-Redirect` on a 2xx. A 303 would be followed by

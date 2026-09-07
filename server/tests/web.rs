@@ -2162,3 +2162,108 @@ async fn a_vault_name_out_of_the_store_cannot_inject_markup() {
         "name rendered as markup"
     );
 }
+
+/// The three answers the viewer's save has to tell apart, and the reason it
+/// tells them apart by *destination*: a save that landed and a save made
+/// without a session are both 303s. `vault-open.js` follows the redirect and
+/// reads `Response.url`; if these two ever answered the same place, a save that
+/// never happened would report itself as one that did — the page would drop its
+/// unsaved flag, disarm the unload guard and say "Saved." over a vault still
+/// holding every edit. There is no JS harness for that file
+/// (`scripts/vault-js-parity.mjs` covers the three crypto modules only), so
+/// this is the whole of the gate.
+#[tokio::test]
+async fn a_save_and_a_signed_out_save_are_both_303s_to_different_places() {
+    let app = app();
+    let (cookies, html) = with_vaults_page(&app, "expired@example.com").await;
+    let token = csrf_field(&html);
+
+    // 1. A save that lands.
+    let (status, headers, _) = send(
+        &app,
+        post_multipart(
+            "/vaults",
+            &cookies,
+            &token,
+            &[("name", "personal.askrypt")],
+            Some(("personal.askrypt", &vault_bytes(1))),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/vaults");
+
+    let (_, _, html) = send(&app, get_with_cookies("/vaults", &cookies)).await;
+    let id = first_vault_id(&html);
+    let etag = field_value(&html, "etag").expect("no etag in the replace form");
+
+    // The replace answers the same way; the viewer uses both routes.
+    let (status, headers, _) = send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &token,
+            &[("etag", &etag)],
+            Some(("personal.askrypt", &vault_bytes(2))),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/vaults");
+
+    // 2. The same two saves with no session: the same status, a different
+    //    place. The token is a real one and makes no difference — `WebSession`
+    //    is a `FromRequestParts` extractor and so runs before `CsrfMultipart`,
+    //    which is what makes a signed-out save a redirect rather than a 403 the
+    //    viewer would have no wording for.
+    for uri in ["/vaults".to_string(), format!("/vaults/{id}/replace")] {
+        let (status, headers, _) = send(
+            &app,
+            post_multipart(
+                &uri,
+                "",
+                &token,
+                &[("name", "personal.askrypt"), ("etag", &etag)],
+                Some(("personal.askrypt", &vault_bytes(3))),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(headers[header::LOCATION], "/login", "{uri}");
+        // The viewer follows this redirect, so the cookie it clears is what
+        // leaves the tab consistently signed out afterwards.
+        assert!(
+            set_cookies(&headers).iter().any(
+                |cookie| cookie.starts_with("askrypt_session=") && cookie.contains("Max-Age=0")
+            ),
+            "the dead session cookie was not cleared: {:?}",
+            set_cookies(&headers)
+        );
+    }
+
+    // 3. A refusal, which is the third answer and carries no `Location` at all.
+    //    The viewer reads it as a refusal precisely because the response was
+    //    *not* redirected: a refused upload re-renders at `/vaults` too, so the
+    //    path alone would not separate it from a save that landed. The sentence
+    //    it lifts has to be inside the fragment it looks in.
+    let (status, headers, html) = send(
+        &app,
+        post_multipart(
+            &format!("/vaults/{id}/replace"),
+            &cookies,
+            &token,
+            // Stale now: the replace above moved it.
+            &[("etag", &etag)],
+            Some(("personal.askrypt", &vault_bytes(4))),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !headers.contains_key(header::LOCATION),
+        "a refusal redirected"
+    );
+    assert!(html.contains(r#"id="vault-list""#), "{html}");
+    assert!(html.contains("changed on another device"), "{html}");
+}

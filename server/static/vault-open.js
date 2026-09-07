@@ -37,6 +37,13 @@ const CLIPBOARD_MS = 30 * 1000;
 
 const VAULT_EXTENSION = ".askrypt";
 
+// Where this page's own fetches can end up, mirroring `web::session::LOGIN_PATH`
+// and `web::vaults::VAULTS_PATH`. Both are read off a finished response rather
+// than asked for by name — see `landedOnLogin`.
+const LOGIN_PATH = "/login";
+const VAULTS_PATH = "/vaults";
+const OPEN_PATH = "/open";
+
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------------------
@@ -167,6 +174,33 @@ async function attempt(label, fn) {
 }
 
 // ---------------------------------------------------------------------------
+// The session behind this page can end while the page stays open
+// ---------------------------------------------------------------------------
+//
+// Nothing here reloads. A tab can sit unlocked for hours, and in that time the
+// account behind it can go away — signed out in another tab, revoked from the
+// device list, or simply seven days old (`web::session::WEB_SESSION_TTL_DAYS`).
+// Every route this page fetches from is behind `WebSession`, whose rejection is
+// a 303 to the sign-in page — and on the two save routes that is the same
+// status a save that *landed* answers with. The only thing separating them is
+// where the response ended up, so these fetches follow their redirects and ask.
+//
+// `Response.url` is the *final* URL and is fully readable because /login is
+// same-origin. A `redirect: "manual"` fetch is what this used to do, and it is
+// exactly what made the two indistinguishable: an unfollowed 303 arrives as an
+// opaque response with no status, no headers and no URL at all, so the one that
+// meant "nothing was written" read as the one that meant "saved".
+
+/// Whether a fetch that was allowed to follow its redirects ended up on the
+/// sign-in page, i.e. whether the session behind this page is gone.
+function landedOnLogin(res) {
+  // Resolved against this page for a response carrying no URL of its own: that
+  // gives /open, which is not /login, so an odd response reads as "still signed
+  // in" and the ordinary checks after this one still apply.
+  return new URL(res.url, location.href).pathname === LOGIN_PATH;
+}
+
+// ---------------------------------------------------------------------------
 // Step 1 — choosing a vault
 // ---------------------------------------------------------------------------
 
@@ -189,11 +223,19 @@ function openStored(button) {
     const res = await fetch(`/vaults/${encodeURIComponent(source.id)}/download`, {
       credentials: "same-origin",
     });
+    // Signed out, this route redirects to the sign-in page and `fetch` follows
+    // it: what arrives is that page's HTML, at 200, and handing it to
+    // `parseVault` would report a dead session as "not a ZIP archive".
+    if (landedOnLogin(res)) {
+      throw new VaultError(
+        "You are signed out. Sign in again to open a vault from your account.",
+      );
+    }
     if (!res.ok) {
       throw new VaultError(
         res.status === 404
           ? "That vault is no longer on this account."
-          : "Could not fetch that vault. Try signing in again.",
+          : "Could not fetch that vault. Try again.",
       );
     }
     await loadBytes(new Uint8Array(await res.arrayBuffer()), source);
@@ -236,6 +278,11 @@ async function refreshPicker() {
   const parsed = new DOMParser().parseFromString(await res.text(), "text/html");
   const fresh = parsed.getElementById("open-vault-list");
   const current = $("open-vault-list");
+  // No picker in what came back means one of two things, and treats them alike:
+  // the fetch did not return the fragment, or the session ended and the sign-in
+  // page came back instead. Deliberately not told apart here — this is also
+  // called *after* a save that landed, and turning that into an error would be
+  // the very bug this file's session handling exists to avoid.
   if (!fresh || !current) return false;
   current.replaceWith(fresh);
   bindPicker();
@@ -248,10 +295,15 @@ async function refreshPicker() {
 
 const utf8 = new TextEncoder();
 
-/// Whether there is an account behind this page. The picker is rendered for a
-/// signed-in visitor and for nobody else — including one whose account holds
-/// no vaults yet, whose list says so rather than being left out — so its
-/// presence is the answer, and no separate flag has to be kept in step.
+/// Whether there was an account behind this page *when it was rendered*. The
+/// picker is rendered for a signed-in visitor and for nobody else — including
+/// one whose account holds no vaults yet, whose list says so rather than being
+/// left out — so its presence is the answer, and no separate flag has to be
+/// kept in step.
+///
+/// What it cannot see is a session that ended since, because nothing reloads
+/// this page. So this decides only what to *offer*; `requireSession` is what
+/// decides whether a save may go ahead.
 function signedIn() {
   return $("open-vault-list") !== null;
 }
@@ -960,14 +1012,99 @@ function guessPlatform() {
   return "";
 }
 
+/// The one sentence for a save that could not happen because the account behind
+/// this page is gone. It has to say three things: nothing was written; the way
+/// back is not through this tab, since navigating away would take the unlocked
+/// vault with it; and the vault is still here.
+const SIGNED_OUT_SAVE = "You are signed out, so nothing was saved. Sign in in "
+  + "another tab, then press Save again — this vault stays open here.";
+
+/// Re-reads what the server says about the account, before a save that needs
+/// one, and adopts it.
+///
+/// Two things go stale in a tab left open, and neither is visible from here.
+/// The session can end, which `signedIn` cannot see because the picker it reads
+/// was rendered once and stays in the DOM for the life of the page. And the
+/// CSRF token can be replaced *without* the session ending at all:
+/// `web::csrf::rotate` issues a fresh one every time the session changes hands
+/// — signing out and back in in another tab is enough — and one expires on its
+/// own after twelve hours while a session lasts seven days. The cookie holding
+/// the real token is `HttpOnly`, so the only way to learn it is to ask for a
+/// page that embeds it.
+///
+/// `GET /open` answers both questions at once: it renders the picker for a
+/// signed-in visitor and for nobody else, and it always embeds the current
+/// token. It runs before `rebuild`, so a doomed save costs neither the
+/// derivations nor a minted master key.
+///
+/// Deliberately *not* adopted here: the rows' ETags. `state.source.etag` is the
+/// version this page was handed, and quietly taking a newer one would turn the
+/// conflict check into a blind overwrite of whatever another device saved.
+/// Adopting one is what `refreshPicker` does *after* a save, and only then.
+async function requireSession() {
+  let html;
+  try {
+    const res = await fetch(OPEN_PATH, { credentials: "same-origin" });
+    if (!res.ok) throw new Error(`GET ${OPEN_PATH} answered ${res.status}`);
+    html = await res.text();
+  } catch {
+    // Offline, or a server that could not answer. Not the same thing as being
+    // signed out, and not reported as one — but still no save.
+    throw new VaultError("Could not check your account, so nothing was saved.");
+  }
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  if (!parsed.getElementById("open-vault-list")) throw new VaultError(SIGNED_OUT_SAVE);
+  const token = parsed.getElementById("open-csrf")?.value;
+  if (token) $("open-csrf").value = token;
+}
+
+/// What the server said about a save, read off where the response *ended up*
+/// rather than off its status.
+///
+/// On these two routes the status is not the verdict, which is what a
+/// `redirect: "manual"` fetch here used to assume: `web::vaults::finish` sends a
+/// save that landed to /vaults and the `WebSession` extractor sends a save made
+/// without a session to /login, and both are 303s. Nor is the path enough on
+/// its own — a refused *upload* re-renders at /vaults too — so it takes both:
+/// only a response that was redirected *and* landed on the file manager is a
+/// save. Everything else reads as "not saved", which is the direction to be
+/// wrong in.
+///
+/// One race is accepted rather than papered over: a session revoked between the
+/// POST and the browser's follow of the 303 makes the chain
+/// POST → /vaults → /login, and a save that landed reports itself as signed
+/// out. That leaves the page still owing a save it does not owe, which costs a
+/// retry and a conflict message the server already words; the opposite mistake
+/// costs the vault.
+function saveVerdict(res) {
+  if (landedOnLogin(res)) return "signed-out";
+  if (res.redirected) {
+    return new URL(res.url, location.href).pathname === VAULTS_PATH ? "saved" : "unknown";
+  }
+  // Not redirected: a 200 is `web::vaults::refused` re-rendering the file
+  // manager with its sentence on it, and anything else is a status this page has
+  // no wording of its own for.
+  return res.status === 200 ? "refused" : "unknown";
+}
+
 /// Writes the vault to the account: a replace for one that is stored there, an
 /// upload for one this page created. Both are routes `web::vaults` already
 /// owns and both run its `check_upload`, quota and versioning rules — `/open`
 /// deliberately has no POST of its own, so there is no second place for any of
 /// that to drift.
+///
+/// The cost of that reuse is that the session redirect and the save redirect
+/// are the same status, so the account is checked twice: once before anything
+/// is encrypted, by `requireSession`, which also picks up a rotated CSRF token;
+/// and once on the response, by `saveVerdict`, for the session that ends in
+/// between. Neither check may be dropped for the other — the first is what
+/// makes a save after signing back in elsewhere work at all, the second is what
+/// keeps a save that never happened from reading as one that did.
 function saveToServer() {
   const fresh = state.source.kind === "new";
-  attempt("Encrypting and uploading…", async () => {
+  attempt("Checking your account…", async () => {
+    await requireSession();
+    say("Encrypting and uploading…");
     const bytes = await rebuild();
     const form = new FormData();
     // The CSRF part must come first: `web::csrf::CsrfMultipart` verifies it as
@@ -989,23 +1126,27 @@ function saveToServer() {
     );
 
     const res = await fetch(fresh
-      ? "/vaults"
+      ? VAULTS_PATH
       : `/vaults/${encodeURIComponent(state.source.id)}/replace`, {
       method: "POST",
       body: form,
       credentials: "same-origin",
-      // On this route the status is the verdict: a change that went through is
-      // a 303, and a refused one re-renders the page at 200. Following the
-      // redirect would erase the difference.
-      redirect: "manual",
+      // Redirects are followed on purpose: the destination is the verdict, and
+      // an unfollowed one arrives opaque with no destination to read. A 303 is
+      // followed as a bodyless GET, so nothing is uploaded twice, and the follow
+      // is also what consumes the flash cookie `finish` set and applies the
+      // cleared session cookie a rejection sent.
     });
 
-    // A browser turns the 303 into an opaque-redirect response with no status
-    // at all; the status is only visible outside one, which is where this is
-    // exercised from a script.
-    const saved = res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400);
-    if (!saved) {
-      throw new VaultError(res.status === 200
+    const verdict = saveVerdict(res);
+    if (verdict === "signed-out") {
+      // Nothing is adopted and `state.dirty` is left alone: the copy in this
+      // page is still the only one holding these edits, and the unload guard has
+      // to stay armed over them.
+      throw new VaultError(SIGNED_OUT_SAVE);
+    }
+    if (verdict !== "saved") {
+      throw new VaultError(verdict === "refused"
         ? refusalReason(await res.text())
         : "The server would not accept the save.");
     }
@@ -1416,7 +1557,9 @@ function init() {
 
   bindPicker();
   $("open-refresh")?.addEventListener("click", () => attempt("Refreshing…", async () => {
-    if (!await refreshPicker()) throw new VaultError("Could not refresh the list.");
+    if (!await refreshPicker()) {
+      throw new VaultError("Could not refresh the list — you may have been signed out.");
+    }
     say("");
   }));
   $("open-file").addEventListener("change", (e) => {

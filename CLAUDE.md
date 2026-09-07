@@ -790,7 +790,10 @@ next request.
   file manager's own replace, and storing a vault the page *created* is `POST
   /vaults`, that same manager's upload, which is where the name rules and the
   per-account count live. A second write door would be a second place for
-  those rules to drift. Neither route carries a rate limiter — both are reads,
+  those rules to drift. The reuse has one consequence the viewer carries rather
+  than the server: `WebSession`'s rejection and a landed save are the same 303
+  on those routes, so the destination is the verdict and `tests/web.rs` pins
+  the two apart. Neither route carries a rate limiter — both are reads,
   and neither is worth guessing at. The picker's rows are **buttons** carrying
   `data-vault-id`/`-name`/`-etag`, since picking one starts an in-page flow
   that never navigates; the ETag on the row is load-bearing, not decoration —
@@ -918,7 +921,7 @@ next request.
   Phase 5 gate: security headers on every response shape, HSTS per config,
   cache directives, the 64 KiB/10 MiB body-limit split — the regression test
   for the layer ordering — `Retry-After`, and forged-vs-trusted
-  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 55 tests:
+  `X-Forwarded-For` bucketing) and `web.rs` (the Phase 7 gate plus Phase 14's server half, 56 tests:
   template rendering, `/assets` (including the tab icon, byte-identical at
   both of its paths, and `landing.js` served beside the hero text it
   animates, which the landing page must carry in full either way), the
@@ -938,7 +941,7 @@ next request.
   wrong extension, a ZIP with no `askrypt.json` (which the API's magic check
   admits), and a refused *replace* leaving the stored bytes untouched — each
   asserting the file was not stored, since a readable message over a stored
-  file would be the worse bug; and the nine `/open` tests, which assert what
+  file would be the worse bug; and the thirteen `/open` tests, which assert what
   the *server* owes the viewer and nothing about the decrypting: the page
   serves a signed-out visitor with a file input and no listing, the create
   form is offered signed in and out alike (creating one needs no account; with
@@ -953,7 +956,12 @@ next request.
   every button in it carries `type="button"` (it lives inside the entry form,
   and a defaulted one would apply the entry instead), and a
   hostile vault name cannot inject markup into the `data-` attribute it lands
-  in) and
+  in, and — the one that is about the save rather than the page — that a save
+  which landed and a save made without a session are **both 303s to different
+  places** (`/vaults` and `/login`, the second clearing the session cookie)
+  while a refusal carries no `Location` at all, since `vault-open.js` reads the
+  destination and there is no JS harness that could pin this from the other
+  side) and
   `admin.rs` (the Phase 8 gate, 11 tests: first-account-is-admin and the nav
   link that follows, 403-vs-redirect for non-admin and signed-out visitors,
   suspend → old session dies *and* a fresh JSON login is refused → lift
@@ -1163,12 +1171,30 @@ next request.
   whether or not the upload lands; one nobody else ever saw costs nothing. It stamps `params.host` as `<os>@web` — a
   browser cannot know the machine's name — omitting the field entirely rather
   than writing a dangling `@web` when the platform admits to nothing. Two
-  saves: to the account (multipart to `/vaults/{id}/replace`, CSRF part first
-  because `CsrfMultipart` verifies before buffering the file, `redirect:
-  "manual"` because on that route the *status* is the verdict — a 303 landed,
-  a 200 is `web::vaults::refused` re-rendering, whose sentence is lifted out
-  of the returned HTML rather than reinvented) and a downloaded copy (a
-  browser cannot write back over the file you picked). All rendered text goes
+  saves: to the account (multipart to `/vaults/{id}/replace`, or `/vaults` for
+  a vault the page created, CSRF part first because `CsrfMultipart` verifies
+  before buffering the file) and a downloaded copy (a browser cannot write back
+  over the file you picked). **On those routes the status is not the verdict**,
+  which a `redirect: "manual"` fetch here used to assume: `web::vaults::finish`
+  sends a save that landed to `/vaults` and the `WebSession` rejection sends a
+  save made without a session to `/login`, both 303, and an unfollowed redirect
+  arrives opaque with no status, headers or URL at all — which is what made a
+  save that never happened say "Saved.", clear the unsaved flag and disarm the
+  unload guard. So redirects are followed and `saveVerdict` reads the
+  *destination*: redirected **and** on `/vaults` is a save, `/login` is a
+  session that ended, and not redirected at 200 is `web::vaults::refused`
+  re-rendering, whose sentence is lifted out of the returned HTML rather than
+  reinvented. The path alone would not do, since a refused upload re-renders at
+  `/vaults` too. The save is bracketed rather than merely checked afterwards:
+  `requireSession` re-reads `GET /open` first, because `signedIn()` sees only
+  what the page was *rendered* with and nothing here reloads, and because the
+  `#open-csrf` that page carries is the only way to pick up a token
+  `csrf::rotate` replaced on a sign-out and sign-in elsewhere or that expired
+  under its own twelve-hour TTL — the cookie is `HttpOnly`. It adopts the token
+  and nothing else: taking a fresh row ETag there would turn the conflict check
+  into a blind overwrite. A save that is refused for a dead session leaves the
+  vault dirty and open, so signing in again in another tab and pressing Save
+  again works without a reload that would cost the unlocked vault. All rendered text goes
   through `textContent`, never `innerHTML`: an entry name — or an attachment's
   file name — comes out of a file anybody could have written. **Attachments are
   read-only here**: the page lists them (name, size, when added), decrypts one
