@@ -203,6 +203,23 @@ pub fn nav_button(theme: &Theme, status: button::Status, selected: bool) -> butt
     selectable_row(theme, status, selected)
 }
 
+/// A nav row whose label reads as a tag: the same shape as [`nav_button`], but
+/// coloured like the tag links the detail pane draws ([`button_link_style`]),
+/// so one tag looks the same on both sides of the window.
+pub fn tag_nav_button(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
+    let palette = theme.extended_palette();
+    let base = selectable_row(theme, status, selected);
+
+    button::Style {
+        text_color: if selected || matches!(status, button::Status::Hovered) {
+            palette.primary.strong.color
+        } else {
+            palette.primary.strong.color.scale_alpha(0.8)
+        },
+        ..base
+    }
+}
+
 pub fn list_row(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
     selectable_row(theme, status, selected)
 }

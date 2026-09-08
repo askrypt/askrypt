@@ -79,7 +79,7 @@ fn filters(app: &App) -> iced::widget::Column<'_, Message> {
             // detail pane selects a tag with the *entry's* spelling of it,
             // which need not be the spelling this row carries.
             let selected = on_items && matches!(&app.section, Section::Tag(t) if same_tag(t, &tag));
-            items = items.push(nav_row(
+            items = items.push(tag_row(
                 icon::tag(14),
                 make_hash_tag(&tag),
                 Section::Tag(tag),
@@ -203,6 +203,22 @@ fn nav_row<'a>(
     row_button(glyph, label, selected, Message::SectionSelected(target))
 }
 
+/// A tag filter: a nav row wearing the detail pane's tag-link colour, so the
+/// same tag reads the same whichever pane it is drawn in.
+fn tag_row<'a>(
+    glyph: Text<'a>,
+    label: String,
+    target: Section,
+    selected: bool,
+) -> Element<'a, Message> {
+    styled_row_button(
+        glyph,
+        label,
+        Message::SectionSelected(target),
+        move |t, s| theme::tag_nav_button(t, s, selected),
+    )
+}
+
 fn pane_row<'a>(
     glyph: Text<'a>,
     label: &'a str,
@@ -229,6 +245,18 @@ fn row_button<'a>(
     selected: bool,
     message: Message,
 ) -> Element<'a, Message> {
+    styled_row_button(glyph, label, message, move |t, s| {
+        theme::nav_button(t, s, selected)
+    })
+}
+
+/// The shared body of every rail row: only the button style differs.
+fn styled_row_button<'a>(
+    glyph: Text<'a>,
+    label: String,
+    message: Message,
+    style: impl Fn(&iced::Theme, button::Status) -> button::Style + 'a,
+) -> Element<'a, Message> {
     button(
         row![glyph, text(label).size(14)]
             .spacing(8)
@@ -236,7 +264,7 @@ fn row_button<'a>(
     )
     .width(Length::Fill)
     .padding([6, 8])
-    .style(move |t, s| theme::nav_button(t, s, selected))
+    .style(style)
     .on_press(message)
     .into()
 }
