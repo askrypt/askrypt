@@ -55,7 +55,7 @@ container — the panes are full-bleed.
 | `settings.rs` | `VaultLocation`, `ServerSession`, `AppSettings`, `ThemeChoice`, `LockTimeout`, `WindowState` — the on-disk shapes |
 | `tray.rs` | `AppTray`/`TrayEvent`, polled from the subscription |
 | `theme.rs` | the styled-widget helpers plus pane styles, the spinner and layout constants |
-| `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf` |
+| `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf`, plus `KEYWORDS`/`lookup` — the keyword table that turns an item's name and URL into an icon (longest keyword wins; `Any` matches inside a word, `Word` only as one), and `item`/`card`, the two front doors `panes/list.rs` calls |
 | `scratch.rs` | this run's working directory (`<cache>/session-<pid>/`): a freshly attached file's ciphertext and, for a cloud vault, a copy of its archive. Holds an exclusive lock on its own `.lock` for the life of the process, which is what makes the startup sweep exact — a sibling session directory whose lock can be *taken* belongs to a process that has exited. Emptied on close (`Session::close_vault` → `clear`), file-by-file when a vault is opened over another (`Session::open_vault` → `manager::retire_working_files`), and removed on drop |
 | `data.rs` | pure item helpers over `SecretEntry`: the three entry types (`Login`/`Card`/`File`) and the `is_card`/`is_file` predicates, the filter (which reaches attachment file names — visible metadata, unlike the card secrets it skips), tags, the write stamp, `format_size`, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
 | `follow.rs` | following the stored vault: the probe, the `decide` policy, `Notice` and the banner. Not a pane, for `link.rs`'s reason — the banner sits above the working area, over whichever pane is showing |
@@ -78,7 +78,8 @@ Rules that are easy to undo by accident:
 - **Every pane style is palette-derived**, which is why the Settings theme
   picker works. Hard-coding a color breaks the dark theme.
 - **Anything drawn per item must be deterministic.** `view` runs every frame, so
-  the list row's icon is *derived* from the entry name (`icon::placeholder`)
+  the list row's icon is *derived* from the entry name and URL
+  (`icon::item`/`icon::card`, and `icon::placeholder` when they match nothing)
   rather than actually randomized — a real random pick would flicker.
 - **Panes never switch the working area themselves.** They return a
   `panes::Action`, and `App::apply` does the switching.
@@ -561,7 +562,7 @@ Three details carry the rest:
 
 | Here | Would be |
 |---|---|
-| each item's icon is `icon::placeholder(name)` — one of 16 glyphs picked by hashing the name, except a `Card` (`icon::credit_card`) and a `File` (`icon::paperclip`) | a real per-item icon: a site favicon, a card issuer's logo. Nothing derives one yet; replace the whole function, not the pool |
+| each item's icon comes from `icon::KEYWORDS`, a hand-written table matched against the name and URL — so it is right for the ~300 things listed there and a hashed guess (`icon::placeholder`) for everything else | the site's own favicon, the card issuer's own logo. That needs the network and a cache, which is why a table stands in |
 | the cloud-folder card | nothing at all — a reserved slot for Dropbox/Drive sync |
 
 Everything else — unlock, Smart Lock, save, Save As, the server, settings, the

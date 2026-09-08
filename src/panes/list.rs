@@ -86,15 +86,18 @@ fn row_widget(index: usize, entry: &SecretEntry, selected: bool) -> Element<'_, 
 
     let labels = column![title, text(subtitle).size(12).style(text::secondary)].spacing(1);
 
-    // A placeholder for the favicon a real item would carry; keyed by name so
-    // it stays put across renders. A card has a real glyph already — the issuer
-    // logo is what would replace it.
-    let icon = if data::is_card(entry) {
-        icon::credit_card(16)
-    } else if data::is_file(entry) {
+    // What the item's name and URL say it is — Google's mark on *Google*, a
+    // bank on *Sberbank* — falling back to the hashed pool when they say
+    // nothing. A File is exempt: its subtitle only counts the files, so the
+    // paperclip is the one thing marking it. A Card falls back to the generic
+    // card instead of the pool, so a name that matched nothing still reads as
+    // a card.
+    let icon = if data::is_file(entry) {
         icon::paperclip(16)
+    } else if data::is_card(entry) {
+        icon::card(&entry.name, &entry.url, 16)
     } else {
-        icon::placeholder(&entry.name, 16)
+        icon::item(&entry.name, &entry.url, 16)
     };
     let glyph = container(icon)
         .width(Length::Fixed(theme::ITEM_ICON_WIDTH))
