@@ -100,7 +100,7 @@ Rules that are easy to undo by accident:
 - **Every pane style is palette-derived**, which is why the Settings theme
   picker works. Hard-coding a color breaks the dark theme.
 - **Anything drawn per item must be deterministic.** `view` runs every frame, so
-  the list row's icon is *derived* from the entry name and URL
+  the list row's icon is *derived* from the entry's tags, name and URL
   (`icon::item`/`icon::card`, and `icon::placeholder` when they match nothing)
   rather than actually randomized — a real random pick would flicker.
 - **Panes never switch the working area themselves.** They return a
@@ -660,7 +660,7 @@ Three details carry the rest:
 
 | Here | Would be |
 |---|---|
-| each item's icon comes from `icon::KEYWORDS`, a hand-written table matched against the name and URL — so it is right for the ~300 things listed there and a hashed guess (`icon::placeholder`) for everything else | the site's own favicon, the card issuer's own logo. That needs the network and a cache, which is why a table stands in |
+| each item's icon comes from `icon::KEYWORDS`, a hand-written table matched against the tags first and then the name and URL — so it is right for the ~300 things listed there and a hashed guess (`icon::placeholder`) for everything else | the site's own favicon, the card issuer's own logo. That needs the network and a cache, which is why a table stands in |
 | the cloud-folder card | nothing at all — a reserved slot for Dropbox/Drive sync |
 
 Everything else — unlock, Smart Lock, save, Save As, the server, settings, the

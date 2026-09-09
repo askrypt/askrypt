@@ -116,7 +116,7 @@ enum Where {
 
 use Where::{Any, Word};
 
-/// What an item's name (or URL) says it is, and the glyph for it.
+/// What an item's tags (or name, or URL) say it is, and the glyph for it.
 ///
 /// The **longest matching keyword wins**, ties going to the earlier row. That
 /// single rule settles the collisions this table would otherwise be full of:
@@ -183,6 +183,8 @@ const KEYWORDS: &[(&str, Where, char)] = &[
     ("mozilla", Any, '\u{F7D6}'),
     ("safari", Any, '\u{F7D7}'), // browser-safari
     ("weibo", Any, '\u{F8CA}'),  // sina-weibo
+    ("claude", Any, '\u{F914}'),
+    ("antropic", Any, '\u{F914}'),
     // --- Money -------------------------------------------------------------
     ("bank", Any, '\u{F62E}'), // bank
     ("visa", Any, '\u{F2DC}'), // credit-card
@@ -410,6 +412,7 @@ const KEYWORDS: &[(&str, Where, char)] = &[
     ("railway", Any, '\u{F81D}'), // train-front
     ("train", Word, '\u{F81D}'),
     ("rail", Word, '\u{F81D}'),
+    ("bahn", Word, '\u{F81D}'),
     ("transit", Any, '\u{F87F}'), // bus-front
     ("bus", Word, '\u{F87F}'),
     ("uber", Any, '\u{F7E1}'), // car-front
@@ -442,13 +445,13 @@ const KEYWORDS: &[(&str, Where, char)] = &[
     ("water", Any, '\u{F30D}'), // droplet
 ];
 
-/// The words an item's name and URL are made of: lowercased, split on
+/// The words some fields of an item are made of: lowercased, split on
 /// everything that is not a letter or a digit, and romanized when they are not
 /// ASCII — the keywords are, so *Сбербанк* can only ever match through the
 /// same transliteration the vault already applies to answers.
-fn words_of(name: &str, url: &str) -> Vec<String> {
+fn words_of(fields: &[&str]) -> Vec<String> {
     let mut words = Vec::new();
-    for field in [name, url] {
+    for field in fields {
         for raw in field.split(|c: char| !c.is_alphanumeric()) {
             if raw.is_empty() {
                 continue;
@@ -464,12 +467,9 @@ fn words_of(name: &str, url: &str) -> Vec<String> {
     words
 }
 
-/// The glyph an item's name and URL name, if any.
-///
-/// Split out of [`item`] and [`card`] because it is the whole of the logic and
-/// answers a plain `char`: a `Text` widget cannot be compared in a test.
-fn lookup(name: &str, url: &str) -> Option<char> {
-    let words = words_of(name, url);
+/// The glyph a bag of words names, if any: the longest matching keyword, ties
+/// going to the earlier row of [`KEYWORDS`].
+fn best_match(words: &[String]) -> Option<char> {
     // The separators are gone, so a keyword may span what were two words:
     // `Stack Overflow` and `stackoverflow.com` reduce to the same haystack.
     let squashed = words.concat();
@@ -487,20 +487,46 @@ fn lookup(name: &str, url: &str) -> Option<char> {
     best.map(|(_, found)| found)
 }
 
-/// The icon for an item: what its name or URL says it is, else [`placeholder`].
-pub fn item(name: &str, url: &str, size: u16) -> Text<'static> {
-    match lookup(name, url) {
+/// The glyph an item's name and URL name, if any.
+///
+/// Split out of [`item`] and [`card`] because it is the whole of the logic and
+/// answers a plain `char`: a `Text` widget cannot be compared in a test.
+fn lookup(name: &str, url: &str) -> Option<char> {
+    best_match(&words_of(&[name, url]))
+}
+
+/// The glyph an item's *tags* name, if any — and this is asked **first**, so a
+/// tag outranks the name and the URL both.
+///
+/// A tag is the one thing on an entry the user chose in order to classify it:
+/// *Tinkoff* under `#travel` is travel however much its name reads as a bank,
+/// and a name matching nothing at all is exactly the case where a tag has
+/// something to say. Each tag is matched **on its own** rather than
+/// squashed together with the rest, since two unrelated tags run together
+/// would spell substrings neither of them contains; within one tag the longest
+/// keyword wins as everywhere else, and across tags the **first** tag to match
+/// wins, which is the order the user typed them in.
+fn lookup_tags(tags: &[String]) -> Option<char> {
+    tags.iter()
+        .find_map(|tag| best_match(&words_of(&[tag.as_str()])))
+}
+
+/// The icon for an item: what its tags say it is, else what its name or URL
+/// say, else [`placeholder`].
+pub fn item(name: &str, url: &str, tags: &[String], size: u16) -> Text<'static> {
+    match lookup_tags(tags).or_else(|| lookup(name, url)) {
         Some(found) => glyph(found, size),
         None => placeholder(name, size),
     }
 }
 
-/// The icon for a card: the issuer's own mark when the name names one — which
+/// The icon for a card: the issuer's own mark when a tag or the name names one
+/// — which
 /// is what [`credit_card`] was always standing in for — and the generic card
 /// otherwise. Never the hashed pool: a card that matched nothing is still
 /// unmistakably a card, and an arbitrary glyph would say less than that.
-pub fn card(name: &str, url: &str, size: u16) -> Text<'static> {
-    match lookup(name, url) {
+pub fn card(name: &str, url: &str, tags: &[String], size: u16) -> Text<'static> {
+    match lookup_tags(tags).or_else(|| lookup(name, url)) {
         Some(found) => glyph(found, size),
         None => credit_card(size),
     }
@@ -633,6 +659,7 @@ mod tests {
     const PALETTE: char = '\u{F4B1}';
     const INSURANCE: char = '\u{F53B}';
     const MUSIC: char = '\u{F49E}';
+    const AIRPLANE: char = '\u{F7CD}';
 
     #[test]
     fn the_url_can_supply_the_match() {
@@ -694,6 +721,45 @@ mod tests {
     fn an_unrecognized_name_matches_nothing() {
         assert_eq!(lookup("Zzzq", ""), None);
         assert_eq!(lookup("", ""), None);
+    }
+
+    #[test]
+    fn a_tag_outranks_the_name_and_the_url() {
+        let tags = vec!["travel".to_string()];
+        // The name is a bank's, and on its own it would win.
+        assert_eq!(lookup("Tinkoff", ""), Some(BANK));
+        assert_eq!(lookup_tags(&tags), Some(AIRPLANE));
+        assert_eq!(
+            lookup_tags(&tags).or_else(|| lookup("Tinkoff", "")),
+            Some(AIRPLANE)
+        );
+    }
+
+    #[test]
+    fn a_tag_names_an_item_the_keywords_would_not_recognize() {
+        assert_eq!(lookup("Zzzq", ""), None);
+        assert_eq!(lookup_tags(&["Music".to_string()]), Some(MUSIC));
+    }
+
+    #[test]
+    fn the_first_matching_tag_wins() {
+        let tags = vec!["misc".to_string(), "music".to_string(), "bank".to_string()];
+        assert_eq!(lookup_tags(&tags), Some(MUSIC));
+    }
+
+    #[test]
+    fn two_tags_cannot_spell_a_keyword_between_them() {
+        // Squashed together these would read `carinsurance`; matched one at a
+        // time, neither says insurance.
+        let tags = vec!["car".to_string(), "insurance".to_string()];
+        assert_eq!(lookup_tags(&tags), Some(CAR));
+        assert_eq!(lookup("Car insurance", ""), Some(INSURANCE));
+    }
+
+    #[test]
+    fn no_tags_says_nothing() {
+        assert_eq!(lookup_tags(&[]), None);
+        assert_eq!(lookup_tags(&["Zzzq".to_string()]), None);
     }
 
     #[test]

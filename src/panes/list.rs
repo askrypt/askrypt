@@ -86,18 +86,18 @@ fn row_widget(index: usize, entry: &SecretEntry, selected: bool) -> Element<'_, 
 
     let labels = column![title, text(subtitle).size(12).style(text::secondary)].spacing(1);
 
-    // What the item's name and URL say it is — Google's mark on *Google*, a
-    // bank on *Sberbank* — falling back to the hashed pool when they say
-    // nothing. A File is exempt: its subtitle only counts the files, so the
-    // paperclip is the one thing marking it. A Card falls back to the generic
-    // card instead of the pool, so a name that matched nothing still reads as
-    // a card.
+    // What the item's tags say it is first, then its name and URL — Google's
+    // mark on *Google*, a bank on *Sberbank* — falling back to the hashed pool
+    // when they all say nothing. A File is exempt: its subtitle only counts the
+    // files, so the paperclip is the one thing marking it. A Card falls back to
+    // the generic card instead of the pool, so a name that matched nothing
+    // still reads as a card.
     let icon = if data::is_file(entry) {
         icon::paperclip(16)
     } else if data::is_card(entry) {
-        icon::card(&entry.name, &entry.url, 16)
+        icon::card(&entry.name, &entry.url, &entry.tags, 16)
     } else {
-        icon::item(&entry.name, &entry.url, 16)
+        icon::item(&entry.name, &entry.url, &entry.tags, 16)
     };
     let glyph = container(icon)
         .width(Length::Fixed(theme::ITEM_ICON_WIDTH))
