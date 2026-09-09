@@ -37,6 +37,7 @@ use askrypt::{AskryptFile, RemoteRevision, Revision, VaultStorage};
 use iced::widget::{button, column, container, row, text};
 use iced::{Element, Length};
 
+use crate::confirm::Dialog;
 use crate::manager::VaultState;
 use crate::session::{Session, VaultError};
 use crate::{Message, data, theme};
@@ -324,34 +325,62 @@ pub enum Msg {
     Dismiss,
 }
 
-/// The banner, when there is something standing to say.
+/// The standing choice, as a dialog — when there is one.
 ///
-/// Rendered above the working area rather than inside a pane: the vault it
-/// concerns is open whichever pane is showing.
-pub fn view(session: &Session) -> Option<Element<'_, Message>> {
+/// Only the two kinds that actually pose a question. [`Kind::Missing`] and
+/// [`Kind::SignedOut`] carry a single *Dismiss*: they are news, not a choice,
+/// and they are raised by a probe that fires with nobody at the keyboard, so
+/// they stay the banner below rather than stealing the window.
+pub fn dialog(session: &Session) -> Option<Dialog> {
     let notice = session.follow.as_ref()?;
 
-    let mut actions = row![].spacing(8);
-    if notice.kind == Kind::Diverged {
-        actions = actions
-            .push(button(text("Save mine").size(13)).on_press(Message::Follow(Msg::SaveMine)))
-            .push(
-                button(text("Discard mine & reload").size(13))
-                    .on_press(Message::Follow(Msg::DiscardAndReload)),
-            );
+    match notice.kind {
+        // Save mine is the one button in this app that deliberately overwrites
+        // another device's work, so the warning that used to live in a second,
+        // native box on top of the banner is the body of this one.
+        Kind::Diverged => Some(
+            Dialog::new(
+                "This vault changed where it is stored",
+                format!(
+                    "{} Saving replaces the stored copy, and the other device's changes will be lost.",
+                    notice.message()
+                ),
+            )
+            .danger("Save mine", Message::Follow(Msg::SaveMine))
+            .danger(
+                "Discard mine & reload",
+                Message::Follow(Msg::DiscardAndReload),
+            )
+            .cancel("Keep editing", Message::Follow(Msg::Dismiss)),
+        ),
+        Kind::Rekeyed => Some(
+            Dialog::new("This vault's security questions changed", notice.message())
+                .affirm(
+                    "Reload and answer again",
+                    Message::Follow(Msg::DiscardAndReload),
+                )
+                .cancel("Keep this copy", Message::Follow(Msg::Dismiss))
+                // Nothing local is at stake: an `Unlocked` vault with unsaved
+                // edits is `Diverged`, never this.
+                .on_enter(Message::Follow(Msg::DiscardAndReload)),
+        ),
+        Kind::Missing | Kind::SignedOut => None,
     }
-    if notice.kind == Kind::Rekeyed {
-        actions = actions.push(
-            button(text("Reload and answer again").size(13))
-                .on_press(Message::Follow(Msg::DiscardAndReload)),
-        );
+}
+
+/// The banner, for the kinds that only have something to say.
+///
+/// Rendered above the working area rather than inside a pane: the vault it
+/// concerns is open whichever pane is showing. The kinds that pose a *choice*
+/// go through [`dialog`] instead.
+pub fn view(session: &Session) -> Option<Element<'_, Message>> {
+    let notice = session.follow.as_ref()?;
+    if !matches!(notice.kind, Kind::Missing | Kind::SignedOut) {
+        return None;
     }
-    let dismiss = match notice.kind {
-        Kind::Diverged => "Keep editing",
-        Kind::Rekeyed => "Keep this copy",
-        _ => "Dismiss",
-    };
-    actions = actions.push(button(text(dismiss).size(13)).on_press(Message::Follow(Msg::Dismiss)));
+
+    let actions =
+        row![button(text("Dismiss").size(13)).on_press(Message::Follow(Msg::Dismiss))].spacing(8);
 
     let body = column![text(notice.message()).size(14), actions]
         .spacing(8)

@@ -22,7 +22,7 @@ invariants a redesign can quietly break. Keep it current.
 ┌─────────────────────────────────────────────────────────┐
 │ search strip                    (only when unlocked)    │
 ├─────────────────────────────────────────────────────────┤
-│ follow banner              (only when there is a choice)│
+│ follow banner            (only when there is only news) │
 ├────────────┬────────────────────────────────────────────┤
 │            │                                            │
 │  nav rail  │   working area                             │
@@ -44,6 +44,27 @@ The outer `column![search, banner, row![panes].height(Fill), status_bar]` is
 what keeps the status bar on the bottom edge. The root is *not* wrapped in a centering
 container — the panes are full-bleed.
 
+And over all of it, when there is a question standing, the **confirmation
+dialog** — a dimmed scrim and a centered card, `stack`ed on top of that whole
+column so it covers the status bar and the rail too:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ │
+│ ▒▒▒▒▒▒▒▒▒▒▒▒┌───────────────────────────┐▒▒▒▒▒▒▒▒▒▒▒▒▒▒ │
+│ ▒▒▒▒▒▒▒▒▒▒▒▒│ Unsaved changes           │▒▒▒▒▒▒▒▒▒▒▒▒▒▒ │
+│ ▒▒▒▒▒▒▒▒▒▒▒▒│ You have unsaved changes… │▒▒▒▒▒▒▒▒▒▒▒▒▒▒ │
+│ ▒▒▒▒▒▒▒▒▒▒▒▒│  [Save] [Don't save] [Cancel] │▒▒▒▒▒▒▒▒▒▒ │
+│ ▒▒▒▒▒▒▒▒▒▒▒▒└───────────────────────────┘▒▒▒▒▒▒▒▒▒▒▒▒▒▒ │
+│ ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ │
+└─────────────────────────────────────────────────────────┘
+```
+
+It is `confirm.rs`, not a pane and not the platform's message box: `rfd` used
+to draw all three of these questions, which meant the one part of the app that
+asked *"are you sure?"* looked different on each of the three platforms. `rfd`
+is now used for **file pickers only**.
+
 ### Module map
 
 | File | Holds |
@@ -58,7 +79,8 @@ container — the panes are full-bleed.
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf`, plus `KEYWORDS`/`lookup` — the keyword table that turns an item's name and URL into an icon (longest keyword wins; `Any` matches inside a word, `Word` only as one), and `item`/`card`, the two front doors `panes/list.rs` calls |
 | `scratch.rs` | this run's working directory (`<cache>/session-<pid>/`): a freshly attached file's ciphertext and, for a cloud vault, a copy of its archive. Holds an exclusive lock on its own `.lock` for the life of the process, which is what makes the startup sweep exact — a sibling session directory whose lock can be *taken* belongs to a process that has exited. Emptied on close (`Session::close_vault` → `clear`), file-by-file when a vault is opened over another (`Session::open_vault` → `manager::retire_working_files`), and removed on drop |
 | `data.rs` | pure item helpers over `SecretEntry`: the three entry types (`Login`/`Card`/`File`) and the `is_card`/`is_file` predicates, the filter (which reaches attachment file names — visible metadata, unlike the card secrets it skips), tags, the write stamp, `format_size`, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
-| `follow.rs` | following the stored vault: the probe, the `decide` policy, `Notice` and the banner. Not a pane, for `link.rs`'s reason — the banner sits above the working area, over whichever pane is showing |
+| `confirm.rs` | the confirmation dialog: `Dialog` (the chrome), `Kind` (the shell's own questions) and `overlay`, which `stack`s a scrim and a centered card over the whole window. Not a pane, for `link.rs`'s reason — the question is about the vault, which is open whichever pane is showing. `follow.rs` builds its own `Dialog` through the same chrome |
+| `follow.rs` | following the stored vault: the probe, the `decide` policy, `Notice`, the `dialog` for the kinds that pose a choice and the banner for the kinds that only have news. Not a pane, for `link.rs`'s reason — both sit over the working area, whichever pane is showing |
 | `panes/mod.rs` | `Action` — the pane → shell navigation contract |
 | `panes/sidebar.rs` | the nav rail: filters, the vault actions, Quit, Settings |
 | `panes/list.rs`, `panes/detail.rs` | the item split |
@@ -220,11 +242,11 @@ stamp without touching the disk.
 Every vault action lives at the bottom of the nav rail, with **Settings and then
 Quit pinned below them on the very bottom edge** — the two rows that are
 never about the vault in front of you, each in a band of its own. Quit is
-`GlobalMsg::QuitRequested`, which **confirms first** (`App::confirm_quit`, a
-Yes/No dialog) and then goes through `guard(PendingAction::Exit)` like the
-window close does. The tray's Quit takes the same confirmed path; a *modified*
-vault skips the extra question, because the unsaved-changes dialog it gets
-instead is already a confirmation. Each action is **hidden** rather than
+`GlobalMsg::QuitRequested`, which **confirms first** (`confirm::Kind::Quit`)
+and then goes through `guard(PendingAction::Exit)` like the window close does.
+The tray's Quit takes the same confirmed path; a *modified* vault skips the
+extra question, because the unsaved-changes dialog it gets instead is already a
+confirmation. Each action is **hidden** rather than
 disabled when the state does not allow it. The predicates are on `VaultState`; `panes/sidebar.rs`
 only asks.
 
@@ -254,8 +276,60 @@ runs, and a successful build leaves `location: None` — which is why `save_now(
 falls back to Save As, and the only way to reach the "Untitled vault\*" status
 line and the list pane's empty state.
 
-**Delete takes two presses.** The first arms the button (`App.pending_delete`),
-the second commits.
+**Delete asks.** It used to take two presses — the first armed the button, the
+second committed — which was a confirmation nobody could recognise as one. It is
+now `confirm::Kind::DeleteEntry`, the same dialog everything else asks through,
+and the *only* one of them with no Enter binding: the affirmative deletes.
+
+### The confirmation dialog
+
+Everything that asks a yes/no question asks through `confirm.rs`. There used to
+be three native `rfd::MessageDialog` boxes and two home-made in-app prompts
+besides, so the app had five ways of asking and three of them looked like a
+different program on each platform. Now there is one.
+
+`Dialog` is the chrome — a title, a body, buttons left to right, and the two
+keys. `overlay` `stack`s it over the whole window: a scrim that is `opaque`, so
+no click reaches the panes underneath, wrapping a card that is `opaque` in turn,
+so a click on the card does not fall through to the backdrop and answer the
+question. `theme::modal_scrim` is the one style in the app that is not derived
+from the palette, and deliberately: a scrim must *darken* whatever is behind it
+in both themes, and no palette entry does that. The card is `theme::card`, which
+paints a solid `palette().background`, so the dialog itself is fully themed.
+
+| Question | Affirm | Deny | Cancel = Esc + backdrop | Enter |
+|---|---|---|---|---|
+| `Kind::Quit` | Quit | — | Cancel | Affirm |
+| `Kind::UnsavedChanges` | Save | Don't save | Cancel | Affirm |
+| `Kind::DeleteEntry` | Delete *(danger)* | — | Cancel | — |
+| `follow` `Diverged` | Save mine *(danger)* | Discard mine & reload *(danger)* | Keep editing | — |
+| `follow` `Rekeyed` | Reload and answer again | — | Keep this copy | Affirm |
+
+Four rules hold it together:
+
+- **Escape and the backdrop always answer Cancel**, which is always the choice
+  that changes nothing. `Dialog::cancel` is a builder of its own rather than one
+  more `affirm` precisely so this cannot be got wrong per-dialog.
+- **Enter is bound only where the affirmative is safe.** A destructive
+  affirmative — Delete, *Save mine* — has no `on_enter`, so a Return meant for
+  something else cannot spend it. This is the one place the dialog deliberately
+  departs from the native boxes it replaced, which always default to the
+  affirmative.
+- **Raising one unfocuses the tree.** `App::ask` runs
+  `operation::focus(confirm::NO_FOCUS)` — an id no widget carries, and
+  `focusable::focus` unfocuses everything that is not its target. Without it a
+  `text_input` underneath keeps focus and swallows every keystroke, Escape
+  included. (iced 0.14 ships no `Task` wrapper for the bare `unfocus`
+  operation, or that would be the obvious call.)
+- **The question is taken before it is acted on.** `App::resolve_confirm`
+  `take`s `App.confirm` first, so a resolution that raises the *next* question —
+  Quit falls through to `ExitApp` and therefore to `guard` — is not overwritten
+  a moment later by the one being retired.
+
+`App.confirm` is cleared by `set_pane` and `clear_secret_panes`, so leaving the
+pane a question was asked over, or any lock, close or reload, abandons it: an
+index into an entry list that no longer exists is the bug that would otherwise
+be waiting.
 
 ### The wizard
 
@@ -397,7 +471,7 @@ testable without a UI or a network:
 | `Locked` | impossible | silent refresh of the bytes (`apply_refreshed`); the unlock pane re-renders `question0` |
 | `PartiallyUnlocked` | impossible | re-read, then re-run `get_questions_data(answer0)` → `apply_requestioned`; a failure means the questions moved, so `Rekeyed` |
 | `Unlocked` | no | silent reload — `Unlocked` still holds every answer, so nothing is asked (`apply_reloaded`) |
-| `Unlocked` | **yes** | **the banner**: *Save mine* / *Discard mine & reload* / *Keep editing*. Nothing is touched until a button is pressed |
+| `Unlocked` | **yes** | **the dialog**: *Save mine* / *Discard mine & reload* / *Keep editing*. Nothing is touched until a button is pressed |
 | `SmartLocked` | impossible (arming is gated on saving) | silent refresh; the answer bundle is keyed off itself, not off the file |
 
 "Unsaved work" is `is_modified()` **or** `App::has_draft()` — an entry open in
@@ -415,11 +489,24 @@ Three details carry the rest:
   error/success/status and above the vault's own line.
 - **A dismissal is per revision.** *Keep editing* records
   `Session.dismissed_revision`; a *further* change mints a new revision and so
-  raises the banner again. A save or a lock calls `Session::settle_follow`,
+  asks again. A save or a lock calls `Session::settle_follow`,
   which spends the dismissal along with the edits it covered.
 - **Reloading uses the storage instance the vault was opened with**, never a
   fresh one — the same reason a save does (invariant 1) — so the reload also
   leaves the backend on the version it just took.
+- **A choice is a dialog; news is a banner.** `follow::dialog` covers
+  `Diverged` and `Rekeyed`, the two kinds that pose a question, and renders
+  through `confirm.rs`'s chrome like everything else that asks one. `Missing`
+  and `SignedOut` carry a single *Dismiss* — there is nothing to decide — and
+  stay the in-flow banner `follow::view` draws, because a probe that fires with
+  nobody at the keyboard must not take the window over to say something the
+  status bar could have said (invariant 8). The dialog also absorbed the
+  *second* question *Save mine* used to raise: it opened a native box on top of
+  the banner, and that warning is now the dialog's own body.
+- **The shell's own question wins.** `App::dialog` offers `App.confirm` first
+  and the follow notice only when there is none, so a probe cannot shoulder
+  aside a question the user is already reading. Nothing is lost — the notice is
+  sticky, and comes up as soon as the other is answered.
 
 ## 4. Invariants, and where they are enforced
 
@@ -475,8 +562,14 @@ Three details carry the rest:
    while the worker ran) returns `false` and drops the stale result rather than
    installing it.
 6. **Lock, Smart Lock, New, Open and Exit must prompt about unsaved changes**,
-   and Cancel aborts. → `App::guard`, which routes "Yes" through an async save
-   and replays the queued `PendingAction` from `after_save` once it lands.
+   and Cancel aborts. → `App::guard`, which raises
+   `confirm::Kind::UnsavedChanges` and routes *Save* through an async save,
+   replaying the queued `PendingAction` from `after_save` once it lands. The
+   prompt is **asynchronous** now that it is a dialog rather than a blocking
+   `rfd` box: `guard` stores the question and returns, and the answer arrives
+   as `Message::Confirm`. So every path that asks must be able to *stop* there
+   and be resumed by a later message — which is exactly what `PendingAction`
+   already was, and why the change cost no new state beyond `App.confirm`.
    Smart Lock belongs on that list because arming it drops the `Unlocked`
    state, entries and all — an ungated one loses unsaved edits silently. The
    dirty flag lives *in* that state (`VaultState::is_modified()` is false in every
@@ -500,8 +593,13 @@ Three details carry the rest:
      `Reload` whenever `is_modified()` or `App::has_draft()` holds. `busy`
      stops another *task* starting during the wait but not typing, so
      `App::install_reload` **re-checks both at the moment of applying** and
-     raises the banner instead — editing during those two derivations is
-     otherwise exactly the window in which a reload eats what was typed.
+     asks instead — editing during those two derivations is otherwise exactly
+     the window in which a reload eats what was typed.
+   - The corollary for `confirm.rs`: a probe may raise a dialog only where
+     there is a *choice* to make, and its Escape answer must change nothing.
+     `Diverged` and `Rekeyed` qualify — the escape is *Keep editing* / *Keep
+     this copy*, both no-ops. `Missing` and `SignedOut` do not, and stay the
+     banner. **Nothing else in the app may raise a dialog from a timer.**
 9. **A vault's master key is minted once and never rotated.** It is a property
    of the *vault*, not of a write, and it is what every file attachment is
    encrypted under — rotating it per save would mean re-encrypting all of them

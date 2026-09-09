@@ -13,6 +13,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod confirm;
 mod data;
 mod follow;
 mod icon;
@@ -40,6 +41,7 @@ use iced::{
 };
 use iced::{time, window};
 
+use crate::confirm::{Answer, Dialog};
 use crate::manager::{OpenedVault, SavedVault, SmartLocked, VaultHome, VaultState};
 use crate::panes::Action;
 use crate::panes::wizard::Purpose;
@@ -52,21 +54,6 @@ pub const SEARCH_INPUT_ID: &str = "GUI_SEARCH";
 /// How long a copied secret stays on the clipboard when
 /// `AppSettings::clear_clipboard` is on.
 const CLIPBOARD_LIFETIME: Duration = Duration::from_secs(30);
-
-/// A blocking yes/no, for a destructive thing the user just asked for.
-///
-/// Blocking is fine *because* it is user-initiated — which is exactly why the
-/// follow probe, which fires with nobody at the keyboard, may never open one.
-fn rfd_confirm(title: &str, description: &str) -> bool {
-    matches!(
-        rfd::MessageDialog::new()
-            .set_title(title)
-            .set_description(description)
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show(),
-        rfd::MessageDialogResult::Yes
-    )
-}
 
 pub fn main() -> iced::Result {
     // The window is built before `boot` runs, so its remembered geometry is
@@ -192,6 +179,10 @@ pub enum Message {
     /// Leave the current pane for whatever the vault's state calls for.
     ReturnToDefaultPane,
     Vault(VaultMsg),
+    /// A button on the confirmation dialog — or the Escape/Enter bound to one.
+    /// Not a pane message: the dialog covers whichever pane is showing, and
+    /// the question it is asking is the shell's.
+    Confirm(confirm::Answer),
     /// A button on the "changed where it is stored" banner. Not a pane
     /// message: the banner sits above the working area, over whichever pane
     /// happens to be showing.
@@ -271,8 +262,10 @@ pub struct App {
     /// because it is the one card field you routinely need to read while the
     /// number stays covered; reset alongside it.
     cvv_revealed: bool,
-    /// The row whose Delete button is armed, so deleting takes two presses.
-    pending_delete: Option<usize>,
+    /// The question standing in front of everything else, if any. While this
+    /// is set the dialog covers the window and nothing underneath can be
+    /// clicked or typed into.
+    confirm: Option<confirm::Kind>,
     /// When set, the editor replaces the detail pane and the list stays visible.
     editor: Option<panes::entry_editor::State>,
     /// What to do once the save the user just agreed to has landed.
@@ -308,7 +301,7 @@ impl App {
             selected: None,
             revealed: false,
             cvv_revealed: false,
-            pending_delete: None,
+            confirm: None,
             editor: None,
             after_save: None,
             following: false,
@@ -567,7 +560,8 @@ impl App {
         };
 
         self.pane = pane;
-        self.pending_delete = None;
+        // Leaving the pane a question was asked over abandons the question.
+        self.confirm = None;
         if pane == Pane::Items {
             self.reconcile_selection();
         }
@@ -604,7 +598,7 @@ impl App {
         self.selected = None;
         self.revealed = false;
         self.cvv_revealed = false;
-        self.pending_delete = None;
+        self.confirm = None;
     }
 
     // -----------------------------------------------------------------------
@@ -677,7 +671,7 @@ impl App {
                 self.selected = Some(index);
                 self.revealed = false;
                 self.cvv_revealed = false;
-                self.pending_delete = None;
+                self.confirm = None;
                 Action::None
             }
             Message::ToggleReveal => {
@@ -770,6 +764,7 @@ impl App {
             },
             Message::ReturnToDefaultPane => self.return_to_default(),
             Message::Vault(msg) => self.update_vault(msg),
+            Message::Confirm(answer) => self.resolve_confirm(answer),
             Message::Follow(msg) => self.update_follow(msg),
             Message::Unlock(msg) => panes::unlock::update(&mut self.unlock, &mut self.session, msg),
             Message::Wizard(msg) => panes::wizard::update(&mut self.wizard, &mut self.session, msg),
@@ -884,10 +879,12 @@ impl App {
         ))
     }
 
+    /// Ask before removing an item. The answer arrives as
+    /// [`Message::Confirm`] and lands in [`App::remove_entry`].
     fn delete_entry(&mut self, index: usize) -> Action {
         // Only an unlocked vault has entries to delete — and the name is taken
-        // before the deletion, since the removed entry is dropped (and wiped)
-        // rather than handed back.
+        // now rather than on the way out, since the removed entry is dropped
+        // (and wiped) rather than handed back.
         let Some(name) = self
             .session
             .entries()
@@ -897,19 +894,15 @@ impl App {
             return Action::None;
         };
 
-        // Deleting takes two presses: the first arms the button and the
-        // second one commits.
-        if self.pending_delete != Some(index) {
-            self.pending_delete = Some(index);
-            self.session.status_message =
-                Some("Press delete again to remove this item".to_string());
-            return Action::None;
-        }
+        self.ask(confirm::Kind::DeleteEntry { index, name })
+    }
 
+    /// The answer was Delete. Nothing can have shifted the index in the
+    /// meantime — the dialog covers the window while it stands.
+    fn remove_entry(&mut self, index: usize, name: String) -> Action {
         if let Some(vault) = self.session.vault.unlocked_mut() {
             vault.remove_entry(index);
         }
-        self.pending_delete = None;
         self.editor = None;
         // Indices shift; the selection has to be re-derived, not adjusted.
         self.selected = None;
@@ -1303,7 +1296,7 @@ impl App {
                 // it is meaningless. Left alone, the editor's stale index turns
                 // the next edit into a silent duplicate.
                 self.editor = None;
-                self.pending_delete = None;
+                self.confirm = None;
                 self.reselect_after_reload();
 
                 self.session.follow = None;
@@ -1371,14 +1364,8 @@ impl App {
                 let Some(revision) = notice.revision.clone() else {
                     return Action::None;
                 };
-                if !rfd_confirm(
-                    "Replace the stored vault",
-                    "The copy where this vault is stored is newer than the one open here. \
-                     Saving will replace it, and the other device's changes will be lost.\n\n\
-                     Save anyway?",
-                ) {
-                    return Action::None;
-                }
+                // The dialog this button lives on carries the warning; there
+                // is nothing left to ask.
                 // Say, explicitly, which version we mean to replace. Without
                 // this the write is refused as the accidental clobber the
                 // conflict check exists to catch — and going around that check
@@ -1395,7 +1382,7 @@ impl App {
                 // give up, and leaving it open would let it be saved back over
                 // the copy they asked for.
                 self.editor = None;
-                self.pending_delete = None;
+                self.confirm = None;
                 self.session.follow = None;
                 self.session.dismissed_revision = None;
                 self.start_reload(follow::Intent::Forced)
@@ -1408,42 +1395,60 @@ impl App {
         }
     }
 
-    /// Ask before quitting outright. Quitting is one click away in the rail and
-    /// in the tray, and it wipes the decrypted vault from memory, so an
-    /// unmodified vault still deserves the question.
-    fn confirm_quit(&self) -> bool {
-        matches!(
-            rfd::MessageDialog::new()
-                .set_title("Quit Askrypt")
-                .set_description("Are you sure you want to quit?")
-                .set_buttons(rfd::MessageButtons::YesNo)
-                .show(),
-            rfd::MessageDialogResult::Yes
-        )
+    /// Put a question in front of everything else.
+    ///
+    /// The `unfocus` is load-bearing rather than tidiness: a `text_input`
+    /// underneath keeps keyboard focus when the dialog goes up, and would eat
+    /// the Escape and Enter the dialog binds.
+    fn ask(&mut self, kind: confirm::Kind) -> Action {
+        self.confirm = Some(kind);
+        Action::Run(operation::focus(confirm::NO_FOCUS))
+    }
+
+    /// A button on the dialog, or the key bound to one.
+    ///
+    /// The question is **taken** before anything acts on it, so a resolution
+    /// that raises the next one — Quit, which falls through to the
+    /// unsaved-changes gate — is not overwritten a moment later.
+    fn resolve_confirm(&mut self, answer: Answer) -> Action {
+        let Some(kind) = self.confirm.take() else {
+            return Action::None;
+        };
+
+        match (kind, answer) {
+            (_, Answer::Cancel) => Action::None,
+            (confirm::Kind::Quit, _) => self.update_global(GlobalMsg::ExitApp),
+            // Save first, and replay the queued action once it lands.
+            (confirm::Kind::UnsavedChanges(action), Answer::Affirm) => {
+                self.after_save = Some(action);
+                self.save_now()
+            }
+            // Don't save: go ahead and lose the changes.
+            (confirm::Kind::UnsavedChanges(action), Answer::Deny) => self.perform(action),
+            (confirm::Kind::DeleteEntry { index, name }, _) => self.remove_entry(index, name),
+        }
+    }
+
+    /// The dialog standing in front of the window, if any.
+    ///
+    /// The shell's own question wins over the follow notice: that notice is
+    /// raised by a probe on a timer and must not shoulder aside a question the
+    /// user is already looking at. It keeps standing — `session.follow` is
+    /// sticky — and comes up as soon as the other is answered.
+    fn dialog(&self) -> Option<Dialog> {
+        match &self.confirm {
+            Some(kind) => Some(kind.dialog()),
+            None => follow::dialog(&self.session),
+        }
     }
 
     /// Ask about unsaved changes before something that would discard them.
-    /// Cancel aborts; Yes saves first and replays the action once the save lands.
+    /// Cancel aborts; Save saves first and replays the action once it lands.
     fn guard(&mut self, action: PendingAction) -> Action {
         if !self.session.vault.is_modified() {
             return self.perform(action);
         }
-
-        let answer = rfd::MessageDialog::new()
-            .set_title("Unsaved Changes")
-            .set_description("You have unsaved changes. Would you like to save them?")
-            .set_buttons(rfd::MessageButtons::YesNoCancel)
-            .show();
-
-        match answer {
-            rfd::MessageDialogResult::Yes => {
-                self.after_save = Some(action);
-                self.save_now()
-            }
-            rfd::MessageDialogResult::Cancel => Action::None,
-            // No, or the dialog was dismissed: go ahead and lose the changes.
-            _ => self.perform(action),
-        }
+        self.ask(confirm::Kind::UnsavedChanges(action))
     }
 
     fn perform(&mut self, action: PendingAction) -> Action {
@@ -1595,10 +1600,10 @@ impl App {
             GlobalMsg::QuitRequested => {
                 // A modified vault gets the unsaved-changes dialog, which is a
                 // confirmation of its own; asking twice would be noise.
-                if self.session.vault.is_modified() || self.confirm_quit() {
+                if self.session.vault.is_modified() {
                     self.update_global(GlobalMsg::ExitApp)
                 } else {
-                    Action::None
+                    self.ask(confirm::Kind::Quit)
                 }
             }
             GlobalMsg::ExitApp => self.guard(PendingAction::Exit),
@@ -1762,12 +1767,34 @@ impl App {
                 self.record_geometry(Some(position), None)
             }
             Event::Window(window::Event::Resized(size)) => self.record_geometry(None, Some(size)),
+            // Asking again over a question already standing would stack two
+            // dialogs, and the one underneath would be unanswerable.
+            Event::Window(window::Event::CloseRequested) if self.dialog().is_some() => Action::None,
             Event::Window(window::Event::CloseRequested) => {
                 if self.session.settings.minimize_to_tray && self.session.tray.is_some() {
                     Action::Run(window::oldest().and_then(|id| window::minimize(id, true)))
                 } else {
                     self.session.clear_messages();
                     self.update_global(GlobalMsg::ExitApp)
+                }
+            }
+            // A dialog owns the keyboard for as long as it stands: Escape and
+            // Enter answer it, and everything else — Tab, Ctrl+S, `/` — is
+            // swallowed rather than reaching the panes it covers. The window
+            // arms above are deliberately *not* gated: geometry still has to be
+            // recorded and the focus probe still has to run.
+            Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) if self.dialog().is_some() => {
+                let Some(dialog) = self.dialog() else {
+                    return Action::None;
+                };
+                let answer = match key {
+                    keyboard::Key::Named(key::Named::Escape) => Some(dialog.escape()),
+                    keyboard::Key::Named(key::Named::Enter) => dialog.enter(),
+                    _ => None,
+                };
+                match answer {
+                    Some(message) => Action::Run(Task::done(message)),
+                    None => Action::None,
                 }
             }
             Event::Keyboard(keyboard::Event::KeyPressed {
@@ -1847,16 +1874,25 @@ impl App {
 
         let status = self.session.status_line();
 
-        root.push(
-            row![
-                panes::sidebar::view(self),
-                rule::vertical(1).style(theme::pane_divider),
-                working,
-            ]
-            .height(Length::Fill),
-        )
-        .push(panes::statusbar::view(self, &status))
-        .into()
+        let root: Element<'_, Message> = root
+            .push(
+                row![
+                    panes::sidebar::view(self),
+                    rule::vertical(1).style(theme::pane_divider),
+                    working,
+                ]
+                .height(Length::Fill),
+            )
+            .push(panes::statusbar::view(self, &status))
+            .into();
+
+        // The one thing that draws over the whole window, status bar included:
+        // a question has to be answered before anything underneath it means
+        // anything.
+        match self.dialog() {
+            Some(dialog) => confirm::overlay(root, dialog),
+            None => root,
+        }
     }
 
     fn search_bar(&self) -> Element<'_, Message> {

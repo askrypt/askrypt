@@ -80,25 +80,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     let body = scrollable(content).width(Length::Fill).height(Length::Fill);
 
-    // Deleting takes two presses: the first arms the button, the second commits.
-    let armed = app.pending_delete == Some(index);
-
     let toolbar = container(
         row![
             icon_action(icon::pencil(14), "Edit", Message::EditEntry(index)),
             icon_action(icon::files(14), "Duplicate", Message::DuplicateEntry(index)),
             // Eats the slack, pushing delete flush right.
             space().width(Length::Fill),
-            if armed {
-                Element::from(
-                    button(text("Confirm delete").size(13))
-                        .padding([4, 10])
-                        .style(button::danger)
-                        .on_press(Message::DeleteEntry(index)),
-                )
-            } else {
-                danger_action(icon::trash(14), "Delete", Message::DeleteEntry(index))
-            },
+            // Asks first: the confirmation is a dialog over the window.
+            danger_action(icon::trash(14), "Delete", Message::DeleteEntry(index)),
         ]
         .spacing(8)
         .align_y(Vertical::Center),

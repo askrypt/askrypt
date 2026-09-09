@@ -157,6 +157,21 @@ pub fn detail_background(theme: &Theme) -> container::Style {
     }
 }
 
+/// The dimmed backdrop behind a `confirm::Dialog`.
+///
+/// The one deliberate exception to "every style is palette-derived". A scrim
+/// has to *darken* whatever is behind it, and it is behind it in both themes,
+/// so no palette entry works — the theme's own background would lighten the
+/// dark one. A low-alpha black is theme-independent on purpose. The card that
+/// sits on top is `theme::card`, whose `container_border_r5` paints a solid
+/// `palette().background`, so the dialog itself stays fully themed.
+pub fn modal_scrim(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()),
+        ..Default::default()
+    }
+}
+
 pub fn pane_divider(theme: &Theme) -> rule::Style {
     rule::weak(theme)
 }
