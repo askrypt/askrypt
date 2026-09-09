@@ -1,7 +1,7 @@
 [package]
 name = "askrypt-server"
 description = "Askrypt cloud server: accounts + opaque encrypted-vault storage"
-version = "0.1.0"
+version = "0.7.1-dev"
 edition = "2024"
 license = "Apache-2.0"
 publish = false

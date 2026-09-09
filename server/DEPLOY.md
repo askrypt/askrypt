@@ -215,7 +215,7 @@ Every deploy logs which commit is running, from build args baked into the
 image by `docker-build.sh`:
 
 ```
-INFO askrypt_server: build revision=03f19d1 commit="feat(desktop): …" version=0.1.0
+INFO askrypt_server: build revision=03f19d1 commit="feat(desktop): …" version=0.7.1
 ```
 
 The same values are on the image as `org.opencontainers.image.revision` and

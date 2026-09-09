@@ -1,6 +1,6 @@
 ; Inno Setup script for the Askrypt desktop app.
 ; Build locally:
-;   iscc /DMyAppVersion=0.7.0 installer\windows\askrypt.iss
+;   iscc /DMyAppVersion=0.7.1 installer\windows\askrypt.iss
 ; (defaults to target\x86_64-pc-windows-msvc\release\askrypt.exe; override
 ; with /DSourceDir=... to package a different build, e.g. win-gnu)
 ;
