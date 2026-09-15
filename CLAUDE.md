@@ -84,8 +84,8 @@ Files: `main.rs` (App, `Message`, `visible()`/`reconcile_selection()`, panes, su
 ## Encryption model
 
 1. Answers normalized (lowercase, strip whitespace/dashes, optional RU/UK transliteration via `Params.translit`).
-2. PBKDF2 per answer (600,000 iterations default).
-3. Layered: first answer unlocks remaining questions; all answers unlock the master key; master key encrypts entries and attachments.
+2. Two PBKDF2 derivations (600,000 iterations each by default), not one per answer: first answer → first key; remaining answers concatenated → second key.
+3. Layered: first key unlocks remaining questions; second key unlocks the master key; master key encrypts entries and attachments.
 4. Vault = ZIP of `askrypt.json` + encrypted blobs. See `SPEC.md`.
 
 ## Mobile app — `app/`

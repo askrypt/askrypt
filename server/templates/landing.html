@@ -69,7 +69,7 @@
     <p class="landing-stat-value"><a
        href="https://en.wikipedia.org/wiki/PBKDF2"
        target="_blank" rel="noopener noreferrer">600,000</a></p>
-    <p class="landing-stat-label">PBKDF2 rounds per answer</p>
+    <p class="landing-stat-label">PBKDF2 iterations per key</p>
   </article>
   <article>
     <p class="landing-stat-value"><a
@@ -107,7 +107,8 @@
       <span class="landing-seq-num">03</span>
       <div>
         <h3>The remaining answers, together, unlock the master key.</h3>
-        <p>Get one wrong, and the vault stays exactly as sealed as it was
+        <p>They are joined and stretched once more through the same 600,000
+        iterations. Get one wrong, and the vault stays exactly as sealed as it was
         before you started &mdash; no hint, no recovery email.</p>
       </div>
     </li>

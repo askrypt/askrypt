@@ -31,9 +31,10 @@ lowercased, with all whitespace and dashes stripped, and optionally transliterat
 Russian/Ukrainian. The vault uses a **layered** scheme so answers can be changed without
 re-encrypting everything:
 
-- Answers are normalized, then stretched with **PBKDF2-HMAC-SHA256** (600,000 iterations by default).
-- The **first answer** unlocks the remaining security questions.
-- **All answers together** unlock the master key.
+- Answers are normalized, then stretched with **PBKDF2-HMAC-SHA256** in two derivations
+  (600,000 iterations each by default) — not one per answer.
+- The **first answer** derives a key that unlocks the remaining security questions.
+- The **remaining answers, concatenated**, derive a key that unlocks the master key.
 - The **master key** encrypts the actual secrets (AES-256-CBC).
 
 See [`SPEC.md`](SPEC.md) for the complete vault format and algorithm. For a hands-on,
