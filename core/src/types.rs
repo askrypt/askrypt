@@ -277,6 +277,91 @@ pub struct CardFields {
     pub pin: String,
 }
 
+/// Longest custom field name an editor lets the user type, in Unicode scalar
+/// values. Readers accept longer ones; see `SPEC.md`, "Custom fields".
+pub const MAX_CUSTOM_FIELD_NAME_CHARS: usize = 100;
+/// Longest custom field value an editor lets the user type, in Unicode scalar
+/// values. Readers accept longer ones.
+pub const MAX_CUSTOM_FIELD_VALUE_CHARS: usize = 5000;
+
+/// How a [`CustomField`] is rendered. The wire carries the type as a string so
+/// that a type a later build adds survives a save by this one; anything this
+/// enum does not know reads as [`CustomFieldType::Text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomFieldType {
+    /// Plain text, shown as typed.
+    Text,
+    /// A secret: masked until revealed, never searched.
+    Hidden,
+    /// A yes/no flag; the value is `"true"` or `"false"`.
+    Checkbox,
+    /// A web address, opened on click when it looks like one.
+    Link,
+}
+
+impl CustomFieldType {
+    /// Every known type, in the order editors offer them.
+    pub const ALL: [CustomFieldType; 4] = [Self::Text, Self::Hidden, Self::Checkbox, Self::Link];
+
+    /// The string written to the `type` key.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Hidden => "hidden",
+            Self::Checkbox => "checkbox",
+            Self::Link => "link",
+        }
+    }
+
+    /// Parse a `type` string, case-insensitively. `None` for a type this build
+    /// does not know.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str().eq_ignore_ascii_case(value.trim()))
+    }
+}
+
+/// One user-defined field on an entry, written into the entry's
+/// `custom_fields` array as `{"name", "value", "type"}`; see `SPEC.md`.
+///
+/// `field_type` stays a `String` rather than [`CustomFieldType`] so that an
+/// element with a type this build does not know is carried back out exactly as
+/// it came in. [`kind`](Self::kind) is how code asks what to draw.
+///
+/// Derives `Zeroize` but deliberately **not** `ZeroizeOnDrop`, for the reason
+/// [`CardFields`] gives; `SecretEntry`'s own `ZeroizeOnDrop` wipes the values.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Zeroize)]
+pub struct CustomField {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(rename = "type", default)]
+    pub field_type: String,
+}
+
+impl CustomField {
+    /// A field of a known type.
+    pub fn new(name: impl Into<String>, value: impl Into<String>, kind: CustomFieldType) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            field_type: kind.as_str().to_string(),
+        }
+    }
+
+    /// How to render this field; an unknown type renders as text.
+    pub fn kind(&self) -> CustomFieldType {
+        CustomFieldType::parse(&self.field_type).unwrap_or(CustomFieldType::Text)
+    }
+
+    /// Whether a checkbox field is ticked: its value is `"true"`, in any case.
+    pub fn is_checked(&self) -> bool {
+        self.value.trim().eq_ignore_ascii_case("true")
+    }
+}
+
 /// Represents a user's secret entry (password, note, etc.)
 ///
 /// `ZeroizeOnDrop` wipes the secret-bearing fields from memory when an entry is
@@ -306,6 +391,11 @@ pub struct SecretEntry {
     /// and belong to the archive rather than to the decrypted entry list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
+    /// User-defined fields, in display order. Omitted from the JSON when
+    /// empty, so an entry without any serializes exactly as it did before they
+    /// existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_fields: Vec<CustomField>,
     /// The card fields, spread across the entry's own JSON object rather than
     /// nested under a `card` key. Empty on everything that is not a card.
     ///

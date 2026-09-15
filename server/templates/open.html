@@ -270,6 +270,14 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
 
     <label class="open-check"><input id="entry-hidden" type="checkbox"> Hidden</label>
 
+    <!-- The entry's own fields. The rows are written by `vault-open.js`, since
+         every value in them comes out of the decrypted entry. -->
+    <div id="entry-custom-fields">
+      <p class="hint">Custom fields</p>
+      <ul class="custom-fields" id="entry-field-list"></ul>
+      <button class="button small secondary" type="button" id="entry-field-add">Add field</button>
+    </div>
+
     <!-- Attached files. Listed and downloadable, but not added or removed:
          this page carries them, the desktop app edits them. The rows are
          written by `vault-open.js`, since every value in them comes out of the

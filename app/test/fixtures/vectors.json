@@ -162,6 +162,33 @@
     "expected_entries": [
       {
         "created": 1704067200,
+        "custom_fields": [
+          {
+            "name": "Account",
+            "type": "text",
+            "value": "40817"
+          },
+          {
+            "name": "Recovery code",
+            "type": "hidden",
+            "value": "abcd-1234"
+          },
+          {
+            "name": "2FA enabled",
+            "type": "checkbox",
+            "value": "true"
+          },
+          {
+            "name": "Portal",
+            "type": "link",
+            "value": "https://example.com/login"
+          },
+          {
+            "name": "OTP seed",
+            "type": "totp",
+            "value": "JBSWY3DPEHPK3PXP"
+          }
+        ],
         "hidden": false,
         "modified": 1704153600,
         "name": "Example",
@@ -240,6 +267,6 @@
       "What city were you born in?"
     ],
     "translit": false,
-    "vault_b64": "UEsDBBQAAAAIAD2XF13SdeqP+wUAANAHAAAMAAAAYXNrcnlwdC5qc29uNZDHrttaEkXn/gpBkx6w/ZiTAaNBMYlBzHnSYM5iTnp4/964tnt41lm7sKv+/na73fd8Xurhff9xu0N/0fd/f7Fpy5e1Ht7QF/WreL3Vy+0atvnWD2uVz/9abn1cZ/n79o77/D+/Q2M8x/1y/3H7+9vtdrvd26z4io9JmxXIL+V2u9drPsdfo79EGIKgP3yJu/XL1pQKCWE+IYLoeO+1dKVD0JU/f/4/v87xe+nqL7eIuyX/g6th+RXf83Qd5u+/nn++tjGL1zz7b/xLQCCE+A7B3yHEgdAfEPYDwqP7t9vtn997f7W6EzH2jI4cf0F6niZhWoYS/KKo6eVXDWHNwcUDVANsMBJCPsCnBuax6iFpn0RombYuPZXsJk/dwU5c0BDDjUxMC7jhcYcW0RBZTJVuTBVjqQ8rdQCVxrPK+ciaumWq75rIUXohtyTeDHrh7uw01VPlgG764iUWcDh3OHcPdfEDVRCc+n2Xex8vaz5/dY90mxibRKbtNnNMcqV0R8xdZb9AHBVpYvUE5XTCRIpIppLoHS/zHRVeb0RuC7p3igc4Xhex+LH/Flc3NfQh78G9hUEufSlygqKmrll5xjZgy3ZznetkSiTDKTSqief7EAy/+2TxGn+1Sd4exeLQRxgXbRYhTOg1IRUK1MefO5GeiZwWxH5CJnmK8xPRX1gTledHle3dP2j46t2X2cTbjA0Ln1txYV1lFQY00PvVp4gNcMEOfANy6tE4pjIukK8JvlYdLlbsthMPsW6D48XA1EasU8TRzrS+1CJT9ovZh6fAMUuryAF26lipB3I9LfrZ89xTkl6t9YiQxosNcYM81/LEOiqa1Ck0rhdEmDvUw4YqCobKrHeix9KvhDYyQ04Wy6Qw9CyCANpfhB/wylqLayZPNjgYoYkAlmmTRB5I7xYWljmOHFibUnMLIYoAkQfozmytiFloz8jhjDKzvPj3Gx5byNYif0mZEptglY9ULC/cQ2dWGSuET7rHE2IkzDsWej5TnLQblTUcXQCji41IhE9+gOdlFOoCNVZEK+SswygsLQ/XGGeOalWlTlW/r899ao1drnlCRTzUymg/ZC9g+yzMZnH8k0mAxAyeI34sTvSg9p3AvCzWOVaHPP3pdc4RhogXAktxGtCjSlpMWIgiLGfi1Y752lYNQlvREIJTnXUaNjIZHw2pZKJKMyUNIhzYrJXNk8Hg56sE0QoH5Qg71UfXxa/Hbp4DlHuVIQcYrevdA3WRKIlmdQ7IFDsvumnOfLRIDbGa04Dg3Keoh+5p5VrXe0HL+bMeimCizTKb8k8jueJHDHkqhVJOYSIKkpWWy99cnRIkLZhIqoeB+okhcIIlu+Nx4SPWwdMju3oUI6RFxGdGphyFlwM7u8QFPRggehe8ahge9bTbZ79g7OZuMmCLPDcknaBg5LNCjtw8TqoRUeJN+9bM53Oaa3yyfjRHJL1Yz06t7pryI6HS0kuigWSAFBSsdZ0mSaG6Up1q1uwI2zwWBUe5awVonzbbQygbBZwrCCOpfYIdTOe6AjjeUiJsWbPiqt+a/qOn+xMlYqxNNnS8igFyWsd/1INTHHy6jZc2ZSFBBRtbjOxnnHXlwxA9uM85hckB9eaVk+OD3Ixnh3vJmmTxuqUOL8DUMWQGp4XSM9ps3emDYq2DYLOZIzGleQJvrVV1SoEqzWHGpua6anCtvZLEyA9rbIyKDgR5A7Eulx6Ub8O9tvcAR6FBO6CIP3dK4TivUet9gTqPus4hRQoA+qkFosKhs6yJqueyZLQYryRdRpbxaW/gCIBOM80+X5h3pYARa2XX1TozT4nJPGa/pS0aMnlotYs376g8K+0fWLqUgtuAo4QQVzoTS+8WBNK68JOIxGgHIrNsMAl0QW6vxFOmYUrWe3akC4C3Ivz0IGYy5maSh03a3gfWOp0vQ15T6OAK45tgl3ytXLhFlwb5Vm163+u8i0F7YuOmfY5kFc2zAzNgbKtwOL87hK3cy3A/JTVIArm9Ju7aTmzOrKeaN52NBVAgQpQKVro0ukeVpj/v3/75H1BLAwQUAAAACAA9lxdd+wPl7iUAAAAgAAAAJgAAAGZpbGVzLzAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmASAA3//0PWi/kWrFxPvRRigS2F6EC/i0UIWulzmEBKw8IOEW8FBLAQIUAxQAAAAIAD2XF13SdeqP+wUAANAHAAAMAAAAAAAAAAAAAACkgQAAAABhc2tyeXB0Lmpzb25QSwECFAMUAAAACAA9lxdd+wPl7iUAAAAgAAAAJgAAAAAAAAAAAAAApIElBgAAZmlsZXMvMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWZQSwUGAAAAAAIAAgCOAAAAjgYAAAAA"
+    "vault_b64": "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"
   }
 }

@@ -807,6 +807,10 @@ askrypt/
     (15 tests) plus unit tests in `src/hardening.rs` and `src/config.rs`.
 
 - **Phase 14 — the in-browser vault viewer.** ✅ *(done 2026-08-20)*
+  *Custom fields (2026-09-15):* the editor draws `custom_fields` rows in
+  `vault-open.js` (`customFieldRow`/`readCustomFields`; raw `type` in
+  `data-type` so unknown types round-trip; link `href` only for `http(s)`;
+  hidden values masked, not searched; cleared with the other fields).
   `/open` unlocks and edits a vault in the visitor's browser. It reverses a
   decision this plan recorded twice — the landing page and the footer both
   said the site could not open a vault — and the reversal is worth stating

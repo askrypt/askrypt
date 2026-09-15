@@ -8,9 +8,10 @@
 //! preserved. Nothing here touches storage; saving edits `session.entries` and
 //! marks the vault dirty, and the vault is written only by an explicit Save.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
-use askrypt::SecretEntry;
+use askrypt::{CustomField, CustomFieldType, SecretEntry};
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_editor, text_input,
 };
@@ -49,6 +50,10 @@ pub struct State {
     /// The card's CVV, revealed on its own: it is the one card field you
     /// routinely need to read while the number stays covered.
     cvv_revealed: bool,
+    /// Indices into `entry.custom_fields` of the `hidden` fields shown in the
+    /// clear. Emptied whenever the rows shift, so a reveal never lands on a
+    /// different field.
+    revealed_fields: HashSet<usize>,
     error: Option<String>,
 }
 
@@ -61,6 +66,7 @@ impl State {
             tags: String::new(),
             revealed: false,
             cvv_revealed: false,
+            revealed_fields: HashSet::new(),
             error: None,
         }
     }
@@ -73,6 +79,7 @@ impl State {
             entry,
             revealed: false,
             cvv_revealed: false,
+            revealed_fields: HashSet::new(),
             error: None,
         }
     }
@@ -84,6 +91,7 @@ impl State {
         copy.entry.name = format!("{} (copy)", copy.entry.name);
         copy.revealed = false;
         copy.cvv_revealed = false;
+        copy.revealed_fields.clear();
         copy
     }
 
@@ -134,6 +142,14 @@ pub enum Msg {
     Attached(Box<Result<manager::Attached, String>>),
     /// Drop an attachment from this draft, by id.
     RemoveAttachment(String),
+    CustomFieldAdded,
+    CustomFieldRemoved(usize),
+    CustomFieldNameEdited(usize, String),
+    CustomFieldValueEdited(usize, String),
+    /// The type picker, by its label (see [`type_label`]).
+    CustomFieldTypeSelected(usize, String),
+    CustomFieldToggled(usize, bool),
+    CustomFieldReveal(usize),
     Save,
     Cancel,
 }
@@ -272,6 +288,72 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
             state.entry.attachments.retain(|file| file.id != id);
             (Action::None, false)
         }
+        Msg::CustomFieldAdded => {
+            state
+                .entry
+                .custom_fields
+                .push(CustomField::new("", "", CustomFieldType::Text));
+            (Action::None, false)
+        }
+        Msg::CustomFieldRemoved(index) => {
+            if index < state.entry.custom_fields.len() {
+                state.entry.custom_fields.remove(index);
+                state.revealed_fields.clear();
+            }
+            (Action::None, false)
+        }
+        // Capped here rather than in the view, so a paste is cut exactly like a
+        // run of keystrokes.
+        Msg::CustomFieldNameEdited(index, value) => {
+            if let Some(field) = state.entry.custom_fields.get_mut(index) {
+                field.name = value
+                    .chars()
+                    .take(askrypt::MAX_CUSTOM_FIELD_NAME_CHARS)
+                    .collect();
+                state.error = None;
+            }
+            (Action::None, false)
+        }
+        Msg::CustomFieldValueEdited(index, value) => {
+            if let Some(field) = state.entry.custom_fields.get_mut(index) {
+                field.value = value
+                    .chars()
+                    .take(askrypt::MAX_CUSTOM_FIELD_VALUE_CHARS)
+                    .collect();
+                state.error = None;
+            }
+            (Action::None, false)
+        }
+        Msg::CustomFieldTypeSelected(index, label) => {
+            if let Some(field) = state.entry.custom_fields.get_mut(index) {
+                let was_checkbox = field.kind() == CustomFieldType::Checkbox;
+                // A label that names no known type is the field's own unknown
+                // type, offered so that picking it keeps it as it was.
+                if let Some(kind) = CustomFieldType::parse(&label) {
+                    field.field_type = kind.as_str().to_string();
+                }
+                match (was_checkbox, field.kind() == CustomFieldType::Checkbox) {
+                    (false, true) => {
+                        field.value = if field.is_checked() { "true" } else { "false" }.to_string();
+                    }
+                    (true, false) => field.value.clear(),
+                    _ => {}
+                }
+            }
+            (Action::None, false)
+        }
+        Msg::CustomFieldToggled(index, checked) => {
+            if let Some(field) = state.entry.custom_fields.get_mut(index) {
+                field.value = checked.to_string();
+            }
+            (Action::None, false)
+        }
+        Msg::CustomFieldReveal(index) => {
+            if !state.revealed_fields.remove(&index) {
+                state.revealed_fields.insert(index);
+            }
+            (Action::None, false)
+        }
         Msg::CardHolderEdited(value) => {
             state.entry.card.holder = value;
             (Action::None, false)
@@ -354,7 +436,21 @@ fn save(state: &mut State, session: &mut Session) -> (Action, bool) {
         return (Action::None, false);
     }
 
+    // A row left entirely blank is an "Add field" click nobody followed up on;
+    // a value with no name would render as an unlabelled line, so it is refused.
+    if state.entry.custom_fields.iter().any(|field| {
+        field.name.trim().is_empty()
+            && field.kind() != CustomFieldType::Checkbox
+            && !field.value.trim().is_empty()
+    }) {
+        state.error = Some("Custom field name cannot be empty".to_string());
+        return (Action::None, false);
+    }
+
     let mut entry = state.entry.clone();
+    entry
+        .custom_fields
+        .retain(|field| !field.name.trim().is_empty());
     entry.notes = state.notes.text();
     entry.tags = state
         .tags
@@ -472,6 +568,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         .spacing(12),
     );
 
+    body = body.push(custom_fields_section(state));
     body = body.push(attachments_section(state, session));
 
     if let Some(error) = &state.error {
@@ -770,6 +867,113 @@ fn attachments_section<'a>(state: &'a State, session: &'a Session) -> Element<'a
     );
 
     field("Files", rows.into())
+}
+
+/// The label the type picker shows for a `type` string: the known types
+/// capitalized, an unknown one as written.
+fn type_label(field_type: &str) -> String {
+    match CustomFieldType::parse(field_type) {
+        Some(CustomFieldType::Text) => "Text".to_string(),
+        Some(CustomFieldType::Hidden) => "Hidden".to_string(),
+        Some(CustomFieldType::Checkbox) => "Checkbox".to_string(),
+        Some(CustomFieldType::Link) => "Link".to_string(),
+        None => field_type.to_string(),
+    }
+}
+
+/// The user's own fields: one bordered row per field with its type, name and a
+/// value control that suits the type, and an "Add field" button below.
+fn custom_fields_section(state: &State) -> Element<'_, Message> {
+    let mut rows = column![].spacing(6);
+
+    for (index, field) in state.entry.custom_fields.iter().enumerate() {
+        let mut choices: Vec<String> = CustomFieldType::ALL
+            .into_iter()
+            .map(|kind| type_label(kind.as_str()))
+            .collect();
+        let current = type_label(&field.field_type);
+        if !choices.contains(&current) {
+            choices.push(current.clone());
+        }
+
+        let header = row![
+            text_input("Field name", &field.name)
+                .on_input(move |value| Message::Editor(Msg::CustomFieldNameEdited(index, value)))
+                .padding(6)
+                .size(13)
+                .width(Length::Fill),
+            pick_list(choices, Some(current), move |choice| {
+                Message::Editor(Msg::CustomFieldTypeSelected(index, choice))
+            })
+            .text_size(13)
+            .padding([4, 8])
+            .width(Length::Fixed(110.0)),
+            theme::text_button_icon(icon::trash(14), "Remove this field")
+                .on_press(Message::Editor(Msg::CustomFieldRemoved(index))),
+        ]
+        .spacing(6)
+        .align_y(Vertical::Center);
+
+        let value: Element<'_, Message> = match field.kind() {
+            CustomFieldType::Checkbox => checkbox(field.is_checked())
+                .size(16)
+                .on_toggle(move |checked| Message::Editor(Msg::CustomFieldToggled(index, checked)))
+                .into(),
+            kind => {
+                let revealed = state.revealed_fields.contains(&index);
+                let placeholder = if kind == CustomFieldType::Link {
+                    "https://example.com"
+                } else {
+                    "Value"
+                };
+                let input = text_input(placeholder, &field.value)
+                    .on_input(move |value| {
+                        Message::Editor(Msg::CustomFieldValueEdited(index, value))
+                    })
+                    .secure(kind == CustomFieldType::Hidden && !revealed)
+                    .padding(6)
+                    .size(13)
+                    .width(Length::Fill);
+                if kind == CustomFieldType::Hidden {
+                    let (glyph, tip) = if revealed {
+                        (icon::eye_slash(14), "Hide value")
+                    } else {
+                        (icon::eye(14), "Show value")
+                    };
+                    row![
+                        input,
+                        theme::text_button_icon(glyph, tip)
+                            .on_press(Message::Editor(Msg::CustomFieldReveal(index))),
+                    ]
+                    .spacing(6)
+                    .align_y(Vertical::Center)
+                    .into()
+                } else {
+                    input.into()
+                }
+            }
+        };
+
+        rows = rows.push(
+            container(column![header, value].spacing(6))
+                .padding([8, 10])
+                .style(theme::container_border_r5)
+                .width(Length::Fill),
+        );
+    }
+
+    rows = rows.push(
+        button(
+            row![icon::plus_lg(14), text("Add field").size(13)]
+                .spacing(6)
+                .align_y(Vertical::Center),
+        )
+        .padding([8, 14])
+        .style(button::secondary)
+        .on_press(Message::Editor(Msg::CustomFieldAdded)),
+    );
+
+    field("Custom fields", rows.into())
 }
 
 fn reveal_button<'a>(

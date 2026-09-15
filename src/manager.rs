@@ -1895,6 +1895,7 @@ mod tests {
             modified: 1_581_428_873,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }
     }

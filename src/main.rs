@@ -149,6 +149,8 @@ pub enum Message {
     EntrySelected(usize),
     ToggleReveal,
     ToggleCvvReveal,
+    /// Show or hide one `hidden` custom field of the selected entry, by index.
+    ToggleFieldReveal(usize),
     Copy {
         what: &'static str,
         value: String,
@@ -262,6 +264,9 @@ pub struct App {
     /// because it is the one card field you routinely need to read while the
     /// number stays covered; reset alongside it.
     cvv_revealed: bool,
+    /// Indices of the selected entry's `hidden` custom fields shown in the
+    /// clear, each revealed on its own; reset alongside [`Self::revealed`].
+    revealed_fields: BTreeSet<usize>,
     /// The question standing in front of everything else, if any. While this
     /// is set the dialog covers the window and nothing underneath can be
     /// clicked or typed into.
@@ -301,6 +306,7 @@ impl App {
             selected: None,
             revealed: false,
             cvv_revealed: false,
+            revealed_fields: BTreeSet::new(),
             confirm: None,
             editor: None,
             after_save: None,
@@ -466,6 +472,7 @@ impl App {
         self.selected = visible.first().copied();
         self.revealed = false;
         self.cvv_revealed = false;
+        self.revealed_fields.clear();
     }
 
     /// Distinct entry types, derived from *all* entries (hidden included) so
@@ -598,6 +605,7 @@ impl App {
         self.selected = None;
         self.revealed = false;
         self.cvv_revealed = false;
+        self.revealed_fields.clear();
         self.confirm = None;
     }
 
@@ -671,6 +679,7 @@ impl App {
                 self.selected = Some(index);
                 self.revealed = false;
                 self.cvv_revealed = false;
+                self.revealed_fields.clear();
                 self.confirm = None;
                 Action::None
             }
@@ -680,6 +689,12 @@ impl App {
             }
             Message::ToggleCvvReveal => {
                 self.cvv_revealed = !self.cvv_revealed;
+                Action::None
+            }
+            Message::ToggleFieldReveal(index) => {
+                if !self.revealed_fields.remove(&index) {
+                    self.revealed_fields.insert(index);
+                }
                 Action::None
             }
             Message::Copy { what, value } => {
@@ -1350,6 +1365,7 @@ impl App {
         });
         self.revealed = false;
         self.cvv_revealed = false;
+        self.revealed_fields.clear();
         self.reconcile_selection();
     }
 

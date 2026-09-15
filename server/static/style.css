@@ -709,6 +709,24 @@ code {
 .open-files .hint { flex: 1 1 auto; margin: 0; white-space: nowrap; }
 .open-files .button { margin-top: 0; margin-right: 0; flex: 0 0 auto; }
 
+/* An entry's custom fields: a name / type / remove row over the value. */
+.custom-fields {
+  margin: 0.3rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.custom-fields li {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.custom-fields select { flex: 0 0 auto; width: auto; }
+.custom-fields .open-check { margin-top: 0.4rem; }
+.custom-fields a.button { text-decoration: none; }
+.custom-fields a.button[hidden] { display: none; }
+
 .reveal-row { display: flex; gap: 0.6rem; align-items: center; }
 .reveal-row input { flex: 1 1 auto; min-width: 0; }
 .reveal-row .button.secondary { margin-top: 0; margin-right: 0; white-space: nowrap; }

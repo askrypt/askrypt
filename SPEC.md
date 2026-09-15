@@ -57,6 +57,9 @@ An Askrypt file is a JSON with the following fields:
     element carries the metadata for one file whose bytes live in a ZIP member
     of their own; see [File attachments](#file-attachments) for the fields and
     the rules.
+  * `custom_fields` - user-defined fields on this entry, in display order
+    (array of objects, optional, any entry type). **Omitted when empty**. See
+    [Custom fields](#custom-fields).
 
 ```json
 {
@@ -88,6 +91,42 @@ dangling `ubuntu@`. Readers must treat the whole value as **opaque display
 text** — vaults written before this convention carry a bare host name with no
 OS half — and must sanitize it before display, since it is attacker-controlled
 in a file that anyone can craft.
+
+## Custom fields
+
+Each element of an entry's `custom_fields` array is one field; a writer always
+writes all three keys:
+
+```json
+"custom_fields": [
+  {"name": "Recovery code", "value": "abcd-1234", "type": "hidden"},
+  {"name": "2FA enabled", "value": "true", "type": "checkbox"},
+  {"name": "Portal", "value": "https://bank.example/login", "type": "link"}
+]
+```
+
+* `name` - the field's label (string)
+* `value` - the field's value (string, for every type)
+* `type` - how the value is rendered (string). Writers write it lowercase;
+  readers compare case-insensitively:
+  * `text` - shown as typed
+  * `hidden` - a secret: masked until revealed, and not matched by search
+  * `checkbox` - a flag, checked iff `value` is `"true"` (case-insensitive);
+    writers write `"true"` or `"false"`
+  * `link` - a web address; clients make it clickable only when it is an
+    `http://` or `https://` URL, and show anything else as text
+
+Rules:
+
+1. **A reader MUST render a `type` it does not know as `text`, and a writer MUST
+   carry such an element through unchanged**, `type` string included, so a type
+   added later survives a save by an older client.
+2. **Every client must carry `custom_fields`**, like the `card_*` keys and
+   `attachments`: dropping the key on save deletes the fields.
+3. Editors SHOULD cap `name` at **100** and `value` at **5000** Unicode scalar
+   values. Readers MUST NOT reject longer ones.
+4. Names and values come from a file anyone can craft: render them as text,
+   never markup.
 
 ## File attachments
 

@@ -513,6 +513,32 @@ export const CARD_KEYS = [
   "card_expiry", "card_cvv", "card_pin",
 ];
 
+/** The custom field types this port renders. `type` is a free string on the
+ *  wire: a type not in this list renders as text and is written back out
+ *  unchanged, so a later build's type survives a save here. */
+export const CUSTOM_FIELD_TYPES = ["text", "hidden", "checkbox", "link"];
+/** Editor caps, in Unicode scalar values (`[...s].length`). Readers accept
+ *  longer values; see SPEC.md, "Custom fields". */
+export const MAX_CUSTOM_FIELD_NAME_CHARS = 100;
+export const MAX_CUSTOM_FIELD_VALUE_CHARS = 5000;
+
+/** How to render a custom field: its type, lowercased, or `"text"` when the
+ *  type is not one this port knows. */
+export function customFieldKind(field) {
+  const type = text(field?.type).trim().toLowerCase();
+  return CUSTOM_FIELD_TYPES.includes(type) ? type : "text";
+}
+
+/** Whether a checkbox field is ticked: its value is `"true"`, in any case. */
+export function isChecked(field) {
+  return text(field?.value).trim().toLowerCase() === "true";
+}
+
+function customFieldFromJson(raw) {
+  if (raw === null || typeof raw !== "object") return null;
+  return { name: text(raw.name), value: text(raw.value), type: text(raw.type) };
+}
+
 export function isCard(entry) {
   return (entry.type || "").toLowerCase() === "card";
 }
@@ -540,6 +566,9 @@ function entryFromJson(raw) {
   for (const key of CARD_KEYS) entry[key] = text(raw[key]);
   entry.attachments = Array.isArray(raw.attachments)
     ? raw.attachments.map(attachmentFromJson).filter((a) => a.id !== "")
+    : [];
+  entry.custom_fields = Array.isArray(raw.custom_fields)
+    ? raw.custom_fields.map(customFieldFromJson).filter(Boolean)
     : [];
   return entry;
 }
@@ -595,6 +624,14 @@ function entryToJson(entry) {
       iv: text(a.iv),
     }));
   }
+  // Omitted when empty too; every element writes all three keys.
+  if (Array.isArray(entry.custom_fields) && entry.custom_fields.length > 0) {
+    out.custom_fields = entry.custom_fields.map((f) => ({
+      name: text(f.name),
+      value: text(f.value),
+      type: text(f.type),
+    }));
+  }
   return out;
 }
 
@@ -603,7 +640,7 @@ export function blankEntry() {
   const entry = {
     name: "", user_name: "", secret: "", url: "", notes: "",
     type: "Login", tags: [], created: now, modified: now, hidden: false,
-    attachments: [],
+    attachments: [], custom_fields: [],
   };
   for (const key of CARD_KEYS) entry[key] = "";
   return entry;

@@ -2,11 +2,11 @@
 //! action toolbar.
 
 use iced::widget::{
-    Column, Row, Text, button, column, container, row, rule, scrollable, space, text,
+    Column, Row, Text, button, checkbox, column, container, row, rule, scrollable, space, text,
 };
 use iced::{Element, Length, alignment::Vertical};
 
-use askrypt::SecretEntry;
+use askrypt::{CustomFieldType, SecretEntry};
 
 use crate::data;
 use crate::{App, Message, icon, theme};
@@ -35,6 +35,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .spacing(14)
     .padding(20)
     .width(Length::Fill);
+
+    if let Some(card) = custom_fields_card(app, entry) {
+        content = content.push(card);
+    }
 
     if !entry.notes.is_empty() {
         content = content.push(theme::card(field_row(
@@ -390,6 +394,75 @@ fn secret_or_dots(value: &str, revealed: bool) -> String {
         (false, true) => value.to_string(),
         (false, false) => DOTS.to_string(),
     }
+}
+
+/// The entry's own fields, one hairline-separated row each under the field's
+/// name — absent when there are none. Names and values come out of a file
+/// anybody could have written, so they are only ever drawn as text.
+fn custom_fields_card<'a>(app: &'a App, entry: &'a SecretEntry) -> Option<Element<'a, Message>> {
+    if entry.custom_fields.is_empty() {
+        return None;
+    }
+
+    let mut rows = column![];
+    for (index, field) in entry.custom_fields.iter().enumerate() {
+        if index > 0 {
+            rows = rows.push(hairline());
+        }
+        let copy = copy_action("Copy value", "field value", field.value.clone());
+
+        let (value, actions): (Element<'a, Message>, Row<'a, Message>) = match field.kind() {
+            CustomFieldType::Checkbox => (
+                // No `on_toggle`: a read-only tick, drawn disabled.
+                checkbox(field.is_checked())
+                    .label(if field.is_checked() { "Yes" } else { "No" })
+                    .size(14)
+                    .text_size(14)
+                    .into(),
+                row![],
+            ),
+            CustomFieldType::Hidden => {
+                let revealed = app.revealed_fields.contains(&index);
+                (
+                    text(secret_or_dots(&field.value, revealed)).size(14).into(),
+                    row![
+                        icon_action(
+                            if revealed {
+                                icon::eye_slash(14)
+                            } else {
+                                icon::eye(14)
+                            },
+                            if revealed { "Hide value" } else { "Show value" },
+                            Message::ToggleFieldReveal(index),
+                        ),
+                        copy,
+                    ]
+                    .spacing(4),
+                )
+            }
+            CustomFieldType::Link if data::is_url(&field.value) => (
+                theme::button_link(field.value.clone(), "Open link", None)
+                    .on_press(Message::OpenUrl(field.value.clone()))
+                    .into(),
+                row![
+                    icon_action(
+                        icon::box_arrow_up_right(14),
+                        "Open link",
+                        Message::OpenUrl(field.value.clone()),
+                    ),
+                    copy,
+                ]
+                .spacing(4),
+            ),
+            CustomFieldType::Text | CustomFieldType::Link => {
+                (text(&field.value).size(14).into(), row![copy])
+            }
+        };
+
+        rows = rows.push(field_row(&field.name, value, actions));
+    }
+
+    Some(theme::card(rows).into())
 }
 
 /// The Website card — absent entirely when the entry has no URL.

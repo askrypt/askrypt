@@ -13,9 +13,10 @@
 // names come out of a file that anybody could have written.
 
 import {
-  CARD_KEYS, DEFAULT_ITERATIONS, MAX_VAULT_BYTES, VaultError, blankEntry,
-  createVault, decryptWithMaster, generateMasterKey, getQuestionsData, isCard,
-  masterForWrite, openAttachment, parseVault,
+  CARD_KEYS, CUSTOM_FIELD_TYPES, DEFAULT_ITERATIONS, MAX_CUSTOM_FIELD_NAME_CHARS,
+  MAX_CUSTOM_FIELD_VALUE_CHARS, MAX_VAULT_BYTES, VaultError, blankEntry,
+  createVault, customFieldKind, decryptWithMaster, generateMasterKey,
+  getQuestionsData, isCard, isChecked, masterForWrite, openAttachment, parseVault,
 } from "./vault-format.js";
 import {
   SMART_LOCK_TIMEOUT_MS, createSmartLock, recoverSmartLock, smartLockRemaining,
@@ -572,7 +573,10 @@ function matches(entry, query) {
   const q = query.toLowerCase();
   const tagQuery = q.startsWith("#") ? q.slice(1) : q;
   return [entry.name, entry.user_name, entry.url, entry.notes,
-    entry.card_holder, entry.card_brand]
+    entry.card_holder, entry.card_brand,
+    // Field names always; values unless the field is `hidden`, a secret.
+    ...(entry.custom_fields ?? []).flatMap((f) =>
+      customFieldKind(f) === "hidden" ? [f.name] : [f.name, f.value])]
     .some((field) => field.toLowerCase().includes(q))
     || entry.tags.some((tag) => tag.toLowerCase().includes(tagQuery));
 }
@@ -684,6 +688,7 @@ function fillEditor(entry) {
   }
   select.value = type;
   syncTypeFields();
+  fillCustomFields(entry.custom_fields ?? []);
   fillFiles(entry);
 
   $("entry-stamp").textContent = entry.created
@@ -707,6 +712,160 @@ function syncTypeFields() {
   const file = type === "file";
   show("entry-card-fields", card);
   show("entry-login-fields", !card && !file);
+}
+
+/// Cuts a string to `max` Unicode scalar values, the unit the format counts.
+/// `maxlength` counts UTF-16 units, so this is the backstop behind it.
+function capRunes(value, max) {
+  const runes = [...value];
+  return runes.length <= max ? value : runes.slice(0, max).join("");
+}
+
+/// A link value that may be opened: http(s) only, so a `javascript:` value out
+/// of a hostile file never becomes a clickable href.
+function safeLink(value) {
+  const trimmed = value.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+function smallButton(label, onClick) {
+  const button = document.createElement("button");
+  // Inside the entry form: a defaulted button would submit it.
+  button.type = "button";
+  button.className = "button small secondary";
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+/// Draws the custom field rows. Each `<li>` carries its field's raw `type` in
+/// `data-type`, so a type this page does not know is written back unchanged.
+function fillCustomFields(fields) {
+  const list = $("entry-field-list");
+  list.replaceChildren();
+  fields.forEach((field) => list.append(customFieldRow(field)));
+}
+
+function customFieldRow(field) {
+  const row = document.createElement("li");
+  row.dataset.type = field.type;
+  const kind = customFieldKind(field);
+
+  const head = document.createElement("div");
+  head.className = "reveal-row";
+  const name = document.createElement("input");
+  name.type = "text";
+  name.autocomplete = "off";
+  name.spellcheck = false;
+  name.maxLength = MAX_CUSTOM_FIELD_NAME_CHARS;
+  name.placeholder = "Field name";
+  name.setAttribute("aria-label", "Field name");
+  name.className = "field-name";
+  name.value = field.name;
+
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Field type");
+  for (const type of CUSTOM_FIELD_TYPES) {
+    select.append(new Option(type[0].toUpperCase() + type.slice(1), type));
+  }
+  if (!CUSTOM_FIELD_TYPES.includes(field.type)) {
+    // Offered as itself, so leaving the picker alone keeps it.
+    select.append(new Option(field.type || "text", field.type));
+  }
+  select.value = field.type;
+  select.addEventListener("change", () => {
+    const current = readCustomField(row);
+    const next = { ...current, type: select.value };
+    const was = customFieldKind(current) === "checkbox";
+    const now = customFieldKind(next) === "checkbox";
+    if (!was && now) next.value = isChecked(current) ? "true" : "false";
+    if (was && !now) next.value = "";
+    row.replaceWith(customFieldRow(next));
+  });
+
+  head.append(name, select, smallButton("Remove", () => row.remove()));
+  row.append(head);
+
+  if (kind === "checkbox") {
+    const label = document.createElement("label");
+    label.className = "open-check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "field-value";
+    box.checked = isChecked(field);
+    label.append(box, " Checked");
+    row.append(label);
+    return row;
+  }
+
+  const body = document.createElement("div");
+  body.className = "reveal-row";
+  const value = document.createElement("input");
+  value.type = "text";
+  value.autocomplete = "off";
+  value.spellcheck = false;
+  value.maxLength = MAX_CUSTOM_FIELD_VALUE_CHARS;
+  value.setAttribute("aria-label", "Field value");
+  value.className = "field-value";
+  value.value = field.value;
+  body.append(value);
+
+  if (kind === "hidden") {
+    maskable(value);
+    const reveal = smallButton("Show", () => {
+      const hiddenNow = isMasked(value);
+      setMasked(value, !hiddenNow);
+      reveal.textContent = hiddenNow ? "Hide" : "Show";
+    });
+    body.append(reveal);
+  } else if (kind === "link") {
+    value.placeholder = "https://example.com";
+    const open = document.createElement("a");
+    open.className = "button small secondary";
+    open.textContent = "Open";
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    const sync = () => {
+      const href = safeLink(value.value);
+      if (href) open.href = href;
+      else open.removeAttribute("href");
+      open.hidden = href === null;
+    };
+    value.addEventListener("input", sync);
+    sync();
+    body.append(open);
+  }
+  body.append(smallButton("Copy", () => value.value && copyText(value.value)));
+  row.append(body);
+  return row;
+}
+
+/// One row read back into a `{ name, value, type }`.
+function readCustomField(row) {
+  const value = row.querySelector(".field-value");
+  const kind = customFieldKind({ type: row.dataset.type });
+  return {
+    name: row.querySelector(".field-name").value,
+    value: kind === "checkbox" ? String(value.checked) : value.value,
+    type: row.dataset.type,
+  };
+}
+
+/// Every row, read back for a save. `null` when a row has a value but no name,
+/// which would render as an unlabelled line; blank rows are dropped.
+function readCustomFields() {
+  const out = [];
+  for (const row of $("entry-field-list").children) {
+    const field = readCustomField(row);
+    field.name = capRunes(field.name.trim(), MAX_CUSTOM_FIELD_NAME_CHARS);
+    field.value = capRunes(field.value, MAX_CUSTOM_FIELD_VALUE_CHARS);
+    if (field.name === "") {
+      if (customFieldKind(field) !== "checkbox" && field.value.trim() !== "") return null;
+      continue;
+    }
+    out.push(field);
+  }
+  return out;
 }
 
 /// The entry's attached files, listed read-only with a download each.
@@ -782,7 +941,13 @@ async function downloadAttachment(file) {
 
 function applyEntry(event) {
   event.preventDefault();
+  const customFields = readCustomFields();
+  if (customFields === null) {
+    say("Custom field name cannot be empty.", "error");
+    return;
+  }
   const entry = { ...state.draft };
+  entry.custom_fields = customFields;
   entry.name = $("entry-name").value;
   entry.type = $("entry-type").value;
   entry.user_name = $("entry-user").value;
@@ -827,6 +992,8 @@ function clearEditorFields() {
     $(id).value = "";
   }
   $("entry-hidden").checked = false;
+  // Custom field values can be secrets, like every other field here.
+  $("entry-field-list").replaceChildren();
   // The file rows carry names out of the vault, so they go with the rest.
   $("entry-file-list").replaceChildren();
   show("entry-files", false);
@@ -1595,6 +1762,9 @@ function init() {
   $("entry-cancel").addEventListener("click", closeEditor);
   $("entry-delete").addEventListener("click", deleteEntry);
   $("entry-type").addEventListener("change", syncTypeFields);
+  $("entry-field-add").addEventListener("click", () => {
+    $("entry-field-list").append(customFieldRow({ name: "", value: "", type: "text" }));
+  });
 
   for (const button of document.querySelectorAll("[data-reveal]")) {
     button.addEventListener("click", () => {

@@ -160,6 +160,13 @@ clipboard.
     `_original` and copies the six forward. A `"Card"` entry in
     `vectors.json` plus two tests in `crypto_parity_test.dart` pin both halves.
     A card-aware mobile editor is not done.
+  - **Custom fields are edited.** `CustomField { name, value, type }` (type
+    kept as a string so unknown types round-trip; `kind` falls back to text)
+    rides in `SecretEntry.customFields`, omitted when empty. The entry screen
+    has a *Custom fields* section: per-row controllers (`_FieldRow`), type
+    dropdown, obscured value + show/copy for `hidden`, a switch for `checkbox`,
+    open/copy for `link`; name/value capped at 100/5000 runes. The mobile
+    search stays name/user/URL/tags (`EntrySummary` is secret-free).
   - **Interop verified both directions** via `core/examples/open_vault.rs` +
     `app/tool/make_vault.dart`: Rust opens a Dart-created vault and vice-versa.
   - Gate met: `cd app && flutter test` → 7/7 green; `flutter analyze` clean.

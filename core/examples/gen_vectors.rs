@@ -8,7 +8,9 @@
 //!
 //! Run: `cargo run -p askrypt-core --example gen_vectors`
 
-use askrypt::types::{Attachment, Attachments, CardFields, MasterSecret, SecretEntry};
+use askrypt::types::{
+    Attachment, Attachments, CardFields, CustomField, CustomFieldType, MasterSecret, SecretEntry,
+};
 use askrypt::{
     AskryptFile, calc_pbkdf2, encode_base64, encrypt_with_aes, normalize_answer, sha256,
     translit::transliterate,
@@ -155,6 +157,19 @@ fn main() {
             modified: 1_704_153_600,
             hidden: false,
             attachments: Vec::new(),
+            // One field of every type, plus one this build does not know, so
+            // every port is pinned to carrying `custom_fields` verbatim.
+            custom_fields: vec![
+                CustomField::new("Account", "40817", CustomFieldType::Text),
+                CustomField::new("Recovery code", "abcd-1234", CustomFieldType::Hidden),
+                CustomField::new("2FA enabled", "true", CustomFieldType::Checkbox),
+                CustomField::new("Portal", "https://example.com/login", CustomFieldType::Link),
+                CustomField {
+                    name: "OTP seed".to_string(),
+                    value: "JBSWY3DPEHPK3PXP".to_string(),
+                    field_type: "totp".to_string(),
+                },
+            ],
             card: Default::default(),
         },
         SecretEntry {
@@ -169,6 +184,7 @@ fn main() {
             modified: 1_704_067_200,
             hidden: true,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         },
         // A card, so the Dart port is pinned to carrying the six `card_*` keys.
@@ -186,6 +202,7 @@ fn main() {
             modified: 1_704_153_600,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: CardFields {
                 holder: "Ruslan A.".to_string(),
                 brand: "Visa".to_string(),
@@ -219,6 +236,7 @@ fn main() {
                 // Pinned rather than drawn, like everything else in a fixture.
                 iv: encode_base64(&[7u8; 16]),
             }],
+            custom_fields: Vec::new(),
             card: Default::default(),
         },
     ];

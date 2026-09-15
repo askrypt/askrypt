@@ -284,5 +284,33 @@ void main() {
     );
 
     expect(login.toJson().keys.where((k) => k.startsWith('card_')), isEmpty);
+    expect(login.toJson().containsKey('custom_fields'), isFalse);
+  });
+
+  test('carries custom fields, including a type it does not know', () {
+    final json = {
+      'name': 'Bank',
+      'user_name': '',
+      'secret': '',
+      'url': '',
+      'notes': '',
+      'type': 'Login',
+      'tags': <String>[],
+      'created': 1704067200,
+      'modified': 1704153600,
+      'hidden': false,
+      'custom_fields': [
+        {'name': 'Recovery code', 'value': 'abcd-1234', 'type': 'hidden'},
+        {'name': '2FA', 'value': 'TRUE', 'type': 'CheckBox'},
+        {'name': 'OTP seed', 'value': 'JBSWY3DP', 'type': 'totp'},
+      ],
+    };
+
+    final entry = SecretEntry.fromJson(json);
+    expect(entry.customFields[0].kind, CustomFieldType.hidden);
+    expect(entry.customFields[1].kind, CustomFieldType.checkbox);
+    expect(entry.customFields[1].isChecked, isTrue);
+    expect(entry.customFields[2].kind, CustomFieldType.text);
+    expect(entry.toJson(), json);
   });
 }

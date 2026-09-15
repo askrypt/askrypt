@@ -43,6 +43,7 @@
 //!         modified: 1704067200,
 //!         hidden: false,
 //!         attachments: Vec::new(),
+//!         custom_fields: Vec::new(),
 //!         card: Default::default(),
 //!     }
 //! ];
@@ -210,6 +211,7 @@ impl AskryptFile {
     ///         modified: 1704067200,
     ///         hidden: false,
     ///         attachments: Vec::new(),
+    ///         custom_fields: Vec::new(),
     ///         card: Default::default(),
     ///     }
     /// ];
@@ -365,6 +367,7 @@ impl AskryptFile {
     ///         modified: 1704067200,
     ///         hidden: false,
     ///         attachments: Vec::new(),
+    ///         custom_fields: Vec::new(),
     ///         card: Default::default(),
     ///     }
     /// ];
@@ -1609,6 +1612,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         };
 
@@ -1681,6 +1685,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }];
 
@@ -1926,6 +1931,7 @@ mod tests {
                 modified: 1704067200,
                 hidden: false,
                 attachments: Vec::new(),
+                custom_fields: Vec::new(),
                 card: Default::default(),
             },
             SecretEntry {
@@ -1940,6 +1946,7 @@ mod tests {
                 modified: 1704153600,
                 hidden: false,
                 attachments: Vec::new(),
+                custom_fields: Vec::new(),
                 card: Default::default(),
             },
         ];
@@ -1988,6 +1995,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }];
 
@@ -2033,6 +2041,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: CardFields {
                 holder: "Ruslan A.".to_string(),
                 brand: "Visa".to_string(),
@@ -2075,6 +2084,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         };
 
@@ -2100,6 +2110,87 @@ mod tests {
 
         assert_eq!(entry.name, "example");
         assert_eq!(entry.card, CardFields::default());
+        assert!(entry.custom_fields.is_empty());
+    }
+
+    #[test]
+    fn test_custom_fields_round_trip_through_the_vault() {
+        let questions = vec!["Q0".to_string(), "Q1".to_string()];
+        let answers = vec!["A0".to_string(), "A1".to_string()];
+        let data = vec![SecretEntry {
+            name: "Bank".to_string(),
+            user_name: String::new(),
+            secret: String::new(),
+            url: String::new(),
+            notes: String::new(),
+            entry_type: "Login".to_string(),
+            tags: vec![],
+            created: 1704067200,
+            modified: 1704067200,
+            hidden: false,
+            attachments: Vec::new(),
+            custom_fields: vec![
+                CustomField::new("Account", "40817", CustomFieldType::Text),
+                CustomField::new("Recovery code", "abcd-1234", CustomFieldType::Hidden),
+                CustomField::new("2FA enabled", "true", CustomFieldType::Checkbox),
+                CustomField::new("Portal", "https://bank.example", CustomFieldType::Link),
+            ],
+            card: Default::default(),
+        }];
+
+        let file = AskryptFile::create(
+            questions,
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .unwrap();
+        let questions_data = file.get_questions_data(answers[0].clone()).unwrap();
+        let decrypted = file.decrypt(&questions_data, answers[1..].into()).unwrap();
+
+        assert_eq!(decrypted, data);
+        assert_eq!(
+            decrypted[0].custom_fields[2].kind(),
+            CustomFieldType::Checkbox
+        );
+        assert!(decrypted[0].custom_fields[2].is_checked());
+    }
+
+    #[test]
+    fn test_custom_fields_key_is_omitted_when_empty() {
+        let entry: SecretEntry = serde_json::from_str(
+            r#"{"name":"example","user_name":"","secret":"","url":"","notes":"",
+                "type":"Login","tags":[],"created":0,"modified":0}"#,
+        )
+        .unwrap();
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("custom_fields"), "unexpected key in {json}");
+    }
+
+    #[test]
+    fn test_unknown_custom_field_type_is_carried_verbatim() {
+        let json = r#"{
+            "name": "example", "user_name": "", "secret": "", "url": "",
+            "notes": "", "type": "Login", "tags": [],
+            "created": 1704067200, "modified": 1704067200,
+            "custom_fields": [
+                {"name": "OTP", "value": "JBSWY3DP", "type": "totp"},
+                {"name": "Flag", "value": "TRUE", "type": "CheckBox"}
+            ]
+        }"#;
+
+        let entry: SecretEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.custom_fields[0].kind(), CustomFieldType::Text);
+        assert_eq!(entry.custom_fields[1].kind(), CustomFieldType::Checkbox);
+        assert!(entry.custom_fields[1].is_checked());
+
+        let written: serde_json::Value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(written["custom_fields"][0]["type"], "totp");
+        assert_eq!(written["custom_fields"][1]["type"], "CheckBox");
     }
 
     #[test]
@@ -2128,6 +2219,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }];
 
@@ -2188,6 +2280,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }];
 
@@ -2244,6 +2337,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }];
 
@@ -2312,6 +2406,7 @@ mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }];
         (questions, answers, data)

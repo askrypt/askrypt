@@ -116,6 +116,19 @@ Rules that are easy to undo by accident:
   loss. `detail.rs` and `list.rs` branch on the same `data::is_card` /
   `data::is_file`, and one `revealed` flag covers the number, the CVV and the
   PIN together: they are three halves of one secret.
+- **Custom fields are common to every type.** The editor's **Custom fields**
+  section (after Hidden, before Files) draws one bordered row per field — name,
+  type picker (Text/Hidden/Checkbox/Link, plus the field's own type when it is
+  one this build does not know), trash — over a value control that suits the
+  type, and an *Add field* button. Name and value are capped at
+  `MAX_CUSTOM_FIELD_NAME_CHARS`/`MAX_CUSTOM_FIELD_VALUE_CHARS` in `update`.
+  `save` drops rows with a blank name and refuses a value with no name. The
+  detail pane's custom fields card sits right under the main card: text + copy,
+  hidden masked + eye + copy, checkbox as a disabled tick, link as a button
+  link (only for `http(s)`) + open + copy. **Each hidden field reveals on its
+  own** (`App.revealed_fields`, the editor's `State.revealed_fields`), reset
+  wherever `revealed`/`cvv_revealed` are and cleared when a row is removed, so
+  a reveal never lands on another field. Hidden values are not searched.
 
 - **Files attach to any entry, not just a `File` one.** Keeping a
   recovery-codes PDF with the login it belongs to is the ordinary case; the

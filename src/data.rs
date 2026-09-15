@@ -45,6 +45,7 @@ pub fn new_entry() -> SecretEntry {
         modified: now,
         hidden: false,
         attachments: Vec::new(),
+        custom_fields: Vec::new(),
         card: Default::default(),
     }
 }
@@ -109,6 +110,13 @@ pub fn entry_matches_filter(entry: &SecretEntry, filter: &str) -> bool {
             .attachments
             .iter()
             .any(|file| file.name.to_lowercase().contains(&filter_lower))
+        // Custom field names always match; values only when the field is not
+        // `hidden`, which is a secret like the password.
+        || entry.custom_fields.iter().any(|field| {
+            field.name.to_lowercase().contains(&filter_lower)
+                || (field.kind() != askrypt::CustomFieldType::Hidden
+                    && field.value.to_lowercase().contains(&filter_lower))
+        })
         || entry
             .tags
             .iter()
@@ -285,6 +293,7 @@ mod tests {
             modified: 0,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }
     }
@@ -330,6 +339,21 @@ mod tests {
         assert!(!entry_matches_filter(&card, "4242"));
         assert!(!entry_matches_filter(&card, "123"));
         assert!(!entry_matches_filter(&card, "9876"));
+    }
+
+    #[test]
+    fn the_filter_skips_hidden_custom_field_values() {
+        use askrypt::{CustomField, CustomFieldType};
+
+        let mut entry = entry("Bank");
+        entry.custom_fields = vec![
+            CustomField::new("Account", "40817", CustomFieldType::Text),
+            CustomField::new("Recovery code", "zebra-9", CustomFieldType::Hidden),
+        ];
+
+        assert!(entry_matches_filter(&entry, "40817"));
+        assert!(entry_matches_filter(&entry, "recovery"));
+        assert!(!entry_matches_filter(&entry, "zebra"));
     }
 
     #[test]

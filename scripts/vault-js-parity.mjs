@@ -466,7 +466,7 @@ await group("the password generator follows core/src/passgen.rs", () => {
   check("no character type selected is refused", refused, true);
 });
 
-// The entry as the Rust core serializes it: the six card keys and `attachments`
+// The entry as the Rust core serializes it: the six card keys, `attachments` and `custom_fields`
 // are omitted when empty, so a non-card entry with no files must compare equal
 // to one written before either existed.
 //
@@ -490,6 +490,7 @@ function serialized(entry) {
     if (entry[key] !== "") out[key] = entry[key];
   }
   if (entry.attachments?.length) out.attachments = entry.attachments;
+  if (entry.custom_fields?.length) out.custom_fields = entry.custom_fields;
   return out;
 }
 

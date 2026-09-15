@@ -295,6 +295,7 @@ pub(crate) mod tests {
             modified: 1704067200,
             hidden: false,
             attachments: Vec::new(),
+            custom_fields: Vec::new(),
             card: Default::default(),
         }];
         let file = AskryptFile::create(
