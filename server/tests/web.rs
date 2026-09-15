@@ -383,7 +383,7 @@ async fn the_landing_demo_ships_its_text_and_loads_its_script_externally() {
         "But could you remember",
         "You already know a lot of",
         "The street you lived on when you were ten?",
-        "What did you call your grandma?",
+        "How did you call your grandma?",
     ] {
         assert!(html.contains(line), "static fallback is missing {line:?}");
     }
