@@ -44,6 +44,14 @@ pub fn chevron_down(size: u16) -> Text<'static> {
     glyph('\u{F282}', size)
 }
 
+pub fn arrow_up(size: u16) -> Text<'static> {
+    glyph('\u{F148}', size)
+}
+
+pub fn arrow_down(size: u16) -> Text<'static> {
+    glyph('\u{F128}', size)
+}
+
 pub fn tag(size: u16) -> Text<'static> {
     glyph('\u{F5B0}', size)
 }

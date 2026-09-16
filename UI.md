@@ -85,7 +85,7 @@ is now used for **file pickers only**.
 | `panes/sidebar.rs` | the nav rail: filters, the vault actions, Quit, Settings |
 | `panes/list.rs`, `panes/detail.rs` | the item split |
 | `panes/entry_editor.rs` | the item draft, drawn in the detail slot |
-| `panes/questions.rs` | the security questions — the only pane that can create a vault |
+| `panes/questions.rs` | the security questions — the only pane that can create a vault. Rows reorder with per-row Move up / Move down (hidden at the ends and while busy); like every edit here, the new order takes effect on Apply (question 1 is the one shown before unlocking and its answer alone derives the first key) |
 | `panes/passgen.rs` | the password generator |
 | `panes/settings.rs` | the settings screen, writing through to `AppSettings` |
 | `panes/unlock.rs` | the layered unlock screen |

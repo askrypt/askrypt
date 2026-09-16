@@ -81,6 +81,24 @@ impl State {
         self.error = None;
         self.creating = false;
     }
+
+    /// Swap two question/answer rows. The answers trade places rather than
+    /// being copied, so there is nothing to zeroize; the revealed answer
+    /// follows its row.
+    fn swap_rows(&mut self, a: usize, b: usize) {
+        let len = self.questions.len();
+        if a >= len || b >= len || a == b || self.answers.len() != len {
+            return;
+        }
+        self.questions.swap(a, b);
+        self.answers.swap(a, b);
+        self.shown = match self.shown {
+            Some(i) if i == a => Some(b),
+            Some(i) if i == b => Some(a),
+            other => other,
+        };
+        self.error = None;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +109,8 @@ pub enum Msg {
     FocusNext,
     Add,
     Delete(usize),
+    MoveUp(usize),
+    MoveDown(usize),
     ToggleTranslit(bool),
     Save,
     Cancel,
@@ -140,6 +160,21 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                 }
             }
             state.error = None;
+            Action::None
+        }
+        // Order is key material too — question 1's answer alone derives the
+        // first key — but it only takes effect on Apply, like any other edit.
+        // A build already in flight took the old order, so ignore moves then.
+        Msg::MoveUp(index) => {
+            if !session.busy && index > 0 {
+                state.swap_rows(index - 1, index);
+            }
+            Action::None
+        }
+        Msg::MoveDown(index) => {
+            if !session.busy {
+                state.swap_rows(index, index + 1);
+            }
             Action::None
         }
         Msg::ToggleTranslit(value) => {
@@ -249,7 +284,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         text("Security questions").size(20).font(theme::bold()),
         text(
             "The answers are the key — there is no master password. \
-             Answers are normalized before use: case, spaces and dashes do not matter."
+             Answers are normalized before use: case, spaces and dashes do not matter. \
+             Question 1 is shown before unlocking."
         )
         .size(12)
         .style(text::secondary),
@@ -259,14 +295,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .max_width(620);
 
     let mut rows = column![].spacing(14);
-    for index in 0..state.questions.len() {
+    let count = state.questions.len();
+    for index in 0..count {
         rows = rows.push(question_row(
             index,
             &state.questions[index],
             state.answers.get(index).map(String::as_str).unwrap_or(""),
             state.shown == Some(index),
-            state.questions.len() > 2,
-            index + 1 == state.questions.len(),
+            count > 2,
+            count,
+            session.busy,
         ));
     }
     body = body.push(theme::card(container(rows).padding(14)));
@@ -324,23 +362,40 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// `last` marks the bottom row, whose answer field is the pane's final input:
-/// Enter there applies the changes, everywhere else it walks to the next field.
+/// The bottom row's answer field is the pane's final input: Enter there
+/// applies the changes, everywhere else it walks to the next field. Move
+/// buttons are hidden at the ends and while a build is running.
 fn question_row<'a>(
     index: usize,
     question: &'a str,
     answer: &'a str,
     revealed: bool,
     can_delete: bool,
-    last: bool,
+    count: usize,
+    busy: bool,
 ) -> Element<'a, Message> {
+    let last = index + 1 == count;
     let mut header = row![
         text(format!("Question {}", index + 1))
             .size(12)
             .style(text::secondary)
             .width(Length::Fill),
     ]
+    .spacing(4)
     .align_y(Vertical::Center);
+
+    if !busy && index > 0 {
+        header = header.push(
+            theme::text_button_icon(icon::arrow_up(12), "Move up")
+                .on_press(Message::Questions(Msg::MoveUp(index))),
+        );
+    }
+    if !busy && !last {
+        header = header.push(
+            theme::text_button_icon(icon::arrow_down(12), "Move down")
+                .on_press(Message::Questions(Msg::MoveDown(index))),
+        );
+    }
 
     if can_delete {
         header = header.push(
@@ -387,4 +442,48 @@ fn question_row<'a>(
     ]
     .spacing(6)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(rows: &[(&str, &str)]) -> State {
+        // `State` implements `Drop`, so no struct-update syntax.
+        let mut state = State::default();
+        state.questions = rows.iter().map(|(q, _)| q.to_string()).collect();
+        state.answers = rows.iter().map(|(_, a)| a.to_string()).collect();
+        state
+    }
+
+    #[test]
+    fn swapping_moves_question_and_answer_together() {
+        let mut s = state(&[("q1", "a1"), ("q2", "a2"), ("q3", "a3")]);
+        s.error = Some("stale".into());
+        s.swap_rows(2, 0);
+        assert_eq!(s.questions, ["q3", "q2", "q1"]);
+        assert_eq!(s.answers, ["a3", "a2", "a1"]);
+        assert!(s.error.is_none());
+    }
+
+    #[test]
+    fn revealed_answer_follows_its_row() {
+        let mut s = state(&[("q1", "a1"), ("q2", "a2"), ("q3", "a3")]);
+        s.shown = Some(1);
+        s.swap_rows(1, 2);
+        assert_eq!(s.shown, Some(2));
+        s.swap_rows(0, 1);
+        assert_eq!(s.shown, Some(2));
+        s.swap_rows(2, 0);
+        assert_eq!(s.shown, Some(0));
+    }
+
+    #[test]
+    fn out_of_range_swap_changes_nothing() {
+        let mut s = state(&[("q1", "a1"), ("q2", "a2")]);
+        s.swap_rows(1, 2);
+        s.swap_rows(5, 0);
+        assert_eq!(s.questions, ["q1", "q2"]);
+        assert_eq!(s.answers, ["a1", "a2"]);
+    }
 }
