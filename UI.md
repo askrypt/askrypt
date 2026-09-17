@@ -256,10 +256,11 @@ Every vault action lives at the bottom of the nav rail, with **Settings and then
 Quit pinned below them on the very bottom edge** — the two rows that are
 never about the vault in front of you, each in a band of its own. Quit is
 `GlobalMsg::QuitRequested`, which **confirms first** (`confirm::Kind::Quit`)
-and then goes through `guard(PendingAction::Exit)` like the window close does.
-The tray's Quit takes the same confirmed path; a *modified* vault skips the
-extra question, because the unsaved-changes dialog it gets instead is already a
-confirmation. Each action is **hidden** rather than
+and then goes through `guard(PendingAction::Exit)` like the window close does;
+a *modified* vault skips the extra question, because the unsaved-changes dialog
+it gets instead is already a confirmation. The tray's **Exit** goes straight to
+`GlobalMsg::ExitApp`: a clean vault quits without a question, a modified one
+still meets the unsaved-changes gate. Each action is **hidden** rather than
 disabled when the state does not allow it. The predicates are on `VaultState`; `panes/sidebar.rs`
 only asks.
 

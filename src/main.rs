@@ -210,8 +210,11 @@ pub enum GlobalMsg {
     InactivityTick,
     CheckTrayEvents,
     TrayOpen,
+    /// The tray menu's Exit. Deliberate enough on its own — it goes straight
+    /// to [`GlobalMsg::ExitApp`], so a clean vault quits without a question
+    /// and a modified one still meets the unsaved-changes gate.
     TrayQuit,
-    /// The user asked to quit outright (the rail's Quit, the tray's Quit).
+    /// The user asked to quit outright (the rail's Quit).
     /// Confirms first, then falls through to [`GlobalMsg::ExitApp`].
     QuitRequested,
     ExitApp,
@@ -1612,7 +1615,7 @@ impl App {
             GlobalMsg::TrayOpen => {
                 Action::Run(window::oldest().and_then(|id| window::minimize(id, false)))
             }
-            GlobalMsg::TrayQuit => self.update_global(GlobalMsg::QuitRequested),
+            GlobalMsg::TrayQuit => self.update_global(GlobalMsg::ExitApp),
             GlobalMsg::QuitRequested => {
                 // A modified vault gets the unsaved-changes dialog, which is a
                 // confirmation of its own; asking twice would be noise.
