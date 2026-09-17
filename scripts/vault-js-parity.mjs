@@ -80,6 +80,17 @@ await group("format version", () => {
 
 // --- pure string stages ----------------------------------------------------
 
+await group("legacy entry types fold as in src/data.rs", () => {
+  for (const [input, expected] of [
+    ["password", "Login"], ["PASSWORD", "Login"], ["login", "Login"],
+    ["Login", "Login"], ["card", "Card"], ["FILE", "File"],
+    ["note", "note"], ["", ""],
+  ]) {
+    check(`canonicalEntryType(${JSON.stringify(input)})`,
+      vault.canonicalEntryType(input), expected);
+  }
+});
+
 await group("normalize", () => {
   for (const c of vectors.normalize) {
     check(

@@ -92,7 +92,7 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
     _url = TextEditingController(text: e?.url ?? '');
     _notes = TextEditingController(text: e?.notes ?? '');
     _tags = TextEditingController(text: e?.tags.join(', ') ?? '');
-    _entryType = e?.entryType ?? 'login';
+    _entryType = e?.entryType ?? 'Login';
     _hidden = e?.hidden ?? false;
     _original = e;
     for (final field in e?.customFields ?? const <CustomField>[]) {

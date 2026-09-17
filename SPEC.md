@@ -34,7 +34,11 @@ An Askrypt file is a JSON with the following fields:
   * `secret` - password/secret (string)
   * `url` - url (string)
   * `notes` - notes (string)
-  * `type` - type of the entry (string, e.g. "password", "note", etc.)
+  * `type` - type of the entry (string). Clients write `"Login"`, `"Card"` or
+    `"File"`; any other string is carried through unchanged. *(Informative:)*
+    `"password"` and `"login"` are legacy spellings of `"Login"`, and the
+    clients fold them — and `"card"`/`"file"` in any case — into the
+    capitalized form when a vault is opened, so the next save writes it.
   * `tags` - list of tags (array of strings)
   * `created` - creation timestamp (**integer**, Unix time in seconds)
   * `modified` - last modified timestamp (**integer**, Unix time in seconds)

@@ -59,6 +59,24 @@ class EntrySummary {
       );
 }
 
+/// The spelling the desktop app uses for a type another client (or an older
+/// build) wrote differently: `password` and `login` are `Login`, and `card` /
+/// `file` in any case are `Card` / `File`. Any other type is kept as written.
+/// Mirrors `canonical_type` in `src/data.rs`.
+String canonicalEntryType(String type) {
+  switch (type.toLowerCase()) {
+    case 'password':
+    case 'login':
+      return 'Login';
+    case 'card':
+      return 'Card';
+    case 'file':
+      return 'File';
+    default:
+      return type;
+  }
+}
+
 class UnlockedVault {
   UnlockedVault._({
     required this.questions,
@@ -71,7 +89,13 @@ class UnlockedVault {
   })  : _answers = answers,
         _entries = entries,
         _masterKey = masterKey,
-        _attachments = attachments ?? <String, Uint8List>{};
+        _attachments = attachments ?? <String, Uint8List>{} {
+    // Legacy spellings read as the canonical type, and the next save writes
+    // it. Not an edit of its own, so [isModified] stays false.
+    for (final entry in _entries) {
+      entry.entryType = canonicalEntryType(entry.entryType);
+    }
+  }
 
   /// Full question list, including the first question (`question0`).
   final List<String> questions;

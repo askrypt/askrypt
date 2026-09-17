@@ -70,6 +70,7 @@ use askrypt::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::data;
 use crate::scratch::Scratch;
 use crate::session::VaultError;
 use crate::settings::VaultLocation;
@@ -372,9 +373,10 @@ impl Vault<PartiallyUnlocked> {
     pub fn unlock(
         self,
         answers: Vec<String>,
-        entries: Vec<SecretEntry>,
+        mut entries: Vec<SecretEntry>,
         master: MasterSecret,
     ) -> Vault<Unlocked> {
+        data::normalize_types(&mut entries);
         let questions_data = self.state.questions_data.clone();
         let answer0 = self.state.answer0.clone();
         self.with_state(Unlocked {
@@ -556,6 +558,7 @@ impl Vault<Unlocked> {
         self.file = reloaded.file;
         self.state.questions_data = reloaded.questions_data;
         self.state.entries = reloaded.entries;
+        data::normalize_types(&mut self.state.entries);
         self.state.master = reloaded.master;
         // These entries came off the backend, so there is nothing local left
         // to write. Anything the user had typed was discarded by their own
@@ -633,7 +636,8 @@ impl Vault<SmartLocked> {
     /// One answer recovered the whole set and reopened the vault. The bundle is
     /// consumed; only its deadline carries over, so the 8-hour ceiling still
     /// applies to the session it reopened.
-    pub fn smart_unlock(self, recovered: SmartUnlockResult) -> Vault<Unlocked> {
+    pub fn smart_unlock(self, mut recovered: SmartUnlockResult) -> Vault<Unlocked> {
+        data::normalize_types(&mut recovered.entries);
         self.with_state(Unlocked {
             answer0: Zeroizing::new(recovered.answer0),
             answers: Zeroizing::new(recovered.answers),
@@ -2629,6 +2633,42 @@ mod tests {
         assert_eq!(vault.entries()[1].name, "Bank");
         // The entries came off the backend, so there is nothing left to write.
         assert!(!vault.is_modified());
+    }
+
+    #[test]
+    fn legacy_types_read_as_login_and_are_written_back_as_login() {
+        let storage = Arc::new(MemoryStorage::default());
+        let mut state = unlocked_on(storage.clone());
+        let master = state.unlocked().unwrap().master().clone();
+
+        let mut old = entry("Old login");
+        old.entry_type = "password".to_string();
+        let mut mobile = entry("Mobile login");
+        mobile.entry_type = "login".to_string();
+        write_from_elsewhere(&storage, vec![old, mobile], Some(&master));
+
+        let outcome = state.reload_inputs(None).unwrap().run().unwrap();
+        let ReloadOutcome::Reloaded(reloaded) = outcome else {
+            panic!("expected Reloaded");
+        };
+        assert!(state.apply_reloaded(*reloaded));
+
+        let vault = state.unlocked().unwrap();
+        assert!(vault.entries().iter().all(|e| e.entry_type == "Login"));
+        // Folding the spelling is not an edit: nothing asks on close.
+        assert!(!vault.is_modified());
+
+        let request = vault.save_request();
+        let home = state.home().cloned().expect("a stored vault has a home");
+        let saved = write_vault(request, home, None, None).expect("the save should land");
+        state.apply_saved(saved);
+
+        let file = AskryptFile::from_bytes(&storage.read().unwrap()).unwrap();
+        let questions_data = file.get_questions_data("Rex".to_string()).unwrap();
+        let (entries, _) = file
+            .decrypt_with_master(&questions_data, vec!["Baker Street".to_string()])
+            .unwrap();
+        assert!(entries.iter().all(|e| e.entry_type == "Login"));
     }
 
     #[test]

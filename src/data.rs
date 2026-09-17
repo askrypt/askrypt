@@ -14,6 +14,8 @@ pub const ENTRY_TYPES: [&str; 3] = [TYPE_LOGIN, TYPE_CARD, TYPE_FILE];
 pub const TYPE_LOGIN: &str = "Login";
 pub const TYPE_CARD: &str = "Card";
 pub const TYPE_FILE: &str = "File";
+/// What old desktop builds wrote for a login. Read as [`TYPE_LOGIN`].
+pub const LEGACY_TYPE_PASSWORD: &str = "password";
 
 /// The card networks the editor offers. Like [`ENTRY_TYPES`], a convenience
 /// rather than a constraint: `card_brand` is a free string in the format, and a
@@ -50,13 +52,39 @@ pub fn new_entry() -> SecretEntry {
     }
 }
 
+/// The spelling this app uses for a type another client (or an older build of
+/// this one) wrote differently: `"password"` and `"login"` are `Login`, and a
+/// type differing only in case from one the editor offers is that type. `None`
+/// for a type this app does not know, which is kept as written.
+pub fn canonical_type(entry_type: &str) -> Option<&'static str> {
+    if entry_type.eq_ignore_ascii_case(LEGACY_TYPE_PASSWORD) {
+        return Some(TYPE_LOGIN);
+    }
+    ENTRY_TYPES
+        .into_iter()
+        .find(|known| entry_type.eq_ignore_ascii_case(known))
+}
+
+/// Rewrite every entry's type to its [`canonical_type`], so the rail lists one
+/// `Login` rather than `Login` and `password`. Applied where decrypted entries
+/// enter an unlocked vault; the next save writes the canonical spelling. Not a
+/// modification of its own — opening an old vault asks nothing on close.
+pub fn normalize_types(entries: &mut [SecretEntry]) {
+    for entry in entries {
+        if let Some(canonical) = canonical_type(&entry.entry_type)
+            && entry.entry_type != canonical
+        {
+            entry.entry_type = canonical.to_string();
+        }
+    }
+}
+
 /// Whether an entry should be drawn with the card fields rather than the login
 /// ones.
 ///
-/// Compared case-insensitively on purpose: the three clients already disagree
-/// about the spelling of a type — `src/` writes `"password"`, the mobile app
-/// `"login"`, this crate `"Login"` — so a `"card"` from anywhere must read as
-/// one here.
+/// Compared case-insensitively on purpose: entries are normalized on unlock
+/// ([`normalize_types`]), but an entry that never went through that — a test
+/// fixture, a draft — must still read as a card if it is spelled `"card"`.
 pub fn is_card(entry: &SecretEntry) -> bool {
     entry.entry_type.eq_ignore_ascii_case(TYPE_CARD)
 }
@@ -366,6 +394,26 @@ mod tests {
         assert!(is_card(&lowercase));
 
         assert!(!is_card(&entry("GitHub")));
+    }
+
+    #[test]
+    fn legacy_type_spellings_fold_into_the_editors_types() {
+        assert_eq!(canonical_type("password"), Some(TYPE_LOGIN));
+        assert_eq!(canonical_type("PASSWORD"), Some(TYPE_LOGIN));
+        assert_eq!(canonical_type("login"), Some(TYPE_LOGIN));
+        assert_eq!(canonical_type("Login"), Some(TYPE_LOGIN));
+        assert_eq!(canonical_type("card"), Some(TYPE_CARD));
+        assert_eq!(canonical_type("FILE"), Some(TYPE_FILE));
+        assert_eq!(canonical_type("note"), None);
+        assert_eq!(canonical_type(""), None);
+
+        let mut entries = vec![entry("Old"), entry("Mobile"), entry("Note")];
+        entries[0].entry_type = "password".to_string();
+        entries[1].entry_type = "login".to_string();
+        entries[2].entry_type = "note".to_string();
+        normalize_types(&mut entries);
+        let types: Vec<&str> = entries.iter().map(|e| e.entry_type.as_str()).collect();
+        assert_eq!(types, [TYPE_LOGIN, TYPE_LOGIN, "note"]);
     }
 
     #[test]

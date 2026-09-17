@@ -539,6 +539,25 @@ function customFieldFromJson(raw) {
   return { name: text(raw.name), value: text(raw.value), type: text(raw.type) };
 }
 
+/// The spelling the desktop app uses for a type another client (or an older
+/// build) wrote differently, as `canonical_type` in `src/data.rs`: "password"
+/// and "login" are "Login"; "card"/"file" in any case are "Card"/"File". Any
+/// other type is kept as written. Not applied by `entryFromJson` — the format
+/// layer reads what is stored; the viewer applies it once a vault is open.
+export function canonicalEntryType(type) {
+  switch (String(type).toLowerCase()) {
+    case "password":
+    case "login":
+      return "Login";
+    case "card":
+      return "Card";
+    case "file":
+      return "File";
+    default:
+      return type;
+  }
+}
+
 export function isCard(entry) {
   return (entry.type || "").toLowerCase() === "card";
 }

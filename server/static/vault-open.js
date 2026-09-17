@@ -15,7 +15,7 @@
 import {
   CARD_KEYS, CUSTOM_FIELD_TYPES, DEFAULT_ITERATIONS, MAX_CUSTOM_FIELD_NAME_CHARS,
   MAX_CUSTOM_FIELD_VALUE_CHARS, MAX_VAULT_BYTES, VaultError, blankEntry,
-  createVault, customFieldKind, decryptWithMaster, generateMasterKey,
+  canonicalEntryType, createVault, customFieldKind, decryptWithMaster, generateMasterKey,
   getQuestionsData, isCard, isChecked, masterForWrite, openAttachment, parseVault,
 } from "./vault-format.js";
 import {
@@ -526,7 +526,7 @@ function unlock(event) {
     } catch {
       throw new VaultError("One of those answers is not right.");
     }
-    state.entries = opened.entries;
+    state.entries = withCanonicalTypes(opened.entries);
     state.masterKey = opened.masterKey;
     state.attachments = state.file?.attachments ?? new Map();
     state.answers = [state.answer0, ...rest];
@@ -624,6 +624,14 @@ function renderEntries() {
   }
 }
 
+/// Entries as opened, with legacy type spellings folded into the ones the
+/// editor offers (`canonicalEntryType`). The next save writes them that way;
+/// folding is not an edit of its own, so it leaves `state.dirty` alone.
+function withCanonicalTypes(entries) {
+  for (const entry of entries) entry.type = canonicalEntryType(entry.type);
+  return entries;
+}
+
 /// The key two tags are the same tag under, as in `src/data.rs::tag_key`:
 /// `Work` and `work` are one tag to whoever typed them, so the picker must
 /// offer one option rather than two that each hide half the entries.
@@ -678,8 +686,8 @@ function fillEditor(entry) {
   $("entry-hidden").checked = entry.hidden;
   for (const [key, id] of Object.entries(CARD_INPUTS)) $(id).value = entry[key];
 
-  // The type is a free string in the format and the three clients spell it
-  // differently — `src/` writes "password", the mobile app "login" — so a type
+  // The type is a free string in the format. Legacy spellings ("password",
+  // "login") were folded into "Login" when the vault opened; any other type
   // this select has never heard of is added rather than silently rewritten.
   const select = $("entry-type");
   const type = entry.type || "Login";
@@ -1550,7 +1558,7 @@ function smartUnlock(event) {
     state.questions = [file.question0, ...qd.questions];
     state.answers = [recovered.answer0, ...recovered.answers];
     state.masterKey = opened.masterKey;
-    state.entries = opened.entries;
+    state.entries = withCanonicalTypes(opened.entries);
     state.attachments = file.attachments ?? new Map();
     // The bundle was armed over these very entries, so whatever was owed to a
     // save before the lock is still owed now.

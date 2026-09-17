@@ -281,6 +281,32 @@ void main() {
     );
   });
 
+  test('legacy "password"/"login" types open as Login and save as Login',
+      () async {
+    Future<List<String>> storedTypes(Uint8List bytes) async {
+      final file = AskryptFile.fromBytes(bytes);
+      final qd = await file.getQuestionsData(_answers[0]);
+      final entries = await file.decrypt(qd, _answers.sublist(1));
+      return [for (final e in entries) e.entryType];
+    }
+
+    final n = _notifier(_container());
+    n.createNew(questions: _questions, answers: _answers, iterations: _iters);
+    n.addEntry(_entry('old', 'pw1')..entryType = 'password');
+    n.addEntry(_entry('mobile', 'pw2')..entryType = 'login');
+    n.addEntry(_entry('memo', 'pw3')..entryType = 'note');
+    final old = Uint8List.fromList(await n.toBytes());
+    expect(await storedTypes(old), ['password', 'login', 'note']);
+
+    final vault = await UnlockedVault.open(old, _answers);
+    expect([for (final s in vault.summaries) s.entryType],
+        ['Login', 'Login', 'note']);
+    expect(vault.isModified, isFalse);
+
+    final saved = Uint8List.fromList(await vault.toBytes());
+    expect(await storedTypes(saved), ['Login', 'Login', 'note']);
+  });
+
   test('UnlockedVault.create rejects fewer than 2 questions', () {
     expect(
       () => UnlockedVault.create(
