@@ -90,7 +90,7 @@ is now used for **file pickers only**.
 | `panes/settings.rs` | the settings screen, writing through to `AppSettings` |
 | `panes/unlock.rs` | the layered unlock screen |
 | `panes/wizard.rs` | the Open / Save As source picker |
-| `panes/statusbar.rs` | the bottom bar and the spinner |
+| `panes/statusbar.rs` | the bottom bar, the spinner, and the item count ("N items" / "N of M items") while the item list shows |
 
 Rules that are easy to undo by accident:
 

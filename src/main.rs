@@ -462,6 +462,13 @@ impl App {
         rows
     }
 
+    /// The status bar's item count: `(shown, total)` while the item list is
+    /// on screen, `None` otherwise (nothing to count over a locked vault).
+    fn item_count(&self) -> Option<(usize, usize)> {
+        (self.effective_pane() == Pane::Items)
+            .then(|| (self.visible().len(), self.session.entries().len()))
+    }
+
     /// Keep the selection inside the visible list: if a filter change hid the
     /// selected entry, fall back to the first remaining row. The detail pane
     /// therefore never shows an item the list cannot show.
