@@ -10,7 +10,6 @@
 //! test therefore builds its own `app()`, as the other suites do.
 
 use askrypt_server::routes::router;
-use askrypt_server::state::AppState;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
@@ -24,7 +23,7 @@ const HOST: &str = "askrypt.test";
 const PASSWORD: &str = "hunter2hunter2";
 
 fn app() -> Router {
-    router(AppState::in_memory(), &common::password_api_config())
+    router(common::state(), &common::password_api_config())
 }
 
 /// Sends a request, keeping the headers — cookies and `Location` are half of

@@ -15,11 +15,13 @@ use axum::response::{IntoResponse, Redirect, Response};
 
 use crate::audit::{self, ClientInfo};
 use crate::auth;
+use crate::confirm;
 use crate::devicelink;
 use crate::hardening::RelaxedCsp;
 use crate::settings;
 use crate::state::AppState;
 use crate::store::{Account, DeviceLinkId};
+use crate::web::confirm::ConfirmKind;
 use crate::web::csrf::{self, CsrfForm};
 use crate::web::flash::{self, Flash};
 use crate::web::render::{Page, Shell, is_htmx, with_cookies};
@@ -227,6 +229,16 @@ pub async fn login_submit(
     }
     let account = match auth::authenticate(&state, &client, &form.email, form.password).await {
         Ok(account) => account,
+        // The password was right: say what is missing instead of re-showing a
+        // form that would only refuse again.
+        Err(err) if err.code == confirm::EMAIL_NOT_CONFIRMED => {
+            return web::confirm::notice(
+                &headers,
+                ConfirmKind::SignInBlocked,
+                form.email.trim().to_ascii_lowercase(),
+                String::new(),
+            );
+        }
         Err(err) => {
             return rejected(
                 &state,
@@ -290,8 +302,14 @@ pub async fn register_submit(
             );
         }
     };
-    // Registering signs you straight in: a new account with nothing in it
-    // has nothing to protect behind a second password prompt.
+    // Until the address is confirmed there is no sign-in to give: the answer
+    // is the "check your inbox" card, in place of the form.
+    if !account.is_confirmed() {
+        return web::confirm::notice(&headers, ConfirmKind::Sent, account.email, String::new());
+    }
+    // With confirmation off, registering signs you straight in: a new account
+    // with nothing in it has nothing to protect behind a second password
+    // prompt.
     match sign_in(&state, &client, &account, audit::LOGIN_OK, "password").await {
         Ok(mut cookies) => {
             cookies.push(flash::set(Flash::AccountCreated));

@@ -65,15 +65,21 @@ pub struct Account {
     /// account cannot sign in and its existing sessions stop resolving; its
     /// stored vaults are left alone, so unbanning restores everything.
     pub banned_at: Option<DateTime<Utc>>,
+    /// When the owner proved they receive mail at `email`. `None` blocks
+    /// password sign-in while email confirmation is required — see
+    /// [`crate::confirm`].
+    pub email_confirmed_at: Option<DateTime<Utc>>,
 }
 
 /// Input for [`super::AccountStore::create`]; the store assigns id and
-/// timestamps.
+/// creation time.
 #[derive(Debug, Clone)]
 pub struct NewAccount {
     pub email: String,
     pub password_hash: Option<String>,
     pub google_sub: Option<String>,
+    /// `None` for a registration still waiting on its confirmation link.
+    pub email_confirmed_at: Option<DateTime<Utc>>,
 }
 
 /// An entry in the role vocabulary. Roles are seeded by the migration, not
@@ -144,6 +150,16 @@ pub struct DeviceLink {
     pub status: DeviceLinkStatus,
     /// Who approved it; `None` while pending.
     pub account_id: Option<AccountId>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// The pending confirmation link of one account. Only the SHA-256 of the
+/// token is kept; the token itself exists in the mail and nowhere else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailConfirmation {
+    pub account_id: AccountId,
+    pub token_hash: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -443,6 +459,11 @@ pub struct MemoryDeviceLinkStore {
 }
 
 #[derive(Debug, Default)]
+pub struct MemoryEmailConfirmationStore {
+    pub(crate) pending: Mutex<HashMap<AccountId, EmailConfirmation>>,
+}
+
+#[derive(Debug, Default)]
 pub struct MemoryVaultMetaStore {
     pub(crate) metas: Mutex<HashMap<(AccountId, VaultId), VaultMeta>>,
 }
@@ -517,6 +538,7 @@ pub(crate) struct AccountRow {
     pub(crate) google_sub: Option<String>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) banned_at: Option<DateTime<Utc>>,
+    pub(crate) email_confirmed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone)]
@@ -576,6 +598,19 @@ pub(crate) struct DeviceLinkRow {
 
 #[derive(Clone)]
 pub struct SqliteDeviceLinkStore {
+    pub(crate) pool: SqlitePool,
+}
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct EmailConfirmationRow {
+    pub(crate) account_id: String,
+    pub(crate) token_hash: String,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub struct SqliteEmailConfirmationStore {
     pub(crate) pool: SqlitePool,
 }
 

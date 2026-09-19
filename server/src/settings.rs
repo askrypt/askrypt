@@ -102,6 +102,7 @@ mod tests {
             google_sub: None,
             created_at: Utc::now(),
             banned_at: None,
+            email_confirmed_at: Some(Utc::now()),
         }
     }
 

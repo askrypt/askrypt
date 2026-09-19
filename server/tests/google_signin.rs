@@ -51,7 +51,7 @@ fn app_with_google() -> TestApp {
     let state = AppState {
         id_verifier: Arc::clone(&verifier) as _,
         accounts: Arc::clone(&accounts) as _,
-        ..AppState::in_memory()
+        ..common::state()
     };
     TestApp {
         app: router(state.clone(), &common::config()),
@@ -64,7 +64,7 @@ fn app_with_google() -> TestApp {
 /// The default wiring: Google configured for the JSON API's sake, or not at
 /// all — either way the website has no button.
 fn app_without_google() -> Router {
-    router(AppState::in_memory(), &common::config())
+    router(common::state(), &common::config())
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {

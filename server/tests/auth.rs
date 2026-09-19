@@ -27,7 +27,7 @@ fn test_app() -> TestApp {
     let verifier = Arc::new(FakeIdTokenVerifier::default());
     let state = AppState {
         id_verifier: verifier.clone(),
-        ..AppState::in_memory()
+        ..common::state()
     };
     TestApp {
         app: router(state, &common::password_api_config()),
@@ -389,7 +389,7 @@ async fn auth_endpoints_are_rate_limited() {
 async fn the_password_routes_are_absent_unless_enabled() {
     let config = common::config();
     assert!(!config.password_api, "the default must be off");
-    let app = router(AppState::in_memory(), &config);
+    let app = router(common::state(), &config);
 
     for uri in ["/api/v1/auth/register", "/api/v1/auth/login"] {
         let (status, body) = send(

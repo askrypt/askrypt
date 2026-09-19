@@ -30,6 +30,7 @@ use tokio::sync::Semaphore;
 
 use crate::admin;
 use crate::audit::{self, ClientInfo};
+use crate::confirm;
 use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::settings;
 use crate::state::AppState;
@@ -175,12 +176,35 @@ pub(crate) async fn register_account(
         audit::emit(audit::REGISTER_DENIED, client, None, err.code);
     })?;
     let password_hash = hash_password(password).await?;
+    // An address held by an account nobody has confirmed is not taken: that
+    // registration never proved anything, and letting it squat the address
+    // would lock the real owner out for good. It has no sessions and no
+    // vaults yet, so taking it over loses nothing — the new password replaces
+    // the old one and a fresh link replaces the old link, which is also what
+    // keeps a link in the inbox paired with the password set last.
+    if state.email_confirmation
+        && let Some(mut pending) = state.accounts.find_by_email(&email).await?
+        && !pending.is_confirmed()
+        && pending.google_sub.is_none()
+    {
+        pending.password_hash = Some(password_hash);
+        state.accounts.update(&pending).await?;
+        audit::emit(
+            audit::REGISTER_OK,
+            client,
+            Some(pending.id),
+            "re-registered_unconfirmed",
+        );
+        confirm::send_confirmation(state, client, &pending).await;
+        return Ok(pending);
+    }
     let account = state
         .accounts
         .create(NewAccount {
             email,
             password_hash: Some(password_hash),
             google_sub: None,
+            email_confirmed_at: (!state.email_confirmation).then(Utc::now),
         })
         .await
         // Matched rather than `?`-ed so a taken email is audited: it is the
@@ -194,6 +218,9 @@ pub(crate) async fn register_account(
     // Whoever sets the server up is its administrator. Never fails the
     // registration; see `admin::bootstrap_first_admin`.
     admin::bootstrap_first_admin(state, &account).await;
+    if !account.is_confirmed() {
+        confirm::send_confirmation(state, client, &account).await;
+    }
     Ok(account)
 }
 
@@ -253,6 +280,19 @@ pub(crate) async fn authenticate(
     if account.is_banned() {
         audit::emit(audit::LOGIN_FAILED, client, Some(account.id), "banned");
         return Err(account_banned());
+    }
+    // After the password for the same reason as the ban: only someone who
+    // knows it learns the account exists. Checked against the switch rather
+    // than the stamp alone, so turning confirmation off lets in accounts that
+    // registered while it was on.
+    if state.email_confirmation && !account.is_confirmed() {
+        audit::emit(
+            audit::LOGIN_FAILED,
+            client,
+            Some(account.id),
+            "email_unconfirmed",
+        );
+        return Err(confirm::email_not_confirmed());
     }
     Ok(account)
 }
@@ -323,8 +363,20 @@ pub(crate) async fn upsert_google_account(
             }
             None => {
                 account.google_sub = Some(claims.subject);
+                if !account.is_confirmed() {
+                    // Google has just proved who owns this address, and it
+                    // may not be whoever registered it. Their password would
+                    // otherwise survive the link and keep working for them —
+                    // the "pre-hijacking" attack — so an unconfirmed account
+                    // is taken over clean: confirmed, and password-less until
+                    // its real owner sets one.
+                    account.email_confirmed_at = Some(Utc::now());
+                    account.password_hash = None;
+                    outcome = "linked_unconfirmed";
+                } else {
+                    outcome = "linked";
+                }
                 state.accounts.update(&account).await?;
-                outcome = "linked";
                 account
             }
         },
@@ -349,6 +401,8 @@ pub(crate) async fn upsert_google_account(
                     email,
                     password_hash: None,
                     google_sub: Some(claims.subject),
+                    // Google verified the address; there is nothing to mail.
+                    email_confirmed_at: Some(Utc::now()),
                 })
                 .await?;
             admin::bootstrap_first_admin(state, &account).await;

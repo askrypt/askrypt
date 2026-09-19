@@ -31,7 +31,7 @@ fn test_app() -> TestApp {
     let verifier = Arc::new(FakeIdTokenVerifier::default());
     let state = AppState {
         id_verifier: verifier.clone(),
-        ..AppState::in_memory()
+        ..common::state()
     };
     TestApp {
         app: router(state.clone(), &common::password_api_config()),

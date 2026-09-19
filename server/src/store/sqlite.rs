@@ -1,7 +1,8 @@
 //! SQLite backend: connection pool, embedded migration runner, and the
 //! SQLite implementations of [`AccountStore`], [`SessionStore`] (Phase 2),
 //! [`VaultMetaStore`] (Phase 4), [`VaultVersionStore`] and [`RoleStore`]
-//! (Phase 8), and [`SettingsStore`] (Phase 12).
+//! (Phase 8), [`SettingsStore`] (Phase 12), and [`EmailConfirmationStore`]
+//! (Phase 15).
 //!
 //! Uuids are stored as hyphenated TEXT, timestamps as TEXT via sqlx's
 //! chrono mapping. Migrations are embedded in the binary from
@@ -17,17 +18,19 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::types::{
-    AccountRow, DeviceLinkRow, RoleRow, SessionRow, SettingRow, VaultMetaRow, VaultVersionRow,
+    AccountRow, DeviceLinkRow, EmailConfirmationRow, RoleRow, SessionRow, SettingRow, VaultMetaRow,
+    VaultVersionRow,
 };
 use super::{
     Account, AccountId, AccountStore, DeviceLink, DeviceLinkId, DeviceLinkStatus, DeviceLinkStore,
-    NewAccount, Role, RoleStore, Session, SessionStore, Setting, SettingsStore, StoreError,
-    VaultId, VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
+    EmailConfirmation, EmailConfirmationStore, NewAccount, Role, RoleStore, Session, SessionStore,
+    Setting, SettingsStore, StoreError, VaultId, VaultMeta, VaultMetaStore, VaultVersion,
+    VaultVersionId, VaultVersionStore,
 };
 
 pub use super::types::{
-    SqliteAccountStore, SqliteDeviceLinkStore, SqliteRoleStore, SqliteSessionStore,
-    SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
+    SqliteAccountStore, SqliteDeviceLinkStore, SqliteEmailConfirmationStore, SqliteRoleStore,
+    SqliteSessionStore, SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -70,7 +73,8 @@ fn parse_uuid(raw: &str) -> Result<Uuid, StoreError> {
 }
 
 /// Every column of `accounts`, in the order the queries below list them.
-const ACCOUNT_COLUMNS: &str = "id, email, password_hash, google_sub, created_at, banned_at";
+const ACCOUNT_COLUMNS: &str =
+    "id, email, password_hash, google_sub, created_at, banned_at, email_confirmed_at";
 
 impl AccountRow {
     fn into_account(self) -> Result<Account, StoreError> {
@@ -81,6 +85,7 @@ impl AccountRow {
             google_sub: self.google_sub,
             created_at: self.created_at,
             banned_at: self.banned_at,
+            email_confirmed_at: self.email_confirmed_at,
         })
     }
 }
@@ -101,17 +106,18 @@ impl AccountStore for SqliteAccountStore {
             google_sub: new.google_sub,
             created_at: Utc::now(),
             banned_at: None,
+            email_confirmed_at: new.email_confirmed_at,
         };
-        sqlx::query(
-            "INSERT INTO accounts (id, email, password_hash, google_sub, created_at, banned_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        )
+        sqlx::query(&format!(
+            "INSERT INTO accounts ({ACCOUNT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+        ))
         .bind(account.id.to_string())
         .bind(&account.email)
         .bind(&account.password_hash)
         .bind(&account.google_sub)
         .bind(account.created_at)
         .bind(account.banned_at)
+        .bind(account.email_confirmed_at)
         .execute(&self.pool)
         .await
         .map_err(account_write_err)?;
@@ -143,7 +149,7 @@ impl AccountStore for SqliteAccountStore {
     async fn update(&self, account: &Account) -> Result<(), StoreError> {
         let result = sqlx::query(
             "UPDATE accounts SET email = ?2, password_hash = ?3, google_sub = ?4, \
-             created_at = ?5, banned_at = ?6 WHERE id = ?1",
+             created_at = ?5, banned_at = ?6, email_confirmed_at = ?7 WHERE id = ?1",
         )
         .bind(account.id.to_string())
         .bind(&account.email)
@@ -151,6 +157,7 @@ impl AccountStore for SqliteAccountStore {
         .bind(&account.google_sub)
         .bind(account.created_at)
         .bind(account.banned_at)
+        .bind(account.email_confirmed_at)
         .execute(&self.pool)
         .await
         .map_err(account_write_err)?;
@@ -555,6 +562,84 @@ impl DeviceLinkStore for SqliteDeviceLinkStore {
     }
 }
 
+impl EmailConfirmationRow {
+    fn into_pending(self) -> Result<EmailConfirmation, StoreError> {
+        Ok(EmailConfirmation {
+            account_id: parse_uuid(&self.account_id)?,
+            token_hash: self.token_hash,
+            created_at: self.created_at,
+            expires_at: self.expires_at,
+        })
+    }
+}
+
+/// The columns every confirmation query selects, in [`EmailConfirmationRow`]'s
+/// order.
+const CONFIRMATION_COLUMNS: &str = "account_id, token_hash, created_at, expires_at";
+
+impl SqliteEmailConfirmationStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl EmailConfirmationStore for SqliteEmailConfirmationStore {
+    async fn put(&self, pending: EmailConfirmation) -> Result<(), StoreError> {
+        sqlx::query(&format!(
+            "INSERT OR REPLACE INTO email_confirmations ({CONFIRMATION_COLUMNS}) \
+             VALUES (?1, ?2, ?3, ?4)"
+        ))
+        .bind(pending.account_id.to_string())
+        .bind(&pending.token_hash)
+        .bind(pending.created_at)
+        .bind(pending.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        Ok(())
+    }
+
+    async fn get(&self, account: AccountId) -> Result<Option<EmailConfirmation>, StoreError> {
+        let row: Option<EmailConfirmationRow> = sqlx::query_as(&format!(
+            "SELECT {CONFIRMATION_COLUMNS} FROM email_confirmations WHERE account_id = ?1"
+        ))
+        .bind(account.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(EmailConfirmationRow::into_pending).transpose()
+    }
+
+    async fn take(
+        &self,
+        token_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<EmailConfirmation>, StoreError> {
+        // One statement, so two clicks racing on the same link cannot both
+        // confirm: only the DELETE that lands first has a row to return.
+        let row: Option<EmailConfirmationRow> = sqlx::query_as(&format!(
+            "DELETE FROM email_confirmations WHERE token_hash = ?1 AND expires_at > ?2 \
+             RETURNING {CONFIRMATION_COLUMNS}"
+        ))
+        .bind(token_hash)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(EmailConfirmationRow::into_pending).transpose()
+    }
+
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
+        let result = sqlx::query("DELETE FROM email_confirmations WHERE expires_at <= ?1")
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(result.rows_affected())
+    }
+}
+
 impl VaultMetaRow {
     fn into_meta(self) -> Result<VaultMeta, StoreError> {
         Ok(VaultMeta {
@@ -816,6 +901,7 @@ mod tests {
             email: email.to_string(),
             password_hash: Some("argon2-hash".to_string()),
             google_sub: None,
+            email_confirmed_at: None,
         }
     }
 
@@ -830,7 +916,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(applied, 5);
+        assert_eq!(applied, 6);
 
         // Re-opening is idempotent: already-applied migrations are skipped.
         let pool2 = open(&db_path).await.unwrap();
@@ -1235,6 +1321,83 @@ mod tests {
             created_at: now,
             expires_at: now + ttl,
         }
+    }
+
+    #[tokio::test]
+    async fn email_confirmations_are_taken_once_replaced_and_swept() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let store = SqliteEmailConfirmationStore::new(pool);
+        let account = accounts.create(new_account("a@example.com")).await.unwrap();
+        assert!(!account.is_confirmed());
+        let now = Utc::now();
+        let pending = |hash: &str, expires_in: Duration| EmailConfirmation {
+            account_id: account.id,
+            token_hash: hash.to_string(),
+            created_at: now,
+            expires_at: now + expires_in,
+        };
+
+        store.put(pending("h1", Duration::hours(24))).await.unwrap();
+        assert_eq!(
+            store.get(account.id).await.unwrap().unwrap().token_hash,
+            "h1"
+        );
+        // A second put replaces the first: the old hash no longer works.
+        store.put(pending("h2", Duration::hours(24))).await.unwrap();
+        assert!(store.take("h1", now).await.unwrap().is_none());
+        let taken = store.take("h2", now).await.unwrap().unwrap();
+        assert_eq!(taken.account_id, account.id);
+        // Exactly once.
+        assert!(store.take("h2", now).await.unwrap().is_none());
+
+        // Expired links are refused, then swept.
+        store
+            .put(pending("h3", Duration::seconds(-1)))
+            .await
+            .unwrap();
+        assert!(store.take("h3", now).await.unwrap().is_none());
+        assert_eq!(store.delete_expired(now).await.unwrap(), 1);
+        assert!(store.get(account.id).await.unwrap().is_none());
+
+        // And they go with the account.
+        store.put(pending("h4", Duration::hours(24))).await.unwrap();
+        accounts.delete(account.id).await.unwrap();
+        assert!(store.get(account.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn accounts_that_predate_confirmation_count_as_confirmed() {
+        // Apply every migration but the confirmation one by hand, register an
+        // account the old way, then upgrade: nobody may be locked out.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let (last, earlier) = MIGRATOR.migrations.split_last().unwrap();
+        assert_eq!(last.version, 6, "update this test for the new migration");
+        for migration in earlier {
+            sqlx::raw_sql(&migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO accounts (id, email, password_hash, google_sub, created_at) \
+             VALUES (?1, 'old@example.com', 'hash', NULL, ?2)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(Utc::now())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(&last.sql).execute(&pool).await.unwrap();
+
+        let old = SqliteAccountStore::new(pool)
+            .find_by_email("old@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(old.is_confirmed());
+        assert_eq!(old.email_confirmed_at, Some(old.created_at));
     }
 
     #[tokio::test]

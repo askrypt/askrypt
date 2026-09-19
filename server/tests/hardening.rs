@@ -12,7 +12,6 @@
 use askrypt_server::config::Config;
 use askrypt_server::hardening::CSP;
 use askrypt_server::routes::router;
-use askrypt_server::state::AppState;
 use askrypt_server::vaults::MAX_VAULT_BYTES;
 use axum::Router;
 use axum::body::Body;
@@ -24,11 +23,11 @@ use tower::ServiceExt;
 mod common;
 
 fn app() -> Router {
-    router(AppState::in_memory(), &common::password_api_config())
+    router(common::state(), &common::password_api_config())
 }
 
 fn app_with(config: Config) -> Router {
-    router(AppState::in_memory(), &config)
+    router(common::state(), &config)
 }
 
 async fn send_raw(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, Vec<u8>) {

@@ -6,7 +6,6 @@
 //! namespacing and the boundary between the two.
 
 use askrypt_server::routes::router;
-use askrypt_server::state::AppState;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -16,7 +15,7 @@ use tower::ServiceExt;
 mod common;
 
 fn app() -> Router {
-    router(AppState::in_memory(), &common::config())
+    router(common::state(), &common::config())
 }
 
 async fn body_json(response: axum::response::Response) -> serde_json::Value {

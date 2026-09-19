@@ -3,7 +3,7 @@
 //! | Variable             | Default          | Meaning                          |
 //! |----------------------|------------------|----------------------------------|
 //! | `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on      |
-//! | `ASKRYPT_DOMAIN`     | *(empty)*        | Public host name, for operational notices only — nothing routes on it |
+//! | `ASKRYPT_DOMAIN`     | *(empty)*        | Public host name. Nothing routes on it: it names the server in operational notices and is the base of mailed links (`https://<domain>`; a value with a scheme is used as-is; empty = `http://<bind>`) |
 //! | `ASKRYPT_ADMIN_EMAIL` | *(SMTP sender)* | Recipient of operational notices (the startup email) |
 //! | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data directory           |
 //! | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite`/`memory` |
@@ -12,6 +12,7 @@
 //! | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For` for the client address. Only when a reverse proxy is the *only* way to reach the listener |
 //! | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security`. Enable once TLS terminates in front |
 //! | `ASKRYPT_PASSWORD_API` | `false`        | Expose `POST /api/v1/auth/{register,login}`. No shipped client uses them, and they are the one password surface reCAPTCHA cannot cover — leave off in production; the test suite and `scripts/server-roundtrip.sh` turn it on |
+//! | `ASKRYPT_EMAIL_CONFIRMATION` | `true`   | New password accounts must follow a mailed link before they can sign in. Without an SMTP relay the link is only in the log. `scripts/server-roundtrip.sh` turns it off |
 //! | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60`   | Per-request handler timeout (`0` disables) |
 //! | `ASKRYPT_MAX_CONCURRENT` | `256`        | In-flight requests before shedding with 503 (`0` disables) |
 //! | `ASKRYPT_MAX_BODY_BYTES` | `65536`      | Request body limit outside `/api/v1/vaults` (vault routes keep their own 10 MiB limit) |
@@ -70,6 +71,7 @@ pub const ENV_GOOGLE_CLIENT_IDS: &str = "ASKRYPT_GOOGLE_CLIENT_IDS";
 pub const ENV_TRUST_PROXY: &str = "ASKRYPT_TRUST_PROXY";
 pub const ENV_HSTS: &str = "ASKRYPT_HSTS";
 pub const ENV_PASSWORD_API: &str = "ASKRYPT_PASSWORD_API";
+pub const ENV_EMAIL_CONFIRMATION: &str = "ASKRYPT_EMAIL_CONFIRMATION";
 pub const ENV_REQUEST_TIMEOUT: &str = "ASKRYPT_REQUEST_TIMEOUT_SECS";
 pub const ENV_MAX_CONCURRENT: &str = "ASKRYPT_MAX_CONCURRENT";
 pub const ENV_MAX_BODY_BYTES: &str = "ASKRYPT_MAX_BODY_BYTES";
@@ -122,6 +124,7 @@ impl Default for Config {
             trust_proxy: false,
             hsts: false,
             password_api: false,
+            email_confirmation: true,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -212,6 +215,7 @@ impl Config {
             trust_proxy: parse_bool(ENV_TRUST_PROXY, defaults.trust_proxy)?,
             hsts: parse_bool(ENV_HSTS, defaults.hsts)?,
             password_api: parse_bool(ENV_PASSWORD_API, defaults.password_api)?,
+            email_confirmation: parse_bool(ENV_EMAIL_CONFIRMATION, defaults.email_confirmation)?,
             request_timeout: Duration::from_secs(parse_num(
                 ENV_REQUEST_TIMEOUT,
                 defaults.request_timeout.as_secs(),
@@ -227,6 +231,21 @@ impl Config {
             smtp: smtp_from(&|var| std::env::var(var).ok())?,
             recaptcha: recaptcha_from(&|var| std::env::var(var).ok())?,
         })
+    }
+
+    /// Where links in outgoing mail point: `https://<ASKRYPT_DOMAIN>`, or the
+    /// domain as written when it already carries a scheme, or the bind
+    /// address over plain HTTP for a local run without one. No trailing
+    /// slash.
+    pub fn public_url(&self) -> String {
+        let url = match self.domain.as_deref() {
+            Some(domain) if domain.starts_with("http://") || domain.starts_with("https://") => {
+                domain.to_string()
+            }
+            Some(domain) => format!("https://{domain}"),
+            None => format!("http://{}", self.bind),
+        };
+        url.trim_end_matches('/').to_string()
     }
 
     pub fn db_path(&self) -> PathBuf {
@@ -431,6 +450,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_url_comes_from_the_domain_or_the_bind_address() {
+        let local = Config::default();
+        assert_eq!(local.public_url(), "http://127.0.0.1:8080");
+        let bare = Config {
+            domain: Some("askrypt.example".into()),
+            ..Config::default()
+        };
+        assert_eq!(bare.public_url(), "https://askrypt.example");
+        let explicit = Config {
+            domain: Some("http://lan.box:8080/".into()),
+            ..Config::default()
+        };
+        assert_eq!(explicit.public_url(), "http://lan.box:8080");
+    }
+
+    #[test]
     fn defaults_are_conservative() {
         let config = Config::default();
         // Fail closed: forged proxy headers must not be trusted until the
@@ -441,6 +476,8 @@ mod tests {
         // The JSON password routes are opt-in: nothing that ships calls them,
         // and they bypass the captcha the website's forms carry.
         assert!(!config.password_api);
+        // New accounts prove their address before they can sign in.
+        assert!(config.email_confirmation);
         assert_eq!(config.backend, Backend::Sqlite);
         assert_eq!(config.log_format, LogFormat::Text);
         // File logging is on out of the box; only an explicitly empty

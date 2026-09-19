@@ -38,7 +38,7 @@ fn app_with_captcha() -> (Router, Arc<FakeCaptchaVerifier>) {
     captcha.register(GOOD_REGISTER_TOKEN, "register", 0.9);
     let state = AppState {
         captcha: Arc::clone(&captcha) as _,
-        ..AppState::in_memory()
+        ..common::state()
     };
     (router(state, &common::password_api_config()), captcha)
 }
@@ -46,7 +46,7 @@ fn app_with_captcha() -> (Router, Arc<FakeCaptchaVerifier>) {
 /// A server with no captcha configured — the default wiring, and what every
 /// other suite runs against.
 fn app_without_captcha() -> Router {
-    router(AppState::in_memory(), &common::password_api_config())
+    router(common::state(), &common::password_api_config())
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {

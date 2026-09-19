@@ -1,0 +1,8 @@
+{% extends "layout.html" %}
+
+{% block title %}Confirm your email &middot; Askrypt{% endblock %}
+
+{% block content %}
+{#- The fragment renders itself; `safe` because it is already escaped HTML. -#}
+{{ notice|safe }}
+{% endblock %}

@@ -133,7 +133,7 @@ Configuration via environment variables (all optional):
 | Variable             | Default          | Meaning                                  |
 |----------------------|------------------|------------------------------------------|
 | `ASKRYPT_BIND`       | `127.0.0.1:8080` | Socket address to listen on              |
-| `ASKRYPT_DOMAIN`     | *(empty)*        | Public host name. Reporting only — nothing routes on it |
+| `ASKRYPT_DOMAIN`     | *(empty)*        | Public host name. Nothing routes on it; it names the server in notices and is the base of mailed links (`https://<domain>`; empty = `http://<bind>`) |
 | `ASKRYPT_ADMIN_EMAIL` | *(SMTP sender)* | Where the startup notice goes            |
 | `ASKRYPT_DATA_DIR`   | `data`           | Runtime data dir (SQLite db, vault blobs)|
 | `ASKRYPT_BACKEND`    | `sqlite`         | Storage backend: `sqlite` or `memory`    |
@@ -142,6 +142,7 @@ Configuration via environment variables (all optional):
 | `ASKRYPT_TRUST_PROXY` | `false`         | Trust `X-Real-IP`/`X-Forwarded-For`; only behind a reverse proxy |
 | `ASKRYPT_HSTS`       | `false`          | Send `Strict-Transport-Security` (enable once TLS is in front) |
 | `ASKRYPT_PASSWORD_API` | `false`        | Expose `POST /api/v1/auth/{register,login}`. No shipped client uses them and they bypass the website's reCAPTCHA — testing only |
+| `ASKRYPT_EMAIL_CONFIRMATION` | `true` | New password accounts must follow a mailed link before they can sign in. Without an SMTP relay the link is only in the log |
 | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60`   | Handler timeout (`0` disables)           |
 | `ASKRYPT_MAX_CONCURRENT` | `256`        | In-flight requests before 503 (`0` disables) |
 | `ASKRYPT_MAX_BODY_BYTES` | `65536`      | Body limit outside the vault routes (those allow 10 MiB) |

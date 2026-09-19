@@ -26,12 +26,13 @@
 //!
 //! Phase 7.2 shipped sign-in, registration and sign-out; 7.3 the profile
 //! pages ([`account`]); 7.4 the vault file manager ([`vaults`]); Phase 13 the
-//! Google button ([`google`]).
+//! Google button ([`google`]); Phase 15 email confirmation ([`confirm`]).
 
 pub mod account;
 pub mod admin;
 pub mod auth;
 pub mod captcha;
+pub mod confirm;
 pub mod csrf;
 pub mod devicelink;
 pub mod error;
@@ -99,6 +100,11 @@ pub fn routes(
         // into the same sessions, and it creates accounts. POST only — a
         // sign-in a link could trigger is one a prefetcher can trigger.
         .route("/auth/google", post(google::submit))
+        // Email confirmation shares the budget too: the landing page is
+        // where token guesses would go, and a resend sends mail.
+        .route("/confirm", post(confirm::submit))
+        .route("/confirm/{token}", get(confirm::page))
+        .route("/confirm/resend", post(confirm::resend))
         .route_layer(middleware::from_fn_with_state(auth_limiter, rate_limit));
 
     // The browser half of the desktop sign-in, on the same budget as the API

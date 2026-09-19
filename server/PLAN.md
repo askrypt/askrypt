@@ -951,6 +951,49 @@ askrypt/
     the generator panel was driven the same way — open, slider, each toggle,
     none selected, "Copy and use".
 
+- **Phase 15 — Email confirmation at registration.** ✅ *(done 2026-09-19)*
+  Registering on the website no longer signs you in. It answers with a
+  "check your inbox" card, mails a single-use link, and
+  `auth::authenticate` refuses the account until the link is used.
+
+  - **Rules in `src/confirm.rs`, pages in `src/web/confirm.rs`.** The token
+    is 256 random bits; only its SHA-256 is stored, in `email_confirmations`
+    (migration `0006`, one row per account, `ON DELETE CASCADE`). A send
+    replaces the row, so only the newest link works. Using a link is one
+    `DELETE … RETURNING` (`EmailConfirmationStore::take`); it expires after
+    24 h. The expiry sweep runs on send.
+  - **A GET never confirms.** `/confirm/{token}` shows one button and
+    `POST /confirm` does the work, because mail scanners open links.
+    Confirming signs nobody in: it redirects to `/login` with a flash. The
+    link proves the inbox, not the password.
+  - **The gate is after the password check**, beside the ban and for the
+    same reason: only someone who knows the password learns the account
+    exists. The web form shows the confirmation card with a resend button;
+    the JSON login answers 403 `email_not_confirmed`.
+  - **No enumeration.** `POST /confirm/resend` answers the same sentence for
+    any address, mails from a spawned task (so timing doesn't tell either),
+    and keeps a 60 s cooldown per account.
+  - **Squatting and pre-hijacking.** Registering an address held by an
+    *unconfirmed* account takes it over: new password, new link, old link
+    dead. A Google sign-in onto an unconfirmed password account confirms it
+    and **clears the password**, so whoever registered it cannot keep using
+    it.
+  - **Nobody locked out.** The migration marks every existing account
+    confirmed. Google-created accounts are created confirmed.
+    `ASKRYPT_EMAIL_CONFIRMATION=0` restores the old behaviour.
+    `scripts/server-roundtrip.sh` sets it, since it registers over the API
+    and cannot read mail.
+  - Links are built from `ASKRYPT_DOMAIN` (`Config::public_url`), never from
+    the request's `Host` header.
+  - Out of scope: re-confirming on an email change, and password reset.
+    A user whose pending password was replaced by a later registration
+    cannot recover by mail today; Google sign-in still works.
+  - **Phase gate:** ✅ `server/tests/email_confirmation.rs` (8 tests): the
+    register card and mail, sign-in blocked on both surfaces, GET vs POST,
+    single use, expiry, resend replacement and cooldown, re-registration,
+    Google takeover, no inline script. Plus sqlite store and migration unit
+    tests. The other suites run with confirmation off (`common::state()`).
+
 ## Open decisions (not blocking)
 
 - ~~Client-side sync UX for **desktop**~~ — decided and built: manual

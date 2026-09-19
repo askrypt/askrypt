@@ -10,7 +10,6 @@
 //! helpers, so the handful this needs are repeated here.
 
 use askrypt_server::routes::router;
-use askrypt_server::state::AppState;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
@@ -24,7 +23,7 @@ const PASSWORD: &str = "hunter2hunter2";
 const USERS: &str = "/admin/users";
 
 fn app() -> Router {
-    router(AppState::in_memory(), &common::password_api_config())
+    router(common::state(), &common::password_api_config())
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {

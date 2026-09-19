@@ -14,6 +14,7 @@
 use std::path::Path;
 
 use askrypt_server::config::Config;
+use askrypt_server::state::AppState;
 
 /// The defaults, pointed at the repository's own `server/static/`.
 pub fn config() -> Config {
@@ -30,5 +31,17 @@ pub fn password_api_config() -> Config {
     Config {
         password_api: true,
         ..config()
+    }
+}
+
+/// The in-memory state, with email confirmation switched off.
+///
+/// Most suites register over HTTP and go straight on to sign in, which is
+/// what the server does with confirmation off. `tests/email_confirmation.rs`
+/// covers the default, where registration mails a link first.
+pub fn state() -> AppState {
+    AppState {
+        email_confirmation: false,
+        ..AppState::in_memory()
     }
 }

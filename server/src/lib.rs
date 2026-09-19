@@ -19,6 +19,7 @@ pub mod audit;
 pub mod auth;
 pub mod clientip;
 pub mod config;
+pub mod confirm;
 pub mod devicelink;
 pub mod error;
 pub mod hardening;

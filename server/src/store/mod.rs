@@ -32,14 +32,18 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 pub use types::{
-    Account, AccountId, CaptchaError, DeviceLink, DeviceLinkId, DeviceLinkStatus, IdTokenError,
-    MailerError, NewAccount, Role, Session, Setting, StoreError, VaultId, VaultMeta, VaultVersion,
-    VaultVersionId, VerifiedIdToken,
+    Account, AccountId, CaptchaError, DeviceLink, DeviceLinkId, DeviceLinkStatus,
+    EmailConfirmation, IdTokenError, MailerError, NewAccount, Role, Session, Setting, StoreError,
+    VaultId, VaultMeta, VaultVersion, VaultVersionId, VerifiedIdToken,
 };
 
 impl Account {
     pub fn is_banned(&self) -> bool {
         self.banned_at.is_some()
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        self.email_confirmed_at.is_some()
     }
 }
 
@@ -173,6 +177,28 @@ pub trait DeviceLinkStore: Send + Sync {
     ) -> Result<Option<DeviceLink>, StoreError>;
     /// Drops every link past its `expires_at`, whatever its status. There is no
     /// GC task in this server, so this is called from the create path.
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
+}
+
+/// Pending email-confirmation links, at most one per account.
+#[async_trait]
+pub trait EmailConfirmationStore: Send + Sync {
+    /// Stores `pending`, replacing any earlier link of the same account — so
+    /// a resend is also what kills every link mailed before it.
+    async fn put(&self, pending: EmailConfirmation) -> Result<(), StoreError>;
+    /// The account's pending link, if any; drives the resend cooldown.
+    async fn get(&self, account: AccountId) -> Result<Option<EmailConfirmation>, StoreError>;
+    /// Atomically removes and returns the unexpired link with this token
+    /// hash. One call rather than `get` + `delete`, for the reason
+    /// [`DeviceLinkStore::claim`] is: a link must work exactly once. `None`
+    /// covers unknown, expired and already-used alike.
+    async fn take(
+        &self,
+        token_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<EmailConfirmation>, StoreError>;
+    /// Drops every link past its `expires_at`. Called from the send path;
+    /// there is no GC task.
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
 }
 

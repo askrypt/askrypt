@@ -25,7 +25,7 @@ const HOST: &str = "askrypt.test";
 const PASSWORD: &str = "hunter2hunter2";
 
 fn state() -> AppState {
-    AppState::in_memory()
+    common::state()
 }
 
 fn app_with(state: AppState) -> Router {
@@ -618,6 +618,7 @@ async fn signed_up(state: &AppState, email: &str) -> Account {
             email: email.to_string(),
             password_hash: None,
             google_sub: None,
+            email_confirmed_at: Some(Utc::now()),
         })
         .await
         .unwrap()

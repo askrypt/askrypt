@@ -37,8 +37,8 @@ use crate::store::recaptcha::RecaptchaConfig;
 use crate::store::smtp::SmtpConfig;
 use crate::store::{
     Account, AccountId, AccountStore, CaptchaVerifier, DeviceLinkId, DeviceLinkStore,
-    IdTokenVerifier, Mailer, RoleStore, Session, SessionStore, SettingsStore, VaultBlobStore,
-    VaultId, VaultMetaStore, VaultVersionId, VaultVersionStore,
+    EmailConfirmationStore, IdTokenVerifier, Mailer, RoleStore, Session, SessionStore,
+    SettingsStore, VaultBlobStore, VaultId, VaultMetaStore, VaultVersionId, VaultVersionStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -135,9 +135,10 @@ pub struct ConfigError {
 pub struct Config {
     pub bind: SocketAddr,
     /// The public host name this server answers on, as the deployment's
-    /// `ASKRYPT_DOMAIN` states it. Nothing routes on it — it is there so an
-    /// operational notice can say *which* server it is about. `None` when the
-    /// variable is unset, which is the normal case for a local run.
+    /// `ASKRYPT_DOMAIN` states it. Nothing routes on it — it names the server
+    /// in operational notices and is the base of links the server mails out
+    /// (see [`Config::public_url`]). `None` when the variable is unset, which
+    /// is the normal case for a local run.
     pub domain: Option<String>,
     /// Where operational notices go (today: the startup email in
     /// [`crate::startup`]). `None` falls back to the SMTP sender address, so
@@ -171,6 +172,10 @@ pub struct Config {
     /// [`crate::web::captcha`]). Enable it for the test suite and the
     /// conformance runner, which use them to obtain a bearer token.
     pub password_api: bool,
+    /// Password accounts must follow a mailed link before they can sign in.
+    /// On by default; the conformance runner turns it off, since it registers
+    /// throwaway accounts over the API and cannot read mail.
+    pub email_confirmation: bool,
     /// Per-request handler timeout; `Duration::ZERO` disables it.
     pub request_timeout: Duration,
     /// In-flight request ceiling; `0` disables shedding.
@@ -254,6 +259,15 @@ pub struct AppState {
     /// captcha at all: its `site_key` is what the templates and the CSP
     /// decision both read.
     pub captcha: Arc<dyn CaptchaVerifier>,
+    /// Pending confirmation links, one per unconfirmed account.
+    pub email_confirmations: Arc<dyn EmailConfirmationStore>,
+    /// Whether new password accounts must confirm their email before they
+    /// can sign in — [`Config::email_confirmation`].
+    pub email_confirmation: bool,
+    /// Scheme and host that links in outgoing mail start with, no trailing
+    /// slash — [`Config::public_url`]. Never taken from a request's `Host`
+    /// header, which the requester controls.
+    pub public_url: String,
 }
 
 // ---------------------------------------------------------------------------

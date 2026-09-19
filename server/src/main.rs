@@ -11,8 +11,8 @@ use askrypt_server::store::memory::MemoryMailer;
 use askrypt_server::store::recaptcha::{DisabledCaptchaVerifier, RecaptchaVerifier};
 use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
-    self, SqliteAccountStore, SqliteDeviceLinkStore, SqliteRoleStore, SqliteSessionStore,
-    SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
+    self, SqliteAccountStore, SqliteDeviceLinkStore, SqliteEmailConfirmationStore, SqliteRoleStore,
+    SqliteSessionStore, SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 use askrypt_server::store::{
     ADMIN_ROLE, AccountStore, CaptchaVerifier, IdTokenVerifier, Mailer, RoleStore,
@@ -279,19 +279,24 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 device_links: Arc::new(SqliteDeviceLinkStore::new(pool.clone())),
                 vault_meta: Arc::new(SqliteVaultMetaStore::new(pool.clone())),
                 vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),
-                vault_versions: Arc::new(SqliteVaultVersionStore::new(pool)),
+                vault_versions: Arc::new(SqliteVaultVersionStore::new(pool.clone())),
+                email_confirmations: Arc::new(SqliteEmailConfirmationStore::new(pool)),
                 // Same root, keyed by version id: archived generations sit in
                 // a `versions/` subdirectory of each account's own directory.
                 vault_version_blobs: Arc::new(DiskVaultBlobStore::versions(config.vaults_dir())),
                 mailer,
                 id_verifier,
                 captcha,
+                email_confirmation: config.email_confirmation,
+                public_url: config.public_url(),
             }
         }
         Backend::Memory => AppState {
             id_verifier,
             mailer,
             captcha,
+            email_confirmation: config.email_confirmation,
+            public_url: config.public_url(),
             ..AppState::in_memory()
         },
     };

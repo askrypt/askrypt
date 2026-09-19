@@ -289,6 +289,7 @@ mod tests {
                 email: email.to_string(),
                 password_hash: Some("x".into()),
                 google_sub: None,
+                email_confirmed_at: None,
             })
             .await
             .unwrap()

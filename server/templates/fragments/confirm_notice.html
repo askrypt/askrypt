@@ -1,0 +1,58 @@
+{#-
+  The email-confirmation card. Rendered on its own for an `HX-Request` and
+  embedded in `confirm.html` otherwise.
+
+  The root has the `auth-form` id: registration and sign-in swap their own
+  card for this one, and the resend form swaps this card for its answer.
+  None of it depends on htmx. With scripts off every form is a plain POST
+  that re-renders the whole page.
+
+  Nothing here says whether an address is registered or still waiting. The
+  resend answer is the same sentence whatever happened.
+-#}
+<div id="auth-form" class="card form">
+{%- if kind == ConfirmKind::Confirm %}
+  <h1>Confirm your email</h1>
+  <p>Press the button to confirm this address and finish creating your
+  Askrypt account.</p>
+  {#- A POST, not the GET that brought you here: mail scanners open links on
+      their own, and a GET that confirmed would let them use it up. -#}
+  <form method="post" action="/confirm">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    <button class="button" type="submit">Confirm my email</button>
+  </form>
+{%- else %}
+  {%- if kind == ConfirmKind::Sent %}
+  <h1>Check your inbox</h1>
+  <p>We sent a confirmation link to <strong>{{ email }}</strong>. Open it to
+  finish creating your account. You can sign in once it is confirmed.</p>
+  {%- else if kind == ConfirmKind::SignInBlocked %}
+  <h1>Confirm your email first</h1>
+  <p role="alert">You cannot sign in as <strong>{{ email }}</strong> until the
+  address is confirmed. Open the link we sent there when you registered.</p>
+  {%- else if kind == ConfirmKind::Resent %}
+  <h1>Check your inbox</h1>
+  <p>If that address has an account waiting for confirmation, a new link is
+  on its way. Links mailed before it no longer work.</p>
+  {%- else %}
+  <h1>This link can't be used</h1>
+  <p role="alert">This confirmation link is invalid, has expired, or was
+  already used. Links work once and expire after 24 hours.</p>
+  {%- endif %}
+  <p class="hint">The link is good for 24 hours and works once. If nothing
+  arrives, check your spam folder.</p>
+  <form method="post" action="/confirm/resend"
+        hx-post="/confirm/resend" hx-target="#auth-form" hx-swap="outerHTML">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+  {%- if email.is_empty() %}
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required>
+  {%- else %}
+    <input type="hidden" name="email" value="{{ email }}">
+  {%- endif %}
+    <button class="button secondary" type="submit">Send a new link</button>
+  </form>
+  <p class="alt">Already confirmed? <a href="/login">Sign in</a></p>
+{%- endif %}
+</div>

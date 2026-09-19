@@ -187,6 +187,7 @@ pub struct MultipartForm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flash {
     AccountCreated,
+    EmailConfirmed,
     SignedOut,
     AlreadySignedIn,
     EmailChanged,
@@ -340,6 +341,62 @@ pub struct GoogleCredential {
 pub struct AuthQuery {
     #[serde(default)]
     pub(crate) link: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// confirm — the email-confirmation pages
+// ---------------------------------------------------------------------------
+
+/// Which confirmation message the card shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmKind {
+    /// Just registered: a link is on its way.
+    Sent,
+    /// The password was right but the address is not confirmed yet.
+    SignInBlocked,
+    /// A resend was asked for. Worded so it says nothing about whether the
+    /// address exists or still needed confirming.
+    Resent,
+    /// The landing page of a mailed link: one button, because a GET must not
+    /// confirm (mail scanners open links).
+    Confirm,
+    /// The link was unknown, expired or already used.
+    Invalid,
+}
+
+/// The confirmation card, rendered on its own for an `HX-Request` and inside
+/// [`ConfirmPage`] otherwise. Its root carries the `auth-form` id, so it
+/// swaps in for the sign-in or registration card it answers.
+#[derive(Template)]
+#[template(path = "fragments/confirm_notice.html")]
+pub struct ConfirmNotice {
+    pub(crate) kind: ConfirmKind,
+    pub(crate) csrf: String,
+    /// The address the resend form carries in a hidden field; empty where
+    /// none is known (a dead link), and the form then asks for it.
+    pub(crate) email: String,
+    /// The mailed token, only on [`ConfirmKind::Confirm`], posted back by the
+    /// button.
+    pub(crate) token: String,
+}
+
+#[derive(Template)]
+#[template(path = "confirm.html")]
+pub(crate) struct ConfirmPage {
+    pub(crate) chrome: Chrome,
+    pub(crate) notice: ConfirmNotice,
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmInput {
+    #[serde(default)]
+    pub(crate) token: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResendInput {
+    #[serde(default)]
+    pub(crate) email: String,
 }
 
 // ---------------------------------------------------------------------------

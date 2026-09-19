@@ -61,7 +61,7 @@ struct TestApp {
 }
 
 fn test_app() -> TestApp {
-    let state = AppState::in_memory();
+    let state = common::state();
     TestApp {
         app: router(state.clone(), &common::password_api_config()),
         state,

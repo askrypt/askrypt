@@ -20,6 +20,7 @@ impl Flash {
     fn code(self) -> &'static str {
         match self {
             Self::AccountCreated => "created",
+            Self::EmailConfirmed => "confirmed",
             Self::SignedOut => "out",
             Self::AlreadySignedIn => "in",
             Self::EmailChanged => "email",
@@ -47,6 +48,7 @@ impl Flash {
     fn from_code(code: &str) -> Option<Self> {
         match code {
             "created" => Some(Self::AccountCreated),
+            "confirmed" => Some(Self::EmailConfirmed),
             "out" => Some(Self::SignedOut),
             "in" => Some(Self::AlreadySignedIn),
             "email" => Some(Self::EmailChanged),
@@ -75,6 +77,7 @@ impl Flash {
     pub fn message(self) -> &'static str {
         match self {
             Self::AccountCreated => "Account created. You're signed in.",
+            Self::EmailConfirmed => "Email confirmed. You can sign in now.",
             Self::SignedOut => "You're signed out.",
             Self::AlreadySignedIn => "You're already signed in.",
             Self::EmailChanged => "Your email address has been updated.",
@@ -135,6 +138,7 @@ mod tests {
     fn every_variant_round_trips_through_its_code() {
         let all = [
             Flash::AccountCreated,
+            Flash::EmailConfirmed,
             Flash::SignedOut,
             Flash::AlreadySignedIn,
             Flash::EmailChanged,

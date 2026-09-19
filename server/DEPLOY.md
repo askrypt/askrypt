@@ -38,7 +38,7 @@ All settings are environment variables; all are optional.
 | Variable | Default | Meaning |
 |---|---|---|
 | `ASKRYPT_BIND` | `127.0.0.1:8080` | Listen address. Keep it on loopback (or a private network) behind the proxy |
-| `ASKRYPT_DOMAIN` | *(empty)* | The public host name. Caddy requests its certificate for this; the server only *reports* it, in the startup email — no routing, no redirect, no cookie domain depends on it |
+| `ASKRYPT_DOMAIN` | *(empty)* | The public host name. Caddy requests its certificate for this. The server names it in the startup email and builds the links it mails from it (`https://<domain>`; a value with a scheme is used as-is; empty = `http://<bind>`). No routing, no redirect and no cookie domain depend on it |
 | `ASKRYPT_ADMIN_EMAIL` | *(the SMTP sender)* | Recipient of the startup notice. Unset sends it to `ASKRYPT_SMTP_FROM`, which is usually a mailbox you already own |
 | `ASKRYPT_DATA_DIR` | `data` | SQLite db + vault blobs. Set an absolute path in production |
 | `ASKRYPT_BACKEND` | `sqlite` | `sqlite` or `memory` (nothing persisted — dev only) |
@@ -47,6 +47,7 @@ All settings are environment variables; all are optional.
 | `ASKRYPT_TRUST_PROXY` | `false` | Believe `X-Real-IP` / `X-Forwarded-For`. **Only when the proxy is the sole route in** |
 | `ASKRYPT_HSTS` | `false` | Send `Strict-Transport-Security`. Enable once TLS is confirmed |
 | `ASKRYPT_PASSWORD_API` | `false` | Expose `POST /api/v1/auth/{register,login}`. Leave off: nothing that ships calls them, and they are the one password surface reCAPTCHA cannot cover |
+| `ASKRYPT_EMAIL_CONFIRMATION` | `true` | A new email+password account must follow the link mailed at registration before it can sign in. **Needs a working SMTP relay**: without one the link is only written to the log. Accounts that existed before the upgrade, and Google accounts, count as confirmed |
 | `ASKRYPT_REQUEST_TIMEOUT_SECS` | `60` | Handler timeout (`0` disables) |
 | `ASKRYPT_MAX_CONCURRENT` | `256` | In-flight requests before shedding with 503 (`0` disables) |
 | `ASKRYPT_MAX_BODY_BYTES` | `65536` | Body limit outside the vault routes |
