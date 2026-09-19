@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Askrypt Cloud: sign-in and vault sync talk to an Askrypt server.
+         Only the debug/profile manifests had it, so release builds could not
+         reach the network at all. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="Askrypt"
         android:name="${applicationName}"
@@ -40,6 +44,12 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- url_launcher: open the browser for the Askrypt Cloud sign-in page
+             and entry URLs (package visibility, API 30+). -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
         </intent>
     </queries>
 </manifest>

@@ -294,6 +294,27 @@ untouched the same way it already copies the six `card_*` fields.
 removing an attachment is the desktop app's job; if mobile ever grows it, the
 pieces are `seal_attachment`'s Dart twin and a picker, not a format change.
 
+- **Cloud vaults (Askrypt server). ✅ Code done (on-device gate pending).**
+  Same sign-in and vault picking as desktop, same `/api/v1`, no server change.
+  - `lib/platform/server_client.dart` — Dart port of core's `ServerClient` /
+    `BrowserLogin` / `RemoteVault` over `package:http` (new dep).
+  - `lib/platform/server_session_store.dart` — session token + server URL in
+    `flutter_secure_storage`.
+  - `lib/session/cloud_session.dart` — Riverpod sign-in state (mirrors
+    `src/link.rs`): device link → browser → poll; cancel tells the server.
+    Sign-in lives on the locked side only (`AutoLock` would lock mid-trip).
+  - `lib/session/vault_home.dart` — `LocalHome` / `CloudHome` (the ETag that is
+    the next `If-Match`).
+  - `lib/screens/cloud_screen.dart` — server URL, "Sign in with browser",
+    waiting card with the user code, vault list (refetched on entry).
+  - Save: cloud vaults overwrite conflict-checked (412 → *Save mine* / Cancel);
+    local/new vaults can be uploaded ("Save to Askrypt Cloud").
+  - Recent vault: cloud vaults remembered by location (`recent.json`), reopened
+    by downloading the latest; no cloud bytes cached on the device.
+  - Android: `INTERNET` in the main manifest (release had none); cleartext
+    allowed in the debug manifest only.
+  - Tests: `server_client_test`, `cloud_session_test`, `cloud_screens_test`.
+
 - **Phase 5 — CI/CD.** Extend `.github/workflows`: run the **Dart parity test
   suite against committed golden vectors** (catches Rust/Dart drift), Flutter
   build/test, signed AAB (Play) + IPA (TestFlight); macOS runner for iOS.
@@ -303,7 +324,8 @@ pieces are `seal_attachment`'s Dart twin and a picker, not a format change.
 
 - Bump vault `version` when the format must diverge (core currently hard-rejects
   anything `!= "0.9"`). Any change must land in **both** Rust and Dart + vectors.
-- Cloud sync model (iCloud/Drive vs OS document providers vs explicit sync).
+- Cloud sync model beyond Askrypt Cloud (iCloud/Drive vs OS document providers).
+  No background follow/reload of a cloud vault on mobile yet (desktop has it).
 - PBKDF2 600k iterations are slow in pure Dart (`pointycastle`, slower than
   Rust). **Done:** `pbkdf2` (`crypto/kdf.dart`) now delegates to native,
   hardware-accelerated platform crypto via `cryptography_flutter` (Android

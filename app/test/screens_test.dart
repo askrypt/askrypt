@@ -10,9 +10,12 @@ import 'package:askrypt/crypto/secret_entry.dart';
 import 'package:askrypt/crypto/vault.dart';
 import 'package:askrypt/platform/recent_vault_store.dart';
 import 'package:askrypt/platform/vault_io.dart';
+import 'package:askrypt/session/cloud_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'cloud_fakes.dart';
 
 /// Records saved bytes and can hand back a vault to "pick".
 class FakeVaultIo implements VaultIo {
@@ -41,14 +44,17 @@ class FakeVaultIo implements VaultIo {
 
 /// In-memory recent-vault cache.
 class FakeRecentVaultStore implements RecentVaultStore {
-  PickedVault? stored;
+  RecentVault? stored;
 
   @override
-  Future<PickedVault?> load() async => stored;
+  Future<RecentVault?> load() async => stored;
 
   @override
   Future<void> remember(Uint8List bytes, String name) async =>
-      stored = PickedVault(bytes: bytes, name: name);
+      stored = RecentLocal(PickedVault(bytes: bytes, name: name));
+
+  @override
+  Future<void> rememberCloud(RecentCloud vault) async => stored = vault;
 
   @override
   Future<void> forget() async => stored = null;
@@ -63,6 +69,8 @@ void main() {
           vaultIoProvider.overrideWithValue(io),
           recentVaultStoreProvider
               .overrideWithValue(recent ?? FakeRecentVaultStore()),
+          serverSessionStoreProvider
+              .overrideWithValue(FakeServerSessionStore()),
         ],
         child: const AskryptApp(),
       ),
@@ -125,8 +133,8 @@ void main() {
     expect(entries.single.secret, 'hunter2');
 
     // A successful save refreshes the recent-vault cache with the same bytes.
-    expect(recent.stored, isNotNull);
-    expect(recent.stored!.bytes, io.saved);
+    expect(recent.stored, isA<RecentLocal>());
+    expect((recent.stored! as RecentLocal).vault.bytes, io.saved);
   });
 
   testWidgets('welcome offers to reopen the remembered vault', (tester) async {
@@ -138,7 +146,7 @@ void main() {
         ))
             .toBytes());
     final recent = FakeRecentVaultStore()
-      ..stored = PickedVault(bytes: bytes!, name: 'my.askrypt');
+      ..stored = RecentLocal(PickedVault(bytes: bytes!, name: 'my.askrypt'));
     await pumpApp(tester, FakeVaultIo(), recent: recent);
 
     // The cached vault gets its own button; tapping it goes straight to the

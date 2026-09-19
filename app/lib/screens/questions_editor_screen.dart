@@ -10,6 +10,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app.dart';
+import '../session/vault_home.dart';
 import '../session/vault_session.dart';
 
 class QuestionsEditorScreen extends ConsumerStatefulWidget {
@@ -96,6 +98,9 @@ class _QuestionsEditorScreenState
     final notifier = ref.read(vaultSessionProvider.notifier);
     try {
       if (widget.isCreate) {
+        // A new vault lives nowhere yet: the first Save asks where.
+        ref.read(vaultHomeProvider.notifier).state =
+            const LocalHome('vault.askrypt');
         notifier.createNew(
             questions: questions, answers: answers, translit: _translit);
         // Session is now unlocked; the shell swaps to the entries tree.

@@ -95,12 +95,13 @@ Files: `main.rs` (App, `Message`, `visible()`/`reconcile_selection()`, panes, su
 
 Pure-Dart Flutter (Android + iOS, no Rust/FFI). Byte-compatible with `core/` via golden vectors. Plan and status: **`app/PLAN.md`**.
 
+- **Askrypt Cloud** (same `/api/v1` as desktop, no server changes): `lib/platform/server_client.dart` ports `ServerClient`/`BrowserLogin`/`RemoteVault` over `package:http` (same status mapping, quoted-out/unquoted-in ETags, verification-path guard, flat poll read, 10 MiB cap). `lib/platform/server_session_store.dart` keeps `{base_url,email,token}` + server URL (default `https://askrypt.com`) in `flutter_secure_storage` — the token is a credential. `lib/session/cloud_session.dart` (`cloudProvider`: `CloudSignedOut`/`CloudLinking`/`CloudSignedIn`; generation-tagged polls, 429/network keep waiting, 15 min stall, poll on resume; `sessionRejected` on 401). **Sign-in only from the locked side** (`screens/cloud_screen.dart`): `AutoLock` locks on background, so a browser trip while unlocked would lose work. `lib/session/vault_home.dart` `vaultHomeProvider` = `LocalHome`/`CloudHome(etag)`; Save on a cloud vault overwrites with `If-Match`, 412 → "Changed on another device" (*Save mine* re-lists for the current ETag); local/new vaults offer "Save to Askrypt Cloud" when signed in (name collision check case-folded). A failed/cancelled save restores the dirty flag (`setModified`). Recent store remembers cloud vaults by location (`recent.json`), never their bytes. Android main manifest has `INTERNET`; debug manifest allows cleartext for LAN dev servers.
 - `lib/crypto/` — Dart port (`vault`, `kdf`, `aes`, `normalize`, `translit`, `secret_entry` incl. `CustomField`/`CustomFieldType`). Carries card keys, `custom_fields`, `attachments` and `files/` members (written with `compress = false`) though it cannot add/remove attachments.
 - `lib/session/` — Riverpod: `UnlockedVault` (folds legacy entry types via `canonicalEntryType`; new entries are `Login`; secret-free `EntrySummary`, reveal-on-demand, `toBytes()` via `masterForWrite`), sealed `VaultSession` (`VaultLocked`/`VaultUnlocked`) behind `vaultSessionProvider`. PBKDF2 is native via `cryptography_flutter` (Dart fallback in tests), `await`ed on the main isolate — no `Isolate.run`.
 - `lib/screens/` — welcome, layered unlock, entries (search/tags/hidden), entry editor (custom fields editor with per-row `_FieldRow` controllers; read-only attachments + save-out via `VaultIo.saveAttachment`), questions editor, passgen, `auto_lock.dart`.
 - `lib/passgen.dart` — port of `passgen.rs`.
-- `lib/platform/` — seams faked in tests: `vault_io.dart` (`file_picker`); `host_name.dart` (`formatHostStamp` → `os@host`, drops blank/`localhost`); `recent_vault_store.dart` (caches encrypted bytes of last vault); `biometric_store.dart` (answers-only biometric unlock, keyed by `sha256(question0)`, plus one random answer as knowledge check); `secure_clipboard.dart` (30 s clear); `platform_security.dart` (`MethodChannel('askrypt/secure')`, `FLAG_SECURE`).
-- `test/` — parity (`test/fixtures/vectors.json`), session, passgen, widget tests.
+- `lib/platform/` — seams faked in tests: `vault_io.dart` (`file_picker`); `server_client.dart` (via `httpClientProvider`, `MockClient` fake server in `test/cloud_fakes.dart`); `server_session_store.dart`; `host_name.dart` (`formatHostStamp` → `os@host`, drops blank/`localhost`); `recent_vault_store.dart` (caches encrypted bytes of last vault); `biometric_store.dart` (answers-only biometric unlock, keyed by `sha256(question0)`, plus one random answer as knowledge check); `secure_clipboard.dart` (30 s clear); `platform_security.dart` (`MethodChannel('askrypt/secure')`, `FLAG_SECURE`).
+- `test/` — parity (`test/fixtures/vectors.json`), session, passgen, widget tests, cloud (`server_client_test`, `cloud_session_test`, `cloud_screens_test`).
 
 App ID `com.askrypt.app`, `minSdk 26`; `android/` and `ios/` shells tracked. **Android toolchain pinned** to AGP 8.11.1 / Gradle 8.14 / Kotlin 2.2.20 — don't bump to AGP 9 until file_picker supports it (floor AGP ≥ 8.9.1, compileSdk 36). `MainActivity` extends `FlutterFragmentActivity` (required by `local_auth`). iOS needs `NSFaceIDUsageDescription`.
 
@@ -177,6 +178,7 @@ Axum server: accounts (email+password, Google), opaque vault storage, server-ren
 | `rand` | RNG |
 | `tokio` | `spawn_blocking` for crypto and server requests |
 | `ureq` | Blocking HTTP for `server-storage` (rustls/ring) |
+| `http` (Dart) | Mobile Askrypt Cloud client |
 | `askama` | Server templates |
 | `lettre` | SMTP (rustls) |
 | `tracing-appender` | Server rotating logs |

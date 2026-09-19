@@ -6,17 +6,27 @@
 /// demand.
 library;
 
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app.dart';
+import '../platform/recent_vault_store.dart';
+import '../platform/server_client.dart';
+import '../session/cloud_session.dart';
 import '../session/unlocked_vault.dart';
+import '../session/vault_home.dart';
 import '../session/vault_session.dart';
+import 'cloud_screen.dart';
 import 'entry_edit_screen.dart';
 import 'password_generator_screen.dart';
 import 'questions_editor_screen.dart';
 
 enum _Menu { editQuestions, passwordGenerator, disableBiometric }
+
+enum _SaveTarget { device, cloud }
 
 class EntriesScreen extends ConsumerStatefulWidget {
   const EntriesScreen({super.key});
@@ -75,24 +85,307 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
         s.tags.any((t) => t.toLowerCase().contains(q));
   }
 
+  /// A save is in flight (serializing, or uploading to the server).
+  bool _saving = false;
+
+  void _say(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  /// Save wherever the vault lives: back to its server, or — for a local or
+  /// brand-new vault — to a file on the device, or to Askrypt Cloud when
+  /// signed in.
   Future<void> _save() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      final home = ref.read(vaultHomeProvider);
+      switch (home) {
+        case CloudHome cloud:
+          await _saveToCloud(cloud);
+        case LocalHome local:
+          await _saveLocal(local);
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveLocal(LocalHome home) async {
+    await ref.read(cloudProvider.notifier).ready;
+    if (!mounted) return;
+    final cloud = ref.read(cloudProvider);
+    if (cloud is! CloudSignedIn) return _saveToDevice(home.name);
+
+    final choice = await showModalBottomSheet<_SaveTarget>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.phone_android),
+              title: const Text('Save to this device'),
+              onTap: () => Navigator.pop(ctx, _SaveTarget.device),
+            ),
+            ListTile(
+              leading: const Icon(Icons.cloud_upload_outlined),
+              title: const Text('Save to Askrypt Cloud'),
+              subtitle: Text('${cloud.email} · ${cloud.client.host}'),
+              onTap: () => Navigator.pop(ctx, _SaveTarget.cloud),
+            ),
+          ],
+        ),
+      ),
+    );
+    switch (choice) {
+      case _SaveTarget.device:
+        await _saveToDevice(home.name);
+      case _SaveTarget.cloud:
+        await _saveAsCloud(cloud, home.name);
+      case null:
+        break;
+    }
+  }
+
+  Future<void> _saveToDevice(String name) async {
     final notifier = ref.read(vaultSessionProvider.notifier);
     final io = ref.read(vaultIoProvider);
-    final name = ref.read(vaultFileNameProvider);
     final bytes = await notifier.toBytes();
     final saved = await io.saveVault(bytes, suggestedName: name);
     if (!mounted) return;
-    if (saved != null) {
-      // Refresh the welcome screen's "open last vault" cache with what we just
-      // wrote. Best-effort: a cache failure must not fail the save.
-      try {
-        await ref.read(recentVaultStoreProvider).remember(bytes, name);
-      } catch (_) {}
-      if (!mounted) return;
+    if (saved == null) {
+      notifier.setModified(true);
+      _say('Save cancelled');
+      return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(saved == null ? 'Save cancelled' : 'Vault saved')),
+    // Refresh the welcome screen's "open last vault" cache with what we just
+    // wrote. Best-effort: a cache failure must not fail the save.
+    try {
+      await ref.read(recentVaultStoreProvider).remember(bytes, name);
+    } catch (_) {}
+    _say('Vault saved');
+  }
+
+  /// The signed-in session that can write [home], or `null` after telling the
+  /// user why not. Signing in happens from the start screen only: leaving for
+  /// the browser would lock this vault and lose the unsaved work.
+  Future<CloudSignedIn?> _sessionFor(CloudHome home) async {
+    await ref.read(cloudProvider.notifier).ready;
+    final cloud = ref.read(cloudProvider);
+    if (cloud is CloudSignedIn && cloud.serves(home.baseUrl, home.email)) {
+      return cloud;
+    }
+    if (!mounted) return null;
+    final copy = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Not signed in'),
+        content: Text(
+          'Saving ${home.name} needs you signed in to ${hostOf(home.baseUrl)} '
+          'as ${home.email}. Sign in from the start screen — or save a copy '
+          'to this device now so nothing is lost.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save a copy')),
+        ],
+      ),
     );
+    if (copy == true) await _saveToDevice(home.name);
+    return null;
+  }
+
+  /// Overwrite the vault on the server, conflict-checked against the version
+  /// this session last read or wrote.
+  Future<void> _saveToCloud(CloudHome home) async {
+    final cloud = await _sessionFor(home);
+    if (cloud == null || !mounted) return;
+    final notifier = ref.read(vaultSessionProvider.notifier);
+    final bytes = await notifier.toBytes();
+    try {
+      final vault = await cloud.client.overwrite(home.id, bytes, home.etag);
+      _savedToCloud(home.withRemote(vault), 'Saved to ${cloud.client.host}');
+    } on ServerException catch (e) {
+      if (!mounted) return;
+      notifier.setModified(true);
+      if (e.kind == ServerErrorKind.conflict) {
+        await _resolveConflict(cloud, home, bytes);
+      } else {
+        await _failed(e);
+      }
+    }
+  }
+
+  /// Someone else saved since we read it. Show who, and let the user decide:
+  /// overwrite theirs with this version, or keep editing.
+  Future<void> _resolveConflict(
+      CloudSignedIn cloud, CloudHome home, Uint8List bytes) async {
+    final List<RemoteVault> vaults;
+    try {
+      vaults = await cloud.client.list();
+    } on ServerException catch (e) {
+      return _failed(e);
+    }
+    if (!mounted) return;
+    final current = vaults.where((v) => v.id == home.id).firstOrNull;
+
+    final mine = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(current == null
+            ? 'Vault deleted on the server'
+            : 'Changed on another device'),
+        content: Text(current == null
+            ? '${home.name} is no longer on ${cloud.client.host}. Upload this '
+                'version as a new vault?'
+            : '${home.name} was saved elsewhere since you opened it '
+                '(${describeRemote(current)}). Saving replaces that version '
+                'with yours; the server keeps the previous one in its history.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(current == null ? 'Upload' : 'Save mine')),
+        ],
+      ),
+    );
+    if (mine != true || !mounted) return;
+
+    try {
+      final vault = current == null
+          ? await cloud.client.create(home.name, bytes)
+          : await cloud.client.overwrite(home.id, bytes, current.etag);
+      _savedToCloud(home.withRemote(vault), 'Saved to ${cloud.client.host}');
+    } on ServerException catch (e) {
+      await _failed(e);
+    }
+  }
+
+  /// Upload a local or new vault to the server under a name the user picks.
+  Future<void> _saveAsCloud(CloudSignedIn cloud, String suggested) async {
+    final name = await _askName(suggested);
+    if (name == null || !mounted) return;
+
+    final List<RemoteVault> vaults;
+    try {
+      vaults = await cloud.client.list();
+    } on ServerException catch (e) {
+      return _failed(e);
+    }
+    if (!mounted) return;
+    // Case-folded like the desktop wizard, though the server compares exactly:
+    // two names differing only in case are a mistake waiting to happen.
+    final lower = name.toLowerCase();
+    final taken =
+        vaults.where((v) => v.name.toLowerCase() == lower).firstOrNull;
+    if (taken != null) {
+      final replace = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Replace vault?'),
+          content: Text('${taken.name} already exists on '
+              '${cloud.client.host} (${describeRemote(taken)}). Replace it '
+              'with this vault?'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Replace')),
+          ],
+        ),
+      );
+      if (replace != true || !mounted) return;
+    }
+
+    final notifier = ref.read(vaultSessionProvider.notifier);
+    final bytes = await notifier.toBytes();
+    try {
+      final vault = taken == null
+          ? await cloud.client.create(name, bytes)
+          : await cloud.client.overwrite(taken.id, bytes, taken.etag);
+      final home = CloudHome(
+        baseUrl: cloud.client.baseUrl,
+        email: cloud.email,
+        id: vault.id,
+        name: vault.name,
+        etag: vault.etag,
+      );
+      _savedToCloud(home, 'Saved to ${cloud.client.host}');
+    } on ServerException catch (e) {
+      if (!mounted) return;
+      notifier.setModified(true);
+      await _failed(e);
+    }
+  }
+
+  Future<String?> _askName(String suggested) async {
+    final controller = TextEditingController(text: suggested);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save to Askrypt Cloud'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Vault name'),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, controller.text),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    controller.dispose();
+    final trimmed = name?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+    return trimmed.toLowerCase().endsWith('.askrypt')
+        ? trimmed
+        : '$trimmed.askrypt';
+  }
+
+  /// Record a landed cloud save: the new version is the next `If-Match`, the
+  /// vault is now this session's home, and the welcome screen remembers it.
+  void _savedToCloud(CloudHome home, String message) {
+    // Locked mid-upload (the app went to the background): the save landed,
+    // but there is no session left to record it in.
+    if (!mounted) return;
+    ref.read(vaultHomeProvider.notifier).state = home;
+    final session = ref.read(vaultSessionProvider);
+    if (session is VaultUnlocked && session.vault.isModified) {
+      ref.read(vaultSessionProvider.notifier).setModified(false);
+    }
+    unawaited(ref
+        .read(recentVaultStoreProvider)
+        .rememberCloud(RecentCloud(
+            baseUrl: home.baseUrl,
+            email: home.email,
+            id: home.id,
+            name: home.name))
+        .catchError((Object _) {}));
+    _say(message);
+  }
+
+  Future<void> _failed(ServerException e) async {
+    if (!mounted) return;
+    if (e.kind == ServerErrorKind.auth) {
+      await ref.read(cloudProvider.notifier).sessionRejected();
+    }
+    _say('Not saved: ${e.describe()}');
   }
 
   Future<void> _confirmLock(UnlockedVault vault) async {
@@ -155,6 +448,11 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(vault.isModified ? 'Askrypt •' : 'Askrypt'),
+        bottom: _saving
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(4),
+                child: LinearProgressIndicator())
+            : null,
         actions: [
           IconButton(
             tooltip: 'Show hidden',
@@ -163,8 +461,10 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
           ),
           IconButton(
             tooltip: 'Save',
-            icon: const Icon(Icons.save),
-            onPressed: _save,
+            icon: Icon(ref.watch(vaultHomeProvider) is CloudHome
+                ? Icons.cloud_upload
+                : Icons.save),
+            onPressed: _saving ? null : _save,
           ),
           IconButton(
             tooltip: 'Lock',

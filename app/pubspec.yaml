@@ -23,6 +23,7 @@ dependencies:
   file_picker: ^11.0.2
   path_provider: ^2.1.4 # app-private cache of the last-opened vault
   url_launcher: ^6.3.2
+  http: ^1.6.0 # Askrypt Cloud: device-link sign-in + vault API
   # Phase 4 — mobile-native security.
   local_auth: ^2.3.0 # biometric gate (Keystore/Keychain backed)
   flutter_secure_storage: ^9.2.2 # encrypted at-rest store for cached answers

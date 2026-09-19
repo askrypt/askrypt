@@ -18,14 +18,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../app.dart';
 import '../crypto/normalize.dart';
 import '../crypto/vault.dart';
+import '../platform/recent_vault_store.dart';
 import '../session/unlocked_vault.dart';
+import '../session/vault_home.dart';
 import '../session/vault_session.dart';
 
 class UnlockScreen extends ConsumerStatefulWidget {
-  const UnlockScreen({super.key, required this.bytes, required this.fileName});
+  const UnlockScreen({super.key, required this.bytes, required this.home});
 
   final Uint8List bytes;
-  final String fileName;
+
+  /// Where [bytes] came from — becomes the open vault's home, so Save writes
+  /// back to the same place.
+  final VaultHome home;
 
   @override
   ConsumerState<UnlockScreen> createState() => _UnlockScreenState();
@@ -243,12 +248,21 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   void _commit(UnlockedVault vault) {
     if (!mounted) return;
     ref.read(currentQuestion0Provider.notifier).state = _file!.question0;
-    // Cache this vault for the welcome screen's "open last vault" button.
-    // Best-effort and fire-and-forget: adopting tears this route down, and a
-    // cache failure must never block the unlock.
-    unawaited(ref
-        .read(recentVaultStoreProvider)
-        .remember(widget.bytes, widget.fileName)
+    final home = widget.home;
+    ref.read(vaultHomeProvider.notifier).state = home;
+    // Remember this vault for the welcome screen's "open last vault" button:
+    // a local file by its bytes, a cloud vault by where it lives. Best-effort
+    // and fire-and-forget: adopting tears this route down, and a cache
+    // failure must never block the unlock.
+    final recent = ref.read(recentVaultStoreProvider);
+    unawaited((switch (home) {
+      LocalHome(:final name) => recent.remember(widget.bytes, name),
+      CloudHome cloud => recent.rememberCloud(RecentCloud(
+          baseUrl: cloud.baseUrl,
+          email: cloud.email,
+          id: cloud.id,
+          name: cloud.name)),
+    })
         .catchError((Object _) {}));
     ref.read(vaultSessionProvider.notifier).adopt(vault);
   }
@@ -288,7 +302,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     final file = _file;
     final qd = _qd;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.fileName)),
+      appBar: AppBar(title: Text(widget.home.name)),
       body: file == null
           ? _errorBody()
           : ListView(

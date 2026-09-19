@@ -650,6 +650,10 @@ askrypt/
     `server/tests/device_link.rs` (15 tests) plus unit tests in
     `src/devicelink.rs` and `src/store/sqlite.rs`, and the client half in
     `core/src/storage/server.rs` (9 tests over the fake server).
+  - **Second client: the mobile app** (`app/lib/platform/server_client.dart`,
+    `app/lib/session/cloud_session.dart`) drives the same link flow and vault
+    API unchanged — the phone's label is `android@<host>` / `ios@<host>`. No
+    server change was needed.
 
 - **Phase 11 — reCAPTCHA on the website's auth forms.** ✅ *(done 2026-08-10)*
   The rate limiter is a blunt instrument on `/login` and `/register`: it is

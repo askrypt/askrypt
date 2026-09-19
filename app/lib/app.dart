@@ -20,6 +20,7 @@ import 'platform/vault_io.dart';
 import 'screens/auto_lock.dart';
 import 'screens/entries_screen.dart';
 import 'screens/welcome_screen.dart';
+import 'session/vault_home.dart';
 import 'session/vault_session.dart';
 
 /// Storage backend for picking/saving vault files. Overridden in tests.
@@ -38,8 +39,10 @@ final secureClipboardProvider = Provider<SecureClipboard>(
 final biometricStoreProvider =
     Provider<BiometricStore>((ref) => LocalAuthBiometricStore());
 
-/// Suggested file name for the next save, set when a vault is opened/created.
-final vaultFileNameProvider = StateProvider<String>((ref) => 'vault.askrypt');
+/// Where the open vault lives — a local file (save asks where) or a vault on
+/// an Askrypt server (save overwrites it). Set when a vault is opened/created.
+final vaultHomeProvider =
+    StateProvider<VaultHome>((ref) => const LocalHome('vault.askrypt'));
 
 /// Cache of the last successfully unlocked vault (encrypted bytes + display
 /// name), behind the welcome screen's "open last vault" button. Overridden in
@@ -50,7 +53,7 @@ final recentVaultStoreProvider =
 /// The remembered vault, if any. `autoDispose` so it is re-read each time the
 /// locked tree remounts — the cache may have been refreshed by an unlock or a
 /// save since the welcome screen last looked.
-final recentVaultProvider = FutureProvider.autoDispose<PickedVault?>(
+final recentVaultProvider = FutureProvider.autoDispose<RecentVault?>(
     (ref) => ref.watch(recentVaultStoreProvider).load());
 
 /// The first question (plaintext) of the currently-open vault, used as the

@@ -137,6 +137,14 @@ class VaultSessionNotifier extends Notifier<VaultSession> {
     return bytes;
   }
 
+  /// Set the unsaved-changes flag. A save serializes first ([toBytes] clears
+  /// the flag) and writes second; when the write fails or is cancelled the
+  /// flag goes back up, and a write that lands after a retry clears it.
+  void setModified(bool modified) {
+    _vault.isModified = modified;
+    _reemit();
+  }
+
   void _reemit() => state = (state as VaultUnlocked)._bumped();
 }
 
