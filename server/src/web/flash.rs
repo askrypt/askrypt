@@ -25,6 +25,7 @@ impl Flash {
             Self::AlreadySignedIn => "in",
             Self::EmailChanged => "email",
             Self::PasswordChanged => "pwchanged",
+            Self::PasswordReset => "pwreset",
             Self::PasswordSet => "pwset",
             Self::SessionRevoked => "revoked",
             Self::AccountDeleted => "gone",
@@ -53,6 +54,7 @@ impl Flash {
             "in" => Some(Self::AlreadySignedIn),
             "email" => Some(Self::EmailChanged),
             "pwchanged" => Some(Self::PasswordChanged),
+            "pwreset" => Some(Self::PasswordReset),
             "pwset" => Some(Self::PasswordSet),
             "revoked" => Some(Self::SessionRevoked),
             "gone" => Some(Self::AccountDeleted),
@@ -83,6 +85,9 @@ impl Flash {
             Self::EmailChanged => "Your email address has been updated.",
             Self::PasswordChanged => {
                 "Password changed. Every other signed-in device has been signed out."
+            }
+            Self::PasswordReset => {
+                "Password reset. Sign in with your new one — every device has been signed out."
             }
             Self::PasswordSet => "Password set. You can now sign in with it.",
             Self::SessionRevoked => "That device has been signed out.",
@@ -143,6 +148,7 @@ mod tests {
             Flash::AlreadySignedIn,
             Flash::EmailChanged,
             Flash::PasswordChanged,
+            Flash::PasswordReset,
             Flash::PasswordSet,
             Flash::SessionRevoked,
             Flash::AccountDeleted,

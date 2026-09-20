@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 
-{% block title %}Confirm your email &middot; Askrypt{% endblock %}
+{% block title %}Reset your password &middot; Askrypt{% endblock %}
 
 {% block head %}
 {#- reCAPTCHA v3, only when a site key is configured *and* this card renders
@@ -9,7 +9,7 @@
     script, so the site key reaches the helper through a `data-` attribute on
     the hidden field. `defer` keeps the order — `api.js` first — and runs both
     after the form exists. -#}
-{%- if let Some(key) = notice.captcha_field() %}
+{%- if let Some(key) = card.captcha_field() %}
 <script src="https://www.google.com/recaptcha/api.js?render={{ key }}" defer></script>
 <script src="/assets/captcha.js" defer></script>
 {%- endif %}
@@ -17,5 +17,5 @@
 
 {% block content %}
 {#- The fragment renders itself; `safe` because it is already escaped HTML. -#}
-{{ notice|safe }}
+{{ card|safe }}
 {% endblock %}

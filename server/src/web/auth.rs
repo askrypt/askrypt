@@ -52,6 +52,7 @@ impl AuthForm {
             alt_link: "Create one",
             password_autocomplete: "current-password",
             password_hint: None,
+            forgot_link: true,
             csrf,
             email,
             error,
@@ -73,6 +74,7 @@ impl AuthForm {
             alt_href: LOGIN_PATH,
             alt_link: "Sign in",
             password_autocomplete: "new-password",
+            forgot_link: false,
             password_hint: Some(
                 "At least 8 characters. This password protects your account, \
                  not your vaults — those stay locked by your security answers.",
@@ -233,6 +235,7 @@ pub async fn login_submit(
         // form that would only refuse again.
         Err(err) if err.code == confirm::EMAIL_NOT_CONFIRMED => {
             return web::confirm::notice(
+                &state,
                 &headers,
                 ConfirmKind::SignInBlocked,
                 form.email.trim().to_ascii_lowercase(),
@@ -305,7 +308,13 @@ pub async fn register_submit(
     // Until the address is confirmed there is no sign-in to give: the answer
     // is the "check your inbox" card, in place of the form.
     if !account.is_confirmed() {
-        return web::confirm::notice(&headers, ConfirmKind::Sent, account.email, String::new());
+        return web::confirm::notice(
+            &state,
+            &headers,
+            ConfirmKind::Sent,
+            account.email,
+            String::new(),
+        );
     }
     // With confirmation off, registering signs you straight in: a new account
     // with nothing in it has nothing to protect behind a second password

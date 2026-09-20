@@ -37,8 +37,9 @@ use crate::store::recaptcha::RecaptchaConfig;
 use crate::store::smtp::SmtpConfig;
 use crate::store::{
     Account, AccountId, AccountStore, CaptchaVerifier, DeviceLinkId, DeviceLinkStore,
-    EmailConfirmationStore, IdTokenVerifier, Mailer, RoleStore, Session, SessionStore,
-    SettingsStore, VaultBlobStore, VaultId, VaultMetaStore, VaultVersionId, VaultVersionStore,
+    EmailConfirmationStore, IdTokenVerifier, Mailer, PasswordResetStore, RoleStore, Session,
+    SessionStore, SettingsStore, VaultBlobStore, VaultId, VaultMetaStore, VaultVersionId,
+    VaultVersionStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -261,6 +262,8 @@ pub struct AppState {
     pub captcha: Arc<dyn CaptchaVerifier>,
     /// Pending confirmation links, one per unconfirmed account.
     pub email_confirmations: Arc<dyn EmailConfirmationStore>,
+    /// Pending password-reset links, one per account that asked for one.
+    pub password_resets: Arc<dyn PasswordResetStore>,
     /// Whether new password accounts must confirm their email before they
     /// can sign in — [`Config::email_confirmation`].
     pub email_confirmation: bool,

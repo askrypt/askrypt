@@ -1,22 +1,30 @@
-//! reCAPTCHA v3 on the sign-in and registration forms.
+//! reCAPTCHA v3 on the four website forms a stranger can submit.
 //!
 //! The website's only bot protection beyond the rate limiter, and the only
 //! place on the site where JavaScript is *required* rather than an
 //! enhancement: a v3 token can only be minted in the page, so with a site key
-//! configured these two forms stop working without it. That exception is
+//! configured these forms stop working without it. That exception is
 //! deliberate and it is confined here — every other page and form still
 //! renders and submits with scripts off.
 //!
 //! What is checked, and what is not:
 //!
-//! - **The two website forms**, before the password is looked at. Verifying
-//!   first is the point: it is what keeps a flood of guesses from spending an
-//!   argon2 hash each.
+//! - **Sign-in and registration**, before the password is looked at.
+//!   Verifying first is the point: it is what keeps a flood of guesses from
+//!   spending an argon2 hash each.
+//! - **The two forms that send mail** — *Forgot your password?*
+//!   ([`FORGOT_ACTION`]) and the confirmation resend ([`RESEND_ACTION`]) —
+//!   before the address is looked up. What they cost is not CPU but outgoing
+//!   mail to somebody else's inbox, and the per-account cooldowns cap how
+//!   often one address can be hit, not how many addresses can be.
 //! - **Not `/api/v1/auth/*`.** The desktop and mobile clients cannot mint a
 //!   token, and the desktop's browser sign-in already lands on `/login`,
 //!   which is captcha'd. The JSON endpoints keep the 20 req/min limiter they
 //!   have always had. This is a known gap: a bot willing to post JSON skips
 //!   the captcha entirely.
+//! - **Not `POST /reset` or `POST /confirm`.** Both already carry a
+//!   single-use token out of an inbox, which is a stronger claim to be a
+//!   person than a score is.
 //!
 //! The visitor-facing sentence is the same whatever went wrong. A message
 //! that distinguished "no token" from "score too low" would be a tuning
@@ -33,6 +41,13 @@ pub const LOGIN_ACTION: &str = "login";
 
 /// v3 action for the registration form.
 pub const REGISTER_ACTION: &str = "register";
+
+/// v3 action for the "mail me a reset link" form (`POST /forgot`).
+pub const FORGOT_ACTION: &str = "forgot";
+
+/// v3 action for the "mail me another confirmation link" form
+/// (`POST /confirm/resend`).
+pub const RESEND_ACTION: &str = "resend";
 
 /// Shown when a submit's token does not hold up. Names JavaScript because
 /// that is the one cause a visitor can actually do something about, and an

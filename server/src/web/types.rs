@@ -192,6 +192,7 @@ pub enum Flash {
     AlreadySignedIn,
     EmailChanged,
     PasswordChanged,
+    PasswordReset,
     PasswordSet,
     SessionRevoked,
     AccountDeleted,
@@ -254,6 +255,10 @@ pub struct AuthForm {
     pub(crate) alt_link: &'static str,
     pub(crate) password_autocomplete: &'static str,
     pub(crate) password_hint: Option<&'static str>,
+    /// Whether to offer the *Forgot your password?* link. Only the sign-in
+    /// form does: on the registration form it would point at a reset for an
+    /// account that does not exist yet.
+    pub(crate) forgot_link: bool,
     pub(crate) csrf: String,
     pub(crate) email: String,
     pub(crate) error: Option<String>,
@@ -362,6 +367,9 @@ pub enum ConfirmKind {
     Confirm,
     /// The link was unknown, expired or already used.
     Invalid,
+    /// A resend was turned away by the anti-bot check. The form comes back
+    /// with the reason; no mail was sent and no address was looked up.
+    Refused,
 }
 
 /// The confirmation card, rendered on its own for an `HX-Request` and inside
@@ -378,6 +386,16 @@ pub struct ConfirmNotice {
     /// The mailed token, only on [`ConfirmKind::Confirm`], posted back by the
     /// button.
     pub(crate) token: String,
+    /// Why the last resend was turned away, on [`ConfirmKind::Refused`].
+    pub(crate) error: Option<String>,
+    /// The public reCAPTCHA site key, or `None` when none is configured —
+    /// which is what the template reads to decide whether to render the
+    /// field at all, exactly as [`AuthForm`] does. The resend form is the one
+    /// this card protects; the confirm button carries a mailed token instead.
+    pub(crate) captcha_key: Option<String>,
+    /// The v3 action a token for the resend form must be minted for. Fixed,
+    /// and the reason a token from the sign-in form cannot be spent here.
+    pub(crate) captcha_action: &'static str,
 }
 
 #[derive(Template)]
@@ -397,6 +415,82 @@ pub struct ConfirmInput {
 pub struct ResendInput {
     #[serde(default)]
     pub(crate) email: String,
+    /// Defaulted rather than required, like [`Credentials::captcha_token`]: a
+    /// browser with scripts off submits it empty, and that has to reach
+    /// `captcha::check` to be turned into a sentence about JavaScript.
+    #[serde(default)]
+    pub(crate) captcha_token: String,
+}
+
+// ---------------------------------------------------------------------------
+// reset — the password-reset pages
+// ---------------------------------------------------------------------------
+
+/// Which reset message the card shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetKind {
+    /// The "what is your address" form behind the *Forgot your password?*
+    /// link.
+    Ask,
+    /// A request was made. Worded so it says nothing about whether the
+    /// address exists or could be mailed.
+    Sent,
+    /// The landing page of a mailed link: the new-password form. Carries the
+    /// token in a hidden field; nothing is checked until it is posted back.
+    Choose,
+    /// The link was unknown, expired or already used.
+    Invalid,
+}
+
+/// The password-reset card, rendered on its own for an `HX-Request` and
+/// inside [`ResetPage`] otherwise. Its root carries the `auth-form` id, like
+/// [`ConfirmNotice`], so it swaps in for the card it answers.
+#[derive(Template)]
+#[template(path = "fragments/reset_card.html")]
+pub struct ResetCard {
+    pub(crate) kind: ResetKind,
+    pub(crate) csrf: String,
+    /// Kept on the form so a refused submit does not make the visitor type
+    /// the address again. Empty everywhere else.
+    pub(crate) email: String,
+    /// The mailed token, only on [`ResetKind::Choose`], posted back with the
+    /// new password.
+    pub(crate) token: String,
+    /// Why the last submit was refused — a password the policy rejects, or an
+    /// anti-bot check that turned the request away. The dead-link case is
+    /// [`ResetKind::Invalid`] instead, since there is nothing left to
+    /// re-submit.
+    pub(crate) error: Option<String>,
+    /// The public reCAPTCHA site key, or `None` when none is configured. Only
+    /// the kinds that render the *request* form use it: `POST /reset` already
+    /// carries a token out of an inbox.
+    pub(crate) captcha_key: Option<String>,
+    /// The v3 action a token for the request form must be minted for.
+    pub(crate) captcha_action: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "reset.html")]
+pub(crate) struct ResetPage {
+    pub(crate) chrome: Chrome,
+    pub(crate) card: ResetCard,
+}
+
+#[derive(Deserialize)]
+pub struct ForgotInput {
+    #[serde(default)]
+    pub(crate) email: String,
+    /// Defaulted for the reason [`ResendInput::captcha_token`] is.
+    #[serde(default)]
+    pub(crate) captcha_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResetInput {
+    #[serde(default)]
+    pub(crate) token: String,
+    #[serde(default)]
+    pub(crate) password: String,
 }
 
 // ---------------------------------------------------------------------------

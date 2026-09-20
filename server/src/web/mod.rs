@@ -26,7 +26,8 @@
 //!
 //! Phase 7.2 shipped sign-in, registration and sign-out; 7.3 the profile
 //! pages ([`account`]); 7.4 the vault file manager ([`vaults`]); Phase 13 the
-//! Google button ([`google`]); Phase 15 email confirmation ([`confirm`]).
+//! Google button ([`google`]); Phase 15 email confirmation ([`confirm`]);
+//! Phase 16 password reset ([`reset`]).
 
 pub mod account;
 pub mod admin;
@@ -41,6 +42,7 @@ pub mod google;
 pub mod open;
 pub mod pages;
 pub mod render;
+pub mod reset;
 pub mod session;
 pub mod settings;
 pub mod types;
@@ -105,6 +107,14 @@ pub fn routes(
         .route("/confirm", post(confirm::submit))
         .route("/confirm/{token}", get(confirm::page))
         .route("/confirm/resend", post(confirm::resend))
+        // And password reset, for the same two reasons: the landing page is
+        // where token guesses would go, and the form sends mail.
+        .route(
+            "/forgot",
+            get(reset::forgot_form).post(reset::forgot_submit),
+        )
+        .route("/reset", post(reset::submit))
+        .route("/reset/{token}", get(reset::page))
         .route_layer(middleware::from_fn_with_state(auth_limiter, rate_limit));
 
     // The browser half of the desktop sign-in, on the same budget as the API

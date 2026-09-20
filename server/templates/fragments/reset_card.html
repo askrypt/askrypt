@@ -1,0 +1,89 @@
+{#-
+  The password-reset card. Rendered on its own for an `HX-Request` and
+  embedded in `reset.html` otherwise.
+
+  The root has the `auth-form` id, like the confirmation notice: each form
+  here swaps this card for the next answer. None of it depends on htmx —
+  with scripts off every form is a plain POST that re-renders the page.
+
+  Nothing here says whether an address is registered. The answer to a request
+  is the same sentence whatever happened.
+-#}
+<div id="auth-form" class="card form">
+{%- if kind == ResetKind::Ask %}
+  <h1>Reset your password</h1>
+  <p>Tell us the address you signed up with and we'll mail you a link to
+  choose a new password.</p>
+  {%- if let Some(error) = error.as_deref() %}
+  <p class="error" role="alert">{{ error }}</p>
+  {%- endif %}
+  <form method="post" action="/forgot"
+        hx-post="/forgot" hx-target="#auth-form" hx-swap="outerHTML">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" value="{{ email }}"
+           autocomplete="username" required autofocus>
+{%- if let Some(key) = captcha_field() %}
+    {#- reCAPTCHA v3: no widget and nothing to click. `/assets/captcha.js`
+        fills this in from the two data attributes and re-mints after every
+        swap, since a v3 token is single-use. Empty on arrival — with
+        JavaScript off it stays empty and the submit is refused with a
+        message saying so. -#}
+    <input type="hidden" name="captcha_token"
+           data-captcha-key="{{ key }}" data-captcha-action="{{ captcha_action }}">
+{%- endif %}
+    <button class="button" type="submit">Send a reset link</button>
+  </form>
+  <p class="hint">This password protects your account on this server. It does
+  not unlock your vaults — those stay locked by your security answers, which
+  this server never sees and cannot reset.</p>
+  <p class="alt">Remembered it? <a href="/login">Sign in</a></p>
+{%- else if kind == ResetKind::Sent %}
+  <h1>Check your inbox</h1>
+  <p>If that address has an account with a password, a reset link is on its
+  way. Links mailed before it no longer work.</p>
+  <p class="hint">The link is good for 60 minutes and works once. If nothing
+  arrives, check your spam folder. Accounts that sign in with Google have no
+  password to reset.</p>
+  <p class="alt">Back to <a href="/login">sign in</a></p>
+{%- else if kind == ResetKind::Choose %}
+  <h1>Choose a new password</h1>
+  {%- if let Some(error) = error.as_deref() %}
+  <p class="error" role="alert">{{ error }}</p>
+  {%- endif %}
+  {#- A POST, not the GET that brought you here: mail scanners open links on
+      their own, and a GET that spent the token would use it up. -#}
+  <form method="post" action="/reset"
+        hx-post="/reset" hx-target="#auth-form" hx-swap="outerHTML">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="token" value="{{ token }}">
+    <label for="password">New password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="new-password" required autofocus>
+    <p class="hint">At least 8 characters. Setting it signs you out on every
+    device.</p>
+    <button class="button" type="submit">Set my new password</button>
+  </form>
+{%- else %}
+  <h1>This link can't be used</h1>
+  <p role="alert">This reset link is invalid, has expired, or was already
+  used. Links work once and expire after 60 minutes.</p>
+  <form method="post" action="/forgot"
+        hx-post="/forgot" hx-target="#auth-form" hx-swap="outerHTML">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required>
+{%- if let Some(key) = captcha_field() %}
+    {#- reCAPTCHA v3: no widget and nothing to click. `/assets/captcha.js`
+        fills this in from the two data attributes and re-mints after every
+        swap, since a v3 token is single-use. Empty on arrival — with
+        JavaScript off it stays empty and the submit is refused with a
+        message saying so. -#}
+    <input type="hidden" name="captcha_token"
+           data-captcha-key="{{ key }}" data-captcha-action="{{ captcha_action }}">
+{%- endif %}
+    <button class="button secondary" type="submit">Send a new link</button>
+  </form>
+  <p class="alt">Back to <a href="/login">sign in</a></p>
+{%- endif %}
+</div>

@@ -33,8 +33,8 @@ use chrono::{DateTime, Utc};
 
 pub use types::{
     Account, AccountId, CaptchaError, DeviceLink, DeviceLinkId, DeviceLinkStatus,
-    EmailConfirmation, IdTokenError, MailerError, NewAccount, Role, Session, Setting, StoreError,
-    VaultId, VaultMeta, VaultVersion, VaultVersionId, VerifiedIdToken,
+    EmailConfirmation, IdTokenError, MailerError, NewAccount, PasswordReset, Role, Session,
+    Setting, StoreError, VaultId, VaultMeta, VaultVersion, VaultVersionId, VerifiedIdToken,
 };
 
 impl Account {
@@ -197,6 +197,31 @@ pub trait EmailConfirmationStore: Send + Sync {
         token_hash: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<EmailConfirmation>, StoreError>;
+    /// Drops every link past its `expires_at`. Called from the send path;
+    /// there is no GC task.
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
+}
+
+/// Pending password-reset links, at most one per account.
+///
+/// Deliberately the same shape as [`EmailConfirmationStore`] and deliberately
+/// a different table: a link that sets a password must not be usable where a
+/// link that confirms an address is expected, or the other way round.
+#[async_trait]
+pub trait PasswordResetStore: Send + Sync {
+    /// Stores `pending`, replacing any earlier link of the same account — so
+    /// asking again is also what kills every link mailed before it.
+    async fn put(&self, pending: PasswordReset) -> Result<(), StoreError>;
+    /// The account's pending link, if any; drives the request cooldown.
+    async fn get(&self, account: AccountId) -> Result<Option<PasswordReset>, StoreError>;
+    /// Atomically removes and returns the unexpired link with this token
+    /// hash, so a link sets a password exactly once. `None` covers unknown,
+    /// expired and already-used alike.
+    async fn take(
+        &self,
+        token_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<PasswordReset>, StoreError>;
     /// Drops every link past its `expires_at`. Called from the send path;
     /// there is no GC task.
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;

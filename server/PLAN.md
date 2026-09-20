@@ -985,14 +985,79 @@ askrypt/
     and cannot read mail.
   - Links are built from `ASKRYPT_DOMAIN` (`Config::public_url`), never from
     the request's `Host` header.
-  - Out of scope: re-confirming on an email change, and password reset.
-    A user whose pending password was replaced by a later registration
-    cannot recover by mail today; Google sign-in still works.
+  - Out of scope: re-confirming on an email change. Password reset was out
+    of scope here and shipped in Phase 16.
   - **Phase gate:** ✅ `server/tests/email_confirmation.rs` (8 tests): the
     register card and mail, sign-in blocked on both surfaces, GET vs POST,
     single use, expiry, resend replacement and cooldown, re-registration,
     Google takeover, no inline script. Plus sqlite store and migration unit
     tests. The other suites run with confirmation off (`common::state()`).
+
+- **Phase 16 — Password reset by mailed link.** ✅ *(done 2026-09-20)*
+  *Forgot your password?* on the sign-in card mails a single-use link that
+  sets a new password and signs every device out. The twin of Phase 15,
+  built to the same rules.
+
+  - **Rules in `src/reset.rs`, pages in `src/web/reset.rs`.** The token is
+    256 random bits; only its SHA-256 is stored, in `password_resets`
+    (migration `0007`, one row per account, `ON DELETE CASCADE`). Asking
+    again replaces the row, so only the newest link works. Using one is a
+    single `DELETE … RETURNING` (`PasswordResetStore::take`). A separate
+    table from `email_confirmations` on purpose: the two links authorize
+    different things and neither may be spendable on the other's endpoint.
+  - **One hour, not a day.** A reset link is a password waiting in an inbox,
+    so it expires in `RESET_TTL_MINUTES` (60). The expiry sweep runs on send,
+    as everywhere else in this server.
+  - **A GET never resets.** `/reset/{token}` renders the new-password form
+    and checks nothing; `POST /reset` spends the token. Mail scanners open
+    links, and a GET that spent one would use it up. The password is
+    validated *before* the token is taken, so a too-short one leaves the link
+    usable.
+  - **Every session goes.** `profile::revoke_sessions(.., None)` — a reset is
+    what someone does after losing control of an account, and the browser
+    driving it has no session to keep. The reset signs nobody in: it
+    redirects to `/login` with a flash.
+  - **No enumeration.** `POST /forgot` answers the same sentence for any
+    address, mails from a spawned task (so timing doesn't tell either), and
+    keeps a 60 s cooldown per account. Accounts with no password (Google-only)
+    and suspended ones are silently passed over — the first because mailing a
+    way to mint a password adds a credential nobody asked for.
+  - **Using a link confirms the address**, since opening the mail proves the
+    same inbox a Phase 15 link would. That is also how the owner of an
+    address someone else registered takes it back.
+  - **A reset is not vault recovery.** The mail and the form both say so: this
+    password guards the account on this server, and vault files stay encrypted
+    under security answers the server never sees.
+  - Links are built from `ASKRYPT_DOMAIN` (`Config::public_url`), never from
+    the request's `Host` header. Both routes sit on the auth rate limiter.
+  - **`POST /forgot` is captcha'd** where reCAPTCHA is configured, with its
+    own v3 action (`forgot`), checked *before* the address is looked up —
+    what this form spends is somebody else's inbox, and the per-account
+    cooldown caps how often one address can be hit, not how many addresses
+    can be. `POST /confirm/resend` was given the same treatment in the same
+    change (action `resend`, refusal card `ConfirmKind::Refused`), since it
+    is the other way to make this server mail a stranger. `POST /reset` and
+    `POST /confirm` stay uncaptcha'd: each already carries a single-use token
+    that came out of an inbox.
+  - The widening of the CSP follows the **form**, not the page:
+    `ResetCard::captcha_field()` and `ConfirmNotice::captcha_field()` are the
+    one answer both the template and `RelaxedCsp` read, so a card can never
+    widen its policy without rendering the field or render a field the policy
+    would block. The card that chooses a new password keeps the strict policy.
+    Cost of the gate, stated plainly: with a site key configured, starting a
+    password reset needs JavaScript.
+  - Out of scope: a JSON reset API (no client asks for one) and reset from
+    the desktop or mobile apps, which send the browser here.
+  - **Phase gate:** ✅ `server/tests/password_reset.rs` (8 tests): the mail
+    and the uniform answer, cooldown and replacement, the link setting the
+    password and clearing sessions, GET vs POST, single use, expiry, a
+    refused password leaving the link alone, accounts that get no link,
+    confirmation-by-reset, the sign-in link, no inline script. Plus six more
+    in `server/tests/captcha.rs` for the gate on the two mail forms (site key
+    and action per form, no token → no mail, cross-form token refused, the
+    resend refusal card, which cards relax the CSP, and the unchanged
+    behaviour with no site key), and the sqlite store, migration-count and
+    mail-body unit tests.
 
 ## Open decisions (not blocking)
 

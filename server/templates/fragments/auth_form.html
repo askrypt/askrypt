@@ -51,6 +51,13 @@
 {%- endif %}
     <button class="button" type="submit">{{ submit }}</button>
   </form>
+{%- if forgot_link %}
+  {#- Sign-in only: on the registration card it would offer a reset for an
+      account that does not exist yet. A plain link, and deliberately not
+      carrying `?link=` — the reset flow ends at sign-in, which is where the
+      device link is picked up again. -#}
+  <p class="alt"><a href="/forgot">Forgot your password?</a></p>
+{%- endif %}
 {%- if let Some(client_id) = google_client_id.as_deref() %}
   {#- Google Identity Services. The button itself is drawn by Google's own
       script into `#google-button`; `/assets/google.js` initializes it from

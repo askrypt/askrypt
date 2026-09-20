@@ -452,7 +452,7 @@ async fn the_tab_icon_is_served_at_assets_and_at_the_root() {
 async fn no_page_carries_an_inline_script_or_style() {
     let app = app();
     let cookies = register(&app, "csp@example.com").await;
-    let signed_out = ["/", "/login", "/register", "/nope", "/open"];
+    let signed_out = ["/", "/login", "/register", "/forgot", "/nope", "/open"];
     // The first account registered on a server is its administrator, so this
     // jar reaches the Users page too.
     let signed_in = [

@@ -11,8 +11,9 @@ use askrypt_server::store::memory::MemoryMailer;
 use askrypt_server::store::recaptcha::{DisabledCaptchaVerifier, RecaptchaVerifier};
 use askrypt_server::store::smtp::SmtpMailer;
 use askrypt_server::store::sqlite::{
-    self, SqliteAccountStore, SqliteDeviceLinkStore, SqliteEmailConfirmationStore, SqliteRoleStore,
-    SqliteSessionStore, SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
+    self, SqliteAccountStore, SqliteDeviceLinkStore, SqliteEmailConfirmationStore,
+    SqlitePasswordResetStore, SqliteRoleStore, SqliteSessionStore, SqliteSettingsStore,
+    SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 use askrypt_server::store::{
     ADMIN_ROLE, AccountStore, CaptchaVerifier, IdTokenVerifier, Mailer, RoleStore,
@@ -216,7 +217,8 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         Some(recaptcha) => {
             info!(
                 min_score = recaptcha.min_score,
-                "recaptcha enabled on the sign-in and registration forms"
+                "recaptcha enabled on the sign-in, registration, password-reset \
+                 and confirmation-resend forms"
             );
             Arc::new(RecaptchaVerifier::new(recaptcha.clone()))
         }
@@ -280,7 +282,8 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 vault_meta: Arc::new(SqliteVaultMetaStore::new(pool.clone())),
                 vault_blobs: Arc::new(DiskVaultBlobStore::new(config.vaults_dir())),
                 vault_versions: Arc::new(SqliteVaultVersionStore::new(pool.clone())),
-                email_confirmations: Arc::new(SqliteEmailConfirmationStore::new(pool)),
+                email_confirmations: Arc::new(SqliteEmailConfirmationStore::new(pool.clone())),
+                password_resets: Arc::new(SqlitePasswordResetStore::new(pool)),
                 // Same root, keyed by version id: archived generations sit in
                 // a `versions/` subdirectory of each account's own directory.
                 vault_version_blobs: Arc::new(DiskVaultBlobStore::versions(config.vaults_dir())),

@@ -21,7 +21,8 @@
 //! | `ASKRYPT_LOG_MAX_FILES` | `14`          | Daily files to keep (`0` keeps every one) |
 //! | `ASKRYPT_ARGON2_PARALLELISM` | *(cpus)* | Concurrent argon2 hashes; each costs ~19 MiB. Read in [`crate::auth`] |
 //!
-//! Bot protection on the website's sign-in and registration forms (Google
+//! Bot protection on the website's four public forms — sign-in,
+//! registration, password reset and confirmation resend (Google
 //! reCAPTCHA v3). `ASKRYPT_RECAPTCHA_SITE_KEY` is the switch: without it the
 //! forms are exactly what they were and work without JavaScript; with it they
 //! require JavaScript, because a v3 token can only be minted in the page. The

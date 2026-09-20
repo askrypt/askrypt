@@ -164,6 +164,19 @@ pub struct EmailConfirmation {
     pub expires_at: DateTime<Utc>,
 }
 
+/// The pending password-reset link of one account. Stored exactly like an
+/// [`EmailConfirmation`] — hash only, one row per account — and kept apart
+/// from it because the two links authorize different things: this one sets a
+/// password, so it lives for an hour rather than a day and can never be
+/// spent on the other's endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasswordReset {
+    pub account_id: AccountId,
+    pub token_hash: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// Metadata for one stored vault file; the bytes live in a
 /// [`super::VaultBlobStore`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,6 +477,11 @@ pub struct MemoryEmailConfirmationStore {
 }
 
 #[derive(Debug, Default)]
+pub struct MemoryPasswordResetStore {
+    pub(crate) pending: Mutex<HashMap<AccountId, PasswordReset>>,
+}
+
+#[derive(Debug, Default)]
 pub struct MemoryVaultMetaStore {
     pub(crate) metas: Mutex<HashMap<(AccountId, VaultId), VaultMeta>>,
 }
@@ -611,6 +629,19 @@ pub(crate) struct EmailConfirmationRow {
 
 #[derive(Clone)]
 pub struct SqliteEmailConfirmationStore {
+    pub(crate) pool: SqlitePool,
+}
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct PasswordResetRow {
+    pub(crate) account_id: String,
+    pub(crate) token_hash: String,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub struct SqlitePasswordResetStore {
     pub(crate) pool: SqlitePool,
 }
 

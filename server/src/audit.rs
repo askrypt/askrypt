@@ -83,6 +83,11 @@ pub const LOGOUT: &str = "logout";
 pub const EMAIL_CONFIRM_SENT: &str = "email.confirm_sent";
 pub const EMAIL_CONFIRMED: &str = "email.confirmed";
 pub const EMAIL_CONFIRM_FAILED: &str = "email.confirm_failed";
+// Password reset by mailed link (Phase 16). The token never reaches the log,
+// and `reset_failed` names no account: a bad token resolves none.
+pub const PASSWORD_RESET_SENT: &str = "password.reset_sent";
+pub const PASSWORD_RESET: &str = "password.reset";
+pub const PASSWORD_RESET_FAILED: &str = "password.reset_failed";
 /// A website auth form was refused before its credentials were even looked
 /// at, because its captcha token did not hold up. No account is named — at
 /// this point none has been resolved, and the submitted address is exactly

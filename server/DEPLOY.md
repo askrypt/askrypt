@@ -68,21 +68,36 @@ All settings are environment variables; all are optional.
 Register the site as **reCAPTCHA v3** and list your domain; v2 keys will not
 work. Three consequences worth knowing before you turn this on:
 
-- It covers the **website's** `/login` and `/register` only. The JSON API at
-  `/api/v1/auth` is deliberately untouched — the desktop and mobile clients
-  cannot mint a token, and the desktop signs in through the browser anyway.
-- Those two pages then **require JavaScript**. A v3 token is minted in the
-  page; without scripts the form submits an empty one and is refused with a
-  message saying so. The rest of the site still works with scripts off.
-- Those two pages send a **widened Content-Security-Policy** naming
-  `www.google.com` and `www.gstatic.com` (and allowing inline styles, for
-  reCAPTCHA's badge). Every other route keeps the strict policy byte for byte.
+- It covers the **website's** four forms a stranger can submit: `/login`,
+  `/register`, *Forgot your password?* (`POST /forgot`) and the confirmation
+  resend (`POST /confirm/resend`). The first two protect an argon2 hash; the
+  last two protect somebody else's inbox. The JSON API at `/api/v1/auth` is
+  deliberately untouched — the desktop and mobile clients cannot mint a
+  token, and the desktop signs in through the browser anyway.
+- `POST /reset` and `POST /confirm` are **not** captcha'd and do not need to
+  be: each already carries a single-use token that arrived in an inbox.
+- Those forms then **require JavaScript**. A v3 token is minted in the page;
+  without scripts the form submits an empty one and is refused with a message
+  saying so. **That includes password reset**, so a visitor with scripts off
+  cannot start one. The rest of the site still works without JavaScript.
+- The pages carrying those forms send a **widened Content-Security-Policy**
+  naming `www.google.com` and `www.gstatic.com` (and allowing inline styles,
+  for reCAPTCHA's badge). It follows the form, not the page: the card that
+  chooses a new password asks for no token and keeps the strict policy, as
+  does every other route, byte for byte.
 
-If Google is unreachable or the secret is wrong, sign-in **fails closed** —
-nobody gets in, and the log carries `captcha verification unavailable` at
-`error`. Unset the site key to turn the whole thing off again.
+If Google is unreachable or the secret is wrong, these forms **fail closed** —
+nobody signs in and no link is mailed, and the log carries `captcha
+verification unavailable` at `error`. Unset the site key to turn the whole
+thing off again.
 
 ### Email
+
+The server sends three kinds of mail: the startup notice, the confirmation
+link a new account follows, and the password-reset link behind *Forgot your
+password?* on the sign-in page. Reset works only with a relay configured —
+without one the link never leaves the log, and account owners have no way
+back in except Google sign-in.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -336,9 +351,9 @@ Applied to every response by `src/hardening.rs`:
 
 - `Content-Security-Policy: default-src 'self'; script-src 'self'; …` — no
   `unsafe-inline`, no `unsafe-eval`, `frame-ancestors 'none'`. The website's
-  pages are written to fit this, not the other way round. `/login` and
-  `/register` send a widened policy when reCAPTCHA or the Google sign-in
-  button is configured — the vendor's hosts plus `'unsafe-inline'` in
+  pages are written to fit this, not the other way round. `/login`,
+  `/register` and the cards that carry the two mail forms send a widened
+  policy when reCAPTCHA or the Google sign-in button is configured — the vendor's hosts plus `'unsafe-inline'` in
   `style-src`, since both widgets style themselves in the page; `script-src`
   never widens.
 - `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`

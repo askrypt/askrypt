@@ -1,8 +1,8 @@
 //! SQLite backend: connection pool, embedded migration runner, and the
 //! SQLite implementations of [`AccountStore`], [`SessionStore`] (Phase 2),
 //! [`VaultMetaStore`] (Phase 4), [`VaultVersionStore`] and [`RoleStore`]
-//! (Phase 8), [`SettingsStore`] (Phase 12), and [`EmailConfirmationStore`]
-//! (Phase 15).
+//! (Phase 8), [`SettingsStore`] (Phase 12), [`EmailConfirmationStore`]
+//! (Phase 15) and [`PasswordResetStore`] (Phase 16).
 //!
 //! Uuids are stored as hyphenated TEXT, timestamps as TEXT via sqlx's
 //! chrono mapping. Migrations are embedded in the binary from
@@ -18,19 +18,20 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::types::{
-    AccountRow, DeviceLinkRow, EmailConfirmationRow, RoleRow, SessionRow, SettingRow, VaultMetaRow,
-    VaultVersionRow,
+    AccountRow, DeviceLinkRow, EmailConfirmationRow, PasswordResetRow, RoleRow, SessionRow,
+    SettingRow, VaultMetaRow, VaultVersionRow,
 };
 use super::{
     Account, AccountId, AccountStore, DeviceLink, DeviceLinkId, DeviceLinkStatus, DeviceLinkStore,
-    EmailConfirmation, EmailConfirmationStore, NewAccount, Role, RoleStore, Session, SessionStore,
-    Setting, SettingsStore, StoreError, VaultId, VaultMeta, VaultMetaStore, VaultVersion,
-    VaultVersionId, VaultVersionStore,
+    EmailConfirmation, EmailConfirmationStore, NewAccount, PasswordReset, PasswordResetStore, Role,
+    RoleStore, Session, SessionStore, Setting, SettingsStore, StoreError, VaultId, VaultMeta,
+    VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore,
 };
 
 pub use super::types::{
-    SqliteAccountStore, SqliteDeviceLinkStore, SqliteEmailConfirmationStore, SqliteRoleStore,
-    SqliteSessionStore, SqliteSettingsStore, SqliteVaultMetaStore, SqliteVaultVersionStore,
+    SqliteAccountStore, SqliteDeviceLinkStore, SqliteEmailConfirmationStore,
+    SqlitePasswordResetStore, SqliteRoleStore, SqliteSessionStore, SqliteSettingsStore,
+    SqliteVaultMetaStore, SqliteVaultVersionStore,
 };
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
@@ -640,6 +641,83 @@ impl EmailConfirmationStore for SqliteEmailConfirmationStore {
     }
 }
 
+impl PasswordResetRow {
+    fn into_pending(self) -> Result<PasswordReset, StoreError> {
+        Ok(PasswordReset {
+            account_id: parse_uuid(&self.account_id)?,
+            token_hash: self.token_hash,
+            created_at: self.created_at,
+            expires_at: self.expires_at,
+        })
+    }
+}
+
+/// The columns every reset query selects, in [`PasswordResetRow`]'s order —
+/// the same four as a confirmation, in a table of their own.
+const RESET_COLUMNS: &str = "account_id, token_hash, created_at, expires_at";
+
+impl SqlitePasswordResetStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl PasswordResetStore for SqlitePasswordResetStore {
+    async fn put(&self, pending: PasswordReset) -> Result<(), StoreError> {
+        sqlx::query(&format!(
+            "INSERT OR REPLACE INTO password_resets ({RESET_COLUMNS}) VALUES (?1, ?2, ?3, ?4)"
+        ))
+        .bind(pending.account_id.to_string())
+        .bind(&pending.token_hash)
+        .bind(pending.created_at)
+        .bind(pending.expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        Ok(())
+    }
+
+    async fn get(&self, account: AccountId) -> Result<Option<PasswordReset>, StoreError> {
+        let row: Option<PasswordResetRow> = sqlx::query_as(&format!(
+            "SELECT {RESET_COLUMNS} FROM password_resets WHERE account_id = ?1"
+        ))
+        .bind(account.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(PasswordResetRow::into_pending).transpose()
+    }
+
+    async fn take(
+        &self,
+        token_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<PasswordReset>, StoreError> {
+        // One statement, so two submissions racing on the same link cannot
+        // both set a password: only the DELETE that lands first has a row.
+        let row: Option<PasswordResetRow> = sqlx::query_as(&format!(
+            "DELETE FROM password_resets WHERE token_hash = ?1 AND expires_at > ?2 \
+             RETURNING {RESET_COLUMNS}"
+        ))
+        .bind(token_hash)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend_err)?;
+        row.map(PasswordResetRow::into_pending).transpose()
+    }
+
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
+        let result = sqlx::query("DELETE FROM password_resets WHERE expires_at <= ?1")
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(result.rows_affected())
+    }
+}
+
 impl VaultMetaRow {
     fn into_meta(self) -> Result<VaultMeta, StoreError> {
         Ok(VaultMeta {
@@ -916,7 +994,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(applied, 6);
+        assert_eq!(applied, 7);
 
         // Re-opening is idempotent: already-applied migrations are skipped.
         let pool2 = open(&db_path).await.unwrap();
@@ -1367,6 +1445,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn password_resets_are_taken_once_replaced_and_swept() {
+        let (_dir, pool) = setup().await;
+        let accounts = SqliteAccountStore::new(pool.clone());
+        let store = SqlitePasswordResetStore::new(pool);
+        let account = accounts.create(new_account("a@example.com")).await.unwrap();
+        let now = Utc::now();
+        let pending = |hash: &str, expires_in: Duration| PasswordReset {
+            account_id: account.id,
+            token_hash: hash.to_string(),
+            created_at: now,
+            expires_at: now + expires_in,
+        };
+
+        store.put(pending("h1", Duration::hours(1))).await.unwrap();
+        assert_eq!(
+            store.get(account.id).await.unwrap().unwrap().token_hash,
+            "h1"
+        );
+        // Asking again replaces the link: the old hash no longer works.
+        store.put(pending("h2", Duration::hours(1))).await.unwrap();
+        assert!(store.take("h1", now).await.unwrap().is_none());
+        assert_eq!(
+            store.take("h2", now).await.unwrap().unwrap().account_id,
+            account.id
+        );
+        // Exactly once.
+        assert!(store.take("h2", now).await.unwrap().is_none());
+
+        // Expired links are refused, then swept.
+        store
+            .put(pending("h3", Duration::seconds(-1)))
+            .await
+            .unwrap();
+        assert!(store.take("h3", now).await.unwrap().is_none());
+        assert_eq!(store.delete_expired(now).await.unwrap(), 1);
+        assert!(store.get(account.id).await.unwrap().is_none());
+
+        // And they go with the account.
+        store.put(pending("h4", Duration::hours(1))).await.unwrap();
+        accounts.delete(account.id).await.unwrap();
+        assert!(store.get(account.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn accounts_that_predate_confirmation_count_as_confirmed() {
         // Apply every migration but the confirmation one by hand, register an
         // account the old way, then upgrade: nobody may be locked out.
@@ -1375,8 +1497,15 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        let (last, earlier) = MIGRATOR.migrations.split_last().unwrap();
-        assert_eq!(last.version, 6, "update this test for the new migration");
+        // The confirmation migration by number, not by position: migrations
+        // added after it must not change what this test upgrades across.
+        let split = MIGRATOR
+            .migrations
+            .iter()
+            .position(|m| m.version == 6)
+            .expect("the confirmation migration");
+        let (earlier, rest) = MIGRATOR.migrations.split_at(split);
+        let last = &rest[0];
         for migration in earlier {
             sqlx::raw_sql(&migration.sql).execute(&pool).await.unwrap();
         }

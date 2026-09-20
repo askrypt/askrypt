@@ -13,16 +13,17 @@ use uuid::Uuid;
 use super::{
     ADMIN_ROLE, Account, AccountId, AccountStore, CaptchaError, CaptchaVerifier, DeviceLink,
     DeviceLinkId, DeviceLinkStatus, DeviceLinkStore, EmailConfirmation, EmailConfirmationStore,
-    IdTokenError, IdTokenVerifier, Mailer, MailerError, NewAccount, PAYMENT_USER_ROLE, Role,
-    RoleStore, Session, SessionStore, Setting, SettingsStore, StoreError, VaultBlobStore, VaultId,
-    VaultMeta, VaultMetaStore, VaultVersion, VaultVersionId, VaultVersionStore, VerifiedIdToken,
+    IdTokenError, IdTokenVerifier, Mailer, MailerError, NewAccount, PAYMENT_USER_ROLE,
+    PasswordReset, PasswordResetStore, Role, RoleStore, Session, SessionStore, Setting,
+    SettingsStore, StoreError, VaultBlobStore, VaultId, VaultMeta, VaultMetaStore, VaultVersion,
+    VaultVersionId, VaultVersionStore, VerifiedIdToken,
 };
 
 pub use super::types::{
     FakeCaptchaVerifier, FakeIdTokenVerifier, MemoryAccountStore, MemoryDeviceLinkStore,
-    MemoryEmailConfirmationStore, MemoryMailer, MemoryRoleStore, MemorySessionStore,
-    MemorySettingsStore, MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
-    SentMail,
+    MemoryEmailConfirmationStore, MemoryMailer, MemoryPasswordResetStore, MemoryRoleStore,
+    MemorySessionStore, MemorySettingsStore, MemoryVaultBlobStore, MemoryVaultMetaStore,
+    MemoryVaultVersionStore, SentMail,
 };
 
 #[async_trait]
@@ -356,6 +357,47 @@ impl EmailConfirmationStore for MemoryEmailConfirmationStore {
         token_hash: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<EmailConfirmation>, StoreError> {
+        // Find and remove under one lock, as `take` promises.
+        let mut all = self.pending.lock().unwrap();
+        let found = all
+            .values()
+            .find(|p| p.token_hash == token_hash && p.expires_at > now)
+            .map(|p| p.account_id);
+        Ok(found.and_then(|id| all.remove(&id)))
+    }
+
+    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
+        let mut all = self.pending.lock().unwrap();
+        let before = all.len();
+        all.retain(|_, p| p.expires_at > now);
+        Ok((before - all.len()) as u64)
+    }
+}
+
+#[async_trait]
+impl PasswordResetStore for MemoryPasswordResetStore {
+    async fn put(&self, pending: PasswordReset) -> Result<(), StoreError> {
+        let mut all = self.pending.lock().unwrap();
+        // Mirrors the UNIQUE on `token_hash` in the sqlite table.
+        if all
+            .values()
+            .any(|p| p.token_hash == pending.token_hash && p.account_id != pending.account_id)
+        {
+            return Err(StoreError::Conflict("reset token reused".into()));
+        }
+        all.insert(pending.account_id, pending);
+        Ok(())
+    }
+
+    async fn get(&self, account: AccountId) -> Result<Option<PasswordReset>, StoreError> {
+        Ok(self.pending.lock().unwrap().get(&account).cloned())
+    }
+
+    async fn take(
+        &self,
+        token_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<PasswordReset>, StoreError> {
         // Find and remove under one lock, as `take` promises.
         let mut all = self.pending.lock().unwrap();
         let found = all

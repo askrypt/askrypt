@@ -35,6 +35,12 @@
   <h1>Check your inbox</h1>
   <p>If that address has an account waiting for confirmation, a new link is
   on its way. Links mailed before it no longer work.</p>
+  {%- else if kind == ConfirmKind::Refused %}
+  <h1>That didn't go through</h1>
+  {#- The anti-bot check turned the resend away: nothing was sent, and no
+      address was looked up. The form below is the same one, ready to try
+      again with a freshly minted token. -#}
+  <p class="error" role="alert">{{ error.as_deref().unwrap_or("") }}</p>
   {%- else %}
   <h1>This link can't be used</h1>
   <p role="alert">This confirmation link is invalid, has expired, or was
@@ -51,6 +57,15 @@
   {%- else %}
     <input type="hidden" name="email" value="{{ email }}">
   {%- endif %}
+{%- if let Some(key) = captcha_field() %}
+    {#- reCAPTCHA v3: no widget and nothing to click. `/assets/captcha.js`
+        fills this in from the two data attributes and re-mints after every
+        swap, since a v3 token is single-use. Empty on arrival — with
+        JavaScript off it stays empty and the submit is refused with a
+        message saying so. -#}
+    <input type="hidden" name="captcha_token"
+           data-captcha-key="{{ key }}" data-captcha-action="{{ captcha_action }}">
+{%- endif %}
     <button class="button secondary" type="submit">Send a new link</button>
   </form>
   <p class="alt">Already confirmed? <a href="/login">Sign in</a></p>

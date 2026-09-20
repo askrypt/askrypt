@@ -25,6 +25,7 @@ pub mod error;
 pub mod hardening;
 pub mod profile;
 pub mod ratelimit;
+pub mod reset;
 pub mod routes;
 pub mod settings;
 pub mod startup;

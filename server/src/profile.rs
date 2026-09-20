@@ -164,7 +164,7 @@ pub(crate) async fn set_password(
         "",
     );
     if had_password {
-        let revoked = revoke_other_sessions(state, account.id, keep_token).await?;
+        let revoked = revoke_sessions(state, account.id, Some(keep_token)).await?;
         if revoked > 0 {
             audit::emit(
                 audit::SESSIONS_REVOKED_BULK,
@@ -177,17 +177,23 @@ pub(crate) async fn set_password(
     Ok(())
 }
 
-/// Deletes every session of the account except `keep`, returning how many
-/// went. Best-effort per session: one already-gone token must not fail the
-/// password change that has already been committed.
-async fn revoke_other_sessions(
+/// Deletes the account's sessions, returning how many went: all of them, or
+/// all but `keep` — the device driving a password change stays signed in,
+/// while a password *reset* ([`crate::reset`]) has no device to spare.
+///
+/// Best-effort per session: one already-gone token must not fail the password
+/// change that has already been committed.
+pub(crate) async fn revoke_sessions(
     state: &AppState,
     account: AccountId,
-    keep: &str,
+    keep: Option<&str>,
 ) -> ApiResult<usize> {
     let sessions = state.sessions.list_for_account(account).await?;
     let mut revoked = 0;
-    for session in sessions.into_iter().filter(|s| s.token != keep) {
+    for session in sessions
+        .into_iter()
+        .filter(|s| Some(s.token.as_str()) != keep)
+    {
         match state.sessions.delete(&session.token).await {
             Ok(()) => revoked += 1,
             Err(StoreError::NotFound) => {}

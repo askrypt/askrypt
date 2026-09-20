@@ -1,7 +1,10 @@
 /*
- * reCAPTCHA v3 for the sign-in and registration forms.
+ * reCAPTCHA v3 for the website forms a stranger can submit: sign-in,
+ * registration, "forgot your password" and the confirmation resend.
  *
- * Loaded only by `auth_page.html`, and only when a site key is configured.
+ * Loaded only by `auth_page.html`, `reset.html` and `confirm.html`, and only
+ * when a site key is configured. Every field carries its own action, so this
+ * file never needs to know which form it is filling.
  * An external file rather than an inline script because the CSP forbids
  * inline script even on the two pages that carry the widened policy; the
  * site key therefore arrives on the hidden input as a data attribute.

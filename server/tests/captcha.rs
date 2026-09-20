@@ -1,20 +1,24 @@
-//! The reCAPTCHA gate on the website's sign-in and registration forms.
+//! The reCAPTCHA gate on the four website forms a stranger can submit:
+//! sign-in, registration, *Forgot your password?* and the confirmation
+//! resend.
 //!
 //! Runs over `tower`'s `oneshot` against the in-memory fakes, with the
 //! captcha seam swapped for [`FakeCaptchaVerifier`] — the real verifier is a
 //! network call to Google and its rules are unit-tested in
 //! `store/recaptcha.rs`. What is asserted here is the wiring: that a token is
-//! demanded, that it is demanded *before* the password is looked at, that a
-//! token minted for one form cannot be spent on the other, that the pages
-//! carry the site key and the widened CSP, and that a server without a
-//! configured captcha is completely unchanged.
+//! demanded, that it is demanded *before* the password is looked at (and,
+//! on the two mail forms, before an address is looked up or a mail sent),
+//! that a token minted for one form cannot be spent on another, that the
+//! pages carry the site key and the widened CSP — and only the pages whose
+//! form needs it — and that a server without a configured captcha is
+//! completely unchanged.
 
 use std::sync::Arc;
 
 use askrypt_server::hardening::{CSP, CSP_CAPTCHA};
 use askrypt_server::routes::router;
 use askrypt_server::state::AppState;
-use askrypt_server::store::memory::FakeCaptchaVerifier;
+use askrypt_server::store::memory::{FakeCaptchaVerifier, MemoryMailer};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
@@ -28,6 +32,8 @@ const PASSWORD: &str = "hunter2hunter2";
 const SITE_KEY: &str = "test-site-key";
 const GOOD_LOGIN_TOKEN: &str = "login-token";
 const GOOD_REGISTER_TOKEN: &str = "register-token";
+const GOOD_FORGOT_TOKEN: &str = "forgot-token";
+const GOOD_RESEND_TOKEN: &str = "resend-token";
 
 /// A server with a captcha, and a handle on the fake so a test can mint more
 /// tokens. Both auth actions get one good token up front, since most tests
@@ -41,6 +47,66 @@ fn app_with_captcha() -> (Router, Arc<FakeCaptchaVerifier>) {
         ..common::state()
     };
     (router(state, &common::password_api_config()), captcha)
+}
+
+/// The same, plus a handle on the mailer and the production
+/// email-confirmation default — what the two mail-sending forms need to be
+/// worth testing: a registration that leaves a link pending, and a way to see
+/// whether anything was actually sent.
+fn app_with_mail() -> (Router, Arc<FakeCaptchaVerifier>, Arc<MemoryMailer>) {
+    let captcha = Arc::new(FakeCaptchaVerifier::new(SITE_KEY, 0.5));
+    captcha.register(GOOD_REGISTER_TOKEN, "register", 0.9);
+    captcha.register(GOOD_FORGOT_TOKEN, "forgot", 0.9);
+    captcha.register(GOOD_RESEND_TOKEN, "resend", 0.9);
+    let mailer = Arc::new(MemoryMailer::default());
+    let state = AppState {
+        captcha: Arc::clone(&captcha) as _,
+        mailer: Arc::clone(&mailer) as _,
+        email_confirmation: true,
+        ..AppState::in_memory()
+    };
+    (
+        router(state, &common::password_api_config()),
+        captcha,
+        mailer,
+    )
+}
+
+/// Registers through the website with confirmation on, which answers with the
+/// "check your inbox" card rather than a redirect. Returns that card's
+/// cookies and HTML, so a test can post the resend form it carries.
+async fn register_unconfirmed(app: &Router, email: &str) -> (String, String) {
+    let (cookies, csrf) = open_form(app, "/register").await;
+    let (status, headers, html) = send(
+        app,
+        post_form(
+            "/register",
+            &cookies,
+            &format!(
+                "csrf={csrf}&email={email}&password={PASSWORD}&captcha_token={GOOD_REGISTER_TOKEN}"
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "registration failed: {html}");
+    assert!(html.contains("Check your inbox"), "{html}");
+    (jar(&cookies, &headers), html)
+}
+
+/// Mail from the resend and reset paths goes out on a spawned task.
+async fn wait_for_mail(mailer: &MemoryMailer, count: usize) {
+    for _ in 0..100 {
+        if mailer.sent().len() >= count {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("expected {count} mails, have {}", mailer.sent().len());
+}
+
+/// Long enough for a mail that must *not* be sent to have been sent.
+async fn settle() {
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 }
 
 /// A server with no captcha configured — the default wiring, and what every
@@ -174,10 +240,11 @@ async fn the_auth_pages_carry_the_site_key_and_the_loader() {
     assert!(register.contains("data-captcha-action=\"register\""));
 }
 
-/// The CSP widening is scoped to exactly the two pages that need it, and only
-/// while a captcha is configured. Everything else keeps the strict policy.
+/// The auth pages widen their policy only while a captcha is configured, and
+/// the pages that render no captcha'd form never do — see
+/// `only_the_cards_that_render_a_captcha_relax_the_csp` for the mail forms.
 #[tokio::test]
-async fn only_the_auth_pages_relax_the_csp_and_only_with_a_captcha() {
+async fn the_auth_pages_relax_the_csp_only_with_a_captcha() {
     let (app, _) = app_with_captcha();
     for path in ["/login", "/register"] {
         let (_, headers, _) = send(&app, get(path)).await;
@@ -445,4 +512,201 @@ async fn without_a_site_key_the_forms_are_exactly_as_they_were() {
     .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(headers[header::LOCATION], "/account");
+}
+
+// --------------------------------------------- the two forms that send mail
+
+/// Both mail forms carry a field, each minted for its own action, and both
+/// pages load the loader and the helper.
+#[tokio::test]
+async fn the_mail_forms_carry_the_site_key_and_the_loader() {
+    let (app, _, _) = app_with_mail();
+
+    let (status, _, forgot) = send(&app, get("/forgot")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(forgot.contains(&format!("data-captcha-key=\"{SITE_KEY}\"")));
+    assert!(forgot.contains("data-captcha-action=\"forgot\""));
+    assert!(forgot.contains("https://www.google.com/recaptcha/api.js?render="));
+    assert!(forgot.contains("/assets/captcha.js"));
+
+    // The resend form lives on the confirmation card, which is what a dead
+    // link answers with — and `POST /confirm` itself takes no captcha token,
+    // because the link it spends came out of an inbox.
+    let (cookies, csrf) = open_form(&app, "/login").await;
+    let (status, _, invalid) = send(
+        &app,
+        post_form("/confirm", &cookies, &format!("csrf={csrf}&token=nonsense")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(invalid.contains("This link can't be used"), "{invalid}");
+    assert!(invalid.contains(&format!("data-captcha-key=\"{SITE_KEY}\"")));
+    assert!(invalid.contains("data-captcha-action=\"resend\""));
+    assert!(invalid.contains("/assets/captcha.js"));
+}
+
+/// The point of the gate on this form: no token, no address lookup, no mail.
+#[tokio::test]
+async fn a_reset_request_without_a_token_sends_nothing() {
+    let (app, _, mailer) = app_with_mail();
+    register_unconfirmed(&app, "known@example.com").await;
+
+    let (cookies, csrf) = open_form(&app, "/forgot").await;
+    let (status, headers, html) = send(
+        &app,
+        post_form(
+            "/forgot",
+            &cookies,
+            &format!("csrf={csrf}&email=known@example.com&captcha_token="),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::LOCATION));
+    assert!(html.contains("JavaScript"), "unhelpful message: {html}");
+    // Not the "check your inbox" card: nothing was sent, and the answer must
+    // not pretend otherwise.
+    assert!(!html.contains("Check your inbox"), "{html}");
+    // Ready to mint a fresh token — the spent one is never echoed back.
+    assert!(html.contains("data-captcha-key"));
+    assert!(!html.contains("name=\"captcha_token\" value="));
+
+    settle().await;
+    assert_eq!(mailer.sent().len(), 1, "only the registration link");
+}
+
+/// A token minted for the sign-in form cannot be spent on the reset form, and
+/// the right one goes through.
+#[tokio::test]
+async fn the_reset_request_needs_its_own_token() {
+    let (app, captcha, mailer) = app_with_mail();
+    captcha.register(GOOD_LOGIN_TOKEN, "login", 0.9);
+    register_unconfirmed(&app, "known@example.com").await;
+
+    let (cookies, csrf) = open_form(&app, "/forgot").await;
+    let (_, _, wrong) = send(
+        &app,
+        post_form(
+            "/forgot",
+            &cookies,
+            &format!("csrf={csrf}&email=known@example.com&captcha_token={GOOD_LOGIN_TOKEN}"),
+        ),
+    )
+    .await;
+    assert!(wrong.contains("real person"), "{wrong}");
+    settle().await;
+    assert_eq!(mailer.sent().len(), 1, "a login token mailed a reset link");
+
+    let (cookies, csrf) = open_form(&app, "/forgot").await;
+    let (status, _, right) = send(
+        &app,
+        post_form(
+            "/forgot",
+            &cookies,
+            &format!("csrf={csrf}&email=known@example.com&captcha_token={GOOD_FORGOT_TOKEN}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(right.contains("Check your inbox"), "{right}");
+    wait_for_mail(&mailer, 2).await;
+    assert!(mailer.sent()[1].subject.contains("Reset"));
+}
+
+/// The same gate on the confirmation resend, which is the other way to make
+/// this server mail a stranger.
+#[tokio::test]
+async fn the_resend_needs_its_own_token() {
+    let (app, _, mailer) = app_with_mail();
+    let (cookies, card) = register_unconfirmed(&app, "waiting@example.com").await;
+    let csrf = csrf_field(&card);
+
+    let (status, _, refused) = send(
+        &app,
+        post_form(
+            "/confirm/resend",
+            &cookies,
+            &format!("csrf={csrf}&email=waiting@example.com&captcha_token=forged"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(refused.contains("didn't go through"), "{refused}");
+    assert!(refused.contains("real person"));
+    // The uniform "a new link is on its way" sentence would be a lie here.
+    assert!(!refused.contains("on its way"), "{refused}");
+    settle().await;
+    assert_eq!(mailer.sent().len(), 1, "only the registration link");
+
+    let (status, _, sent) = send(
+        &app,
+        post_form(
+            "/confirm/resend",
+            &cookies,
+            &format!("csrf={csrf}&email=waiting@example.com&captcha_token={GOOD_RESEND_TOKEN}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(sent.contains("on its way"), "{sent}");
+}
+
+/// The widening follows the *form*, not the page: a card whose only form
+/// posts a token that came out of an inbox asks for no score and keeps the
+/// strict policy.
+#[tokio::test]
+async fn only_the_cards_that_render_a_captcha_relax_the_csp() {
+    let (app, _, _) = app_with_mail();
+
+    let (_, headers, _) = send(&app, get("/forgot")).await;
+    assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP_CAPTCHA);
+
+    for path in ["/reset/some-token", "/confirm/some-token"] {
+        let (_, headers, html) = send(&app, get(path)).await;
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            CSP,
+            "{path} relaxed its CSP"
+        );
+        assert!(
+            !html.contains("data-captcha-key"),
+            "captcha field on {path}"
+        );
+        assert!(!html.contains("google.com"), "google script on {path}");
+    }
+
+    // The card that answers a dead confirmation link does render the resend
+    // form, so that one does relax.
+    let (cookies, csrf) = open_form(&app, "/login").await;
+    let (_, headers, _) = send(
+        &app,
+        post_form("/confirm", &cookies, &format!("csrf={csrf}&token=nonsense")),
+    )
+    .await;
+    assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP_CAPTCHA);
+}
+
+/// With no site key configured the two mail forms are exactly what they were
+/// before the gate existed: no field, no script, and a plain submit works.
+#[tokio::test]
+async fn without_a_site_key_the_mail_forms_are_unchanged() {
+    let app = app_without_captcha();
+
+    let (_, headers, html) = send(&app, get("/forgot")).await;
+    assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP);
+    assert!(!html.contains("captcha"), "captcha markup on /forgot");
+    assert!(!html.contains("google.com"), "google script on /forgot");
+
+    let (cookies, csrf) = open_form(&app, "/forgot").await;
+    let (status, _, sent) = send(
+        &app,
+        post_form(
+            "/forgot",
+            &cookies,
+            &format!("csrf={csrf}&email=nobody@example.com"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(sent.contains("Check your inbox"), "{sent}");
 }

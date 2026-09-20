@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::store::memory::{
     FakeIdTokenVerifier, MemoryAccountStore, MemoryDeviceLinkStore, MemoryEmailConfirmationStore,
-    MemoryMailer, MemoryRoleStore, MemorySessionStore, MemorySettingsStore, MemoryVaultBlobStore,
-    MemoryVaultMetaStore, MemoryVaultVersionStore,
+    MemoryMailer, MemoryPasswordResetStore, MemoryRoleStore, MemorySessionStore,
+    MemorySettingsStore, MemoryVaultBlobStore, MemoryVaultMetaStore, MemoryVaultVersionStore,
 };
 use crate::store::recaptcha::DisabledCaptchaVerifier;
 
@@ -36,6 +36,7 @@ impl AppState {
             // override this seam with `FakeCaptchaVerifier`.
             captcha: Arc::new(DisabledCaptchaVerifier),
             email_confirmations: Arc::new(MemoryEmailConfirmationStore::default()),
+            password_resets: Arc::new(MemoryPasswordResetStore::default()),
             // The production default. Suites that register over HTTP and do
             // not care about the mail switch it off.
             email_confirmation: true,
