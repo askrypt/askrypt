@@ -6,7 +6,7 @@ edition = "2024"
 license = "Apache-2.0"
 publish = false
 
-# Scope rule (see PLAN.md): the server is a dumb encrypted-blob store. It must
+# Scope rule: the server is a dumb encrypted-blob store. It must
 # NEVER depend on `askrypt-core` — all vault crypto stays in the clients.
 
 [dependencies]

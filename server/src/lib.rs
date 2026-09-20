@@ -3,7 +3,6 @@
 //! The server is a dumb encrypted-blob store: it never sees security
 //! questions, answers, keys, or vault contents, and it never links the
 //! `askrypt-core` crate. All crypto stays in the desktop and mobile clients.
-//! See `server/PLAN.md` for the phased plan.
 //!
 //! ## Where the types live
 //!

@@ -16,7 +16,7 @@ Cargo workspace with three clients of one vault format:
 
 > **Rule — keep this file current.** Any change to layout, architecture,
 > build/test commands, dependencies or the vault format updates `CLAUDE.md`
-> (and `app/PLAN.md` / `server/PLAN.md` / `UI.md` where relevant) in the same change.
+> (and `UI.md` where relevant) in the same change.
 
 > **Rule — print a short commit when changes are done.** After a code change,
 > print a single conventional `type: subject` line (≤ 72 chars). Do not run
@@ -93,7 +93,7 @@ Files: `main.rs` (App, `Message`, `visible()`/`reconcile_selection()`, panes, su
 
 ## Mobile app — `app/`
 
-Pure-Dart Flutter (Android + iOS, no Rust/FFI). Byte-compatible with `core/` via golden vectors. Plan and status: **`app/PLAN.md`**.
+Pure-Dart Flutter (Android + iOS, no Rust/FFI). Byte-compatible with `core/` via golden vectors.
 
 - **Askrypt Cloud** (same `/api/v1` as desktop, no server changes): `lib/platform/server_client.dart` ports `ServerClient`/`BrowserLogin`/`RemoteVault` over `package:http` (same status mapping, quoted-out/unquoted-in ETags, verification-path guard, flat poll read, 10 MiB cap). `lib/platform/server_session_store.dart` keeps `{base_url,email,token}` + server URL (default `https://askrypt.com`) in `flutter_secure_storage` — the token is a credential. `lib/session/cloud_session.dart` (`cloudProvider`: `CloudSignedOut`/`CloudLinking`/`CloudSignedIn`; generation-tagged polls, 429/network keep waiting, 15 min stall, poll on resume; `sessionRejected` on 401). **Sign-in only from the locked side** (`screens/cloud_screen.dart`): `AutoLock` locks on background, so a browser trip while unlocked would lose work. `lib/session/vault_home.dart` `vaultHomeProvider` = `LocalHome`/`CloudHome(etag)`; Save on a cloud vault overwrites with `If-Match`, 412 → "Changed on another device" (*Save mine* re-lists for the current ETag); local/new vaults offer "Save to Askrypt Cloud" when signed in (name collision check case-folded). A failed/cancelled save restores the dirty flag (`setModified`). Recent store remembers cloud vaults by location (`recent.json`), never their bytes. Android main manifest has `INTERNET`; debug manifest allows cleartext for LAN dev servers.
 - `lib/crypto/` — Dart port (`vault`, `kdf`, `aes`, `normalize`, `translit`, `secret_entry` incl. `CustomField`/`CustomFieldType`). Carries card keys, `custom_fields`, `attachments` and `files/` members (written with `compress = false`) though it cannot add/remove attachments.
@@ -107,7 +107,7 @@ App ID `com.askrypt.app`, `minSdk 26`; `android/` and `ios/` shells tracked. **A
 
 ## Server — `server/` (`askrypt-server`)
 
-Axum server: accounts (email+password, Google), opaque vault storage, server-rendered website (askama + htmx). Never handles questions/answers/vault crypto. Plan: **`server/PLAN.md`** (Phases 0–5, 7–16 done; Phase 6 CI/CD open). Self-hosting: **`server/DEPLOY.md`**.
+Axum server: accounts (email+password, Google), opaque vault storage, server-rendered website (askama + htmx). Never handles questions/answers/vault crypto. Server CI/CD is still open. Self-hosting: **`server/DEPLOY.md`**.
 
 ### Server-wide rules
 

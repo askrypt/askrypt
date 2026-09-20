@@ -11,8 +11,8 @@
 //
 //   cargo run -p askrypt-core --example gen_vectors
 //
-// Deliberately not wired into CI, for the reason `server/PLAN.md` gives: there
-// is no Node, npm or bundler anywhere in the build. Run it by hand alongside
+// Deliberately not wired into CI: there is no Node, npm or bundler anywhere
+// in the build. Run it by hand alongside
 // `cd app && flutter test`, which is not in CI either.
 
 import { readFile } from "node:fs/promises";

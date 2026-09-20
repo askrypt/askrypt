@@ -80,11 +80,11 @@ The repository is a Cargo workspace with a shared crypto core plus a desktop and
   `askrypt-core`; the design notes are in [`UI.md`](UI.md).
 - **Mobile (`app/`)** — a **pure-Dart Flutter** app for **Android and iOS** (no Rust on device).
   It re-implements the vault format in Dart and stays byte-compatible with `core/`, verified by
-  golden test vectors. *In progress* — see [`app/PLAN.md`](app/PLAN.md).
+  golden test vectors. *In progress*.
 - **Server (`server/`) — `askrypt-server`** — an optional, self-hostable
   [axum](https://github.com/tokio-rs/axum) server for accounts and cloud storage of vaults as
   **opaque encrypted files**. Zero-knowledge by design: it never sees questions, answers, or keys,
-  and never links `askrypt-core`. *In progress* — see [`server/PLAN.md`](server/PLAN.md).
+  and never links `askrypt-core`. *In progress*.
 
 ## Build & test
 
@@ -224,7 +224,7 @@ This installs the binary, icon, and a desktop entry so Askrypt appears in your a
 ## Status
 
 Askrypt is under active development and **has not undergone extensive security testing** — use at
-your own risk. Roadmap and phase status live in [`TODO.md`](TODO.md) and [`app/PLAN.md`](app/PLAN.md).
+your own risk.
 
 ## References
 
