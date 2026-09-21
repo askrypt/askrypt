@@ -24,7 +24,7 @@ import '../platform/server_client.dart';
 import '../platform/server_session_store.dart';
 
 /// How long the app keeps polling before it stops on its own. The link stays
-/// valid for a day; "Open the page again" resumes the same one.
+/// valid for an hour; "Open the page again" resumes the same one.
 const Duration kSignInPollLimit = Duration(minutes: 15);
 
 /// Opens a URL outside the app. Overridden in tests.

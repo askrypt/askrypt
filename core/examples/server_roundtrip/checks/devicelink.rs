@@ -151,7 +151,7 @@ pub fn run(report: &mut Report, ctx: &mut Ctx) {
 
     report.check("cancelling makes a link unapprovable at once", || {
         // An app that closes its sign-in pane should not leave an approvable
-        // link lying around for the rest of the day.
+        // link lying around for the rest of the hour.
         let link = start(ctx)?;
         let id = link_id(&link)?;
         link.cancel().map_err(|e| format!("{e}"))?;

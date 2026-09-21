@@ -63,11 +63,26 @@ const AUTH_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// behind one address.
 const DEVICE_RATE_LIMIT: u32 = 120;
 
+/// Device links a client may *open* per window. Opening one is a
+/// once-per-sign-in act, and it is the only unauthenticated request here that
+/// leaves a row behind, so it gets a budget of its own far below the polling
+/// one. Still room for a NAT full of people signing in at once.
+const DEVICE_START_RATE_LIMIT: u32 = 10;
+
 pub fn router(state: AppState, config: &Config) -> Router {
     let auth_limiter = Arc::new(RateLimiter::new(AUTH_RATE_LIMIT, AUTH_RATE_WINDOW));
     let device_limiter = Arc::new(RateLimiter::new(DEVICE_RATE_LIMIT, AUTH_RATE_WINDOW));
-    let device_api = Router::new()
+    let device_start_limiter =
+        Arc::new(RateLimiter::new(DEVICE_START_RATE_LIMIT, AUTH_RATE_WINDOW));
+    // Behind both limiters: a start also counts against the polling budget.
+    let device_start = Router::new()
         .route("/device", post(devicelink::start))
+        .route_layer(middleware::from_fn_with_state(
+            device_start_limiter,
+            ratelimit::middleware,
+        ));
+    let device_api = Router::new()
+        .merge(device_start)
         .route("/device/poll", post(devicelink::poll))
         .route("/device/cancel", post(devicelink::cancel))
         .route_layer(middleware::from_fn_with_state(

@@ -10,6 +10,7 @@
 //! deployment would need a shared store.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -79,13 +80,28 @@ pub async fn middleware(
 /// Bucket key for a request. Shared with [`crate::web`], whose HTML auth
 /// routes hit the *same* limiter instance as `/api/v1/auth` so a browser and
 /// an API client can't be used to double an attacker's budget.
+///
+/// IPv6 clients are bucketed by /64: that is what one subscriber is handed,
+/// so keying on the full address would give a single host 2^64 budgets.
 pub(crate) fn client_key(request: &Request) -> String {
     let extensions = request.extensions();
-    clientip::client_ip(
+    bucket(clientip::client_ip(
         request.headers(),
         extensions,
         clientip::policy_of(extensions),
-    )
+    ))
+}
+
+/// Folds an IPv6 address to its /64; anything else (IPv4, a v4-mapped v6, a
+/// value that is not an address at all) is its own bucket, unchanged.
+fn bucket(ip: String) -> String {
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => {
+            let prefix = u128::from(v6) & !(u128::from(u64::MAX));
+            format!("{}/64", Ipv6Addr::from(prefix))
+        }
+        _ => ip,
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +116,22 @@ mod tests {
         }
         assert!(!limiter.try_acquire("a"));
         assert!(limiter.try_acquire("b")); // other clients unaffected
+    }
+
+    #[test]
+    fn ipv6_clients_share_a_bucket_per_64() {
+        let a = bucket("2001:db8:1:2:aaaa::1".into());
+        let b = bucket("2001:db8:1:2:ffff:ffff:ffff:ffff".into());
+        assert_eq!(a, b);
+        assert_eq!(a, "2001:db8:1:2::/64");
+        assert_ne!(a, bucket("2001:db8:1:3::1".into()));
+    }
+
+    #[test]
+    fn other_keys_pass_through() {
+        assert_eq!(bucket("203.0.113.7".into()), "203.0.113.7");
+        assert_eq!(bucket("::ffff:203.0.113.7".into()), "::ffff:203.0.113.7");
+        assert_eq!(bucket("unknown".into()), "unknown");
     }
 
     #[test]

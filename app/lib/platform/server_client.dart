@@ -380,7 +380,7 @@ class BrowserLogin {
   }
 
   /// Tell the server this sign-in is not wanted after all, so the link stops
-  /// being approvable now rather than in 24 hours. Best effort.
+  /// being approvable now rather than when it expires. Best effort.
   Future<void> cancel() async {
     await _call(
         () => _http.post(

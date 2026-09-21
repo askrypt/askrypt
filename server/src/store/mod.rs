@@ -178,6 +178,9 @@ pub trait DeviceLinkStore: Send + Sync {
     /// Drops every link past its `expires_at`, whatever its status. There is no
     /// GC task in this server, so this is called from the create path.
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
+    /// Links currently stored, whatever their status. Read right after
+    /// [`Self::delete_expired`], so in practice the live ones.
+    async fn count(&self) -> Result<u64, StoreError>;
 }
 
 /// Pending email-confirmation links, at most one per account.

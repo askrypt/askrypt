@@ -41,8 +41,8 @@ fn device_label() -> Option<String> {
 
 /// How long the app keeps polling before it stops on its own.
 ///
-/// The *link* stays valid on the server for a day, but polling for a day would
-/// be tens of thousands of requests for a sign-in the user has plainly walked
+/// The *link* stays valid on the server for an hour, but polling for an hour
+/// would be over a thousand requests for a sign-in the user has plainly walked
 /// away from. Stopping is not giving up: "Open the page again" resumes the very
 /// same link.
 const POLL_LIMIT: Duration = Duration::from_secs(15 * 60);
@@ -329,7 +329,7 @@ pub fn waiting_card<'a>(state: &'a LinkState) -> Element<'a, Message> {
     };
 
     let explanation = if state.stalled {
-        "The page is still valid for 24 hours. Open it again to carry on."
+        "The page is still valid for about 45 minutes. Open it again to carry on."
     } else {
         "A page has opened in your browser. Sign in there — or create an \
          account — and this app signs itself in."

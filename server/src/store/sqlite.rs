@@ -561,6 +561,14 @@ impl DeviceLinkStore for SqliteDeviceLinkStore {
             .map_err(backend_err)?;
         Ok(result.rows_affected())
     }
+
+    async fn count(&self) -> Result<u64, StoreError> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM device_links")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(backend_err)?;
+        Ok(count as u64)
+    }
 }
 
 impl EmailConfirmationRow {

@@ -40,16 +40,23 @@ use chrono::{Duration, Utc};
 
 use crate::audit::{self, ClientInfo};
 use crate::auth::{self, SessionResponse};
-use crate::error::{ApiJson, ApiResult};
+use crate::error::{ApiError, ApiJson, ApiResult};
 use crate::state::AppState;
 use crate::store::{Account, DeviceLink, DeviceLinkId, DeviceLinkStatus, StoreError};
 
 pub use crate::types::{PollRequest, PollResponse, StartRequest, StartResponse};
 
-/// How long a link stays usable. A full day, so a user who walks away from the
-/// browser can still finish later — and a link nobody ever completes is *gone*
-/// at that point rather than lingering for good.
-pub const DEVICE_LINK_TTL_HOURS: i64 = 24;
+/// How long a link stays usable. Long enough to outlast the clients' 15-minute
+/// poll limit, so "Open the page again" can still resume the same link — and
+/// no longer: [`start`] needs no authentication, so every live row is one a
+/// stranger could have made. At the start limit in [`crate::routes`] this
+/// bounds one client to a few hundred rows rather than a day's worth.
+pub const DEVICE_LINK_TTL_MINUTES: i64 = 60;
+
+/// Ceiling on links alive at once, across every client. The per-client limit
+/// cannot see a flood spread over many addresses; this turns one into refused
+/// sign-ins instead of an ever-growing table on the disk the vaults live on.
+pub const MAX_LIVE_DEVICE_LINKS: u64 = 10_000;
 
 /// Seconds the app should wait between polls. Handed to the client rather than
 /// agreed by convention, so the cadence and the device rate limit in
@@ -82,6 +89,17 @@ pub async fn start(
     // an abandoned link is guaranteed to be followed by.
     sweep_expired(&state).await;
 
+    let live = state.device_links.count().await?;
+    if live >= MAX_LIVE_DEVICE_LINKS {
+        tracing::warn!(live, "refusing device link: too many pending");
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "device_links_busy",
+            "too many sign-ins in progress; try again later",
+        )
+        .with_retry_after(60));
+    }
+
     let now = Utc::now();
     let link = DeviceLink {
         id: DeviceLinkId::new_v4(),
@@ -91,7 +109,7 @@ pub async fn start(
         status: DeviceLinkStatus::Pending,
         account_id: None,
         created_at: now,
-        expires_at: now + Duration::hours(DEVICE_LINK_TTL_HOURS),
+        expires_at: now + Duration::minutes(DEVICE_LINK_TTL_MINUTES),
     };
 
     state.device_links.insert(link.clone()).await?;
@@ -216,7 +234,7 @@ async fn claim_session(
 /// `POST /api/v1/auth/device/cancel` — the app is no longer waiting.
 ///
 /// Closing the sign-in pane means the user does not want this link any more, so
-/// it goes now rather than sitting approvable for the rest of its 24 hours.
+/// it goes now rather than sitting approvable for the rest of its lifetime.
 /// Answers `204` whatever it found: like [`poll`], it must not report whether a
 /// given poll token ever named anything.
 pub async fn cancel(

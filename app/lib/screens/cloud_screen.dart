@@ -199,7 +199,7 @@ class _CloudScreenState extends ConsumerState<CloudScreen>
         const SizedBox(height: 8),
         Text(
           cloud.stalled
-              ? 'The page is still valid for 24 hours. Open it again to carry on.'
+              ? 'The page is still valid for about 45 minutes. Open it again to carry on.'
               : 'Sign in there — or create an account — then come back here.',
           textAlign: TextAlign.center,
           style: theme.textTheme.bodyMedium,

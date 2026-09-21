@@ -331,6 +331,10 @@ impl DeviceLinkStore for MemoryDeviceLinkStore {
         links.retain(|_, l| !l.is_expired(now));
         Ok((before - links.len()) as u64)
     }
+
+    async fn count(&self) -> Result<u64, StoreError> {
+        Ok(self.links.lock().unwrap().len() as u64)
+    }
 }
 
 #[async_trait]

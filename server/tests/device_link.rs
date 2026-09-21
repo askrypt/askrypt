@@ -148,8 +148,8 @@ async fn start_link(app: &Router, label: &str) -> (String, String, String) {
         format!("/link/{link_id}")
     );
     assert!(started["interval"].as_u64().unwrap() >= 1);
-    // A full day, so a user who wanders off can still finish.
-    assert_eq!(started["expires_in"].as_i64().unwrap(), 24 * 60 * 60);
+    // Outlasts the apps' 15-minute poll limit, so a stalled wait can resume.
+    assert_eq!(started["expires_in"].as_i64().unwrap(), 60 * 60);
 
     (link_id, poll_token, user_code)
 }
@@ -388,7 +388,7 @@ async fn denying_needs_a_csrf_token() {
 #[tokio::test]
 async fn cancelling_from_the_app_removes_the_link_at_once() {
     // Closing the sign-in pane means the user is done with it: the link must
-    // stop being approvable now, not in 24 hours.
+    // stop being approvable now, not in an hour.
     let state = state();
     let app = app_with(state.clone());
     let (link_id, poll_token, _) = start_link(&app, "laptop").await;
@@ -444,7 +444,7 @@ async fn an_expired_link_approves_nothing() {
     let app = app_with(state.clone());
     let (link_id, poll_token, _) = start_link(&app, "laptop").await;
 
-    // Age it past its expiry, the way a day of waiting would.
+    // Age it past its expiry, the way an hour of waiting would.
     let stored = state
         .device_links
         .get(link_id.parse().unwrap())
@@ -492,7 +492,7 @@ async fn starting_a_link_sweeps_the_ones_nobody_finished() {
             .await
             .unwrap()
             .is_none(),
-        "an abandoned pending link outlived its 24 hours",
+        "an abandoned pending link outlived its hour",
     );
     assert!(
         state
@@ -501,7 +501,7 @@ async fn starting_a_link_sweeps_the_ones_nobody_finished() {
             .await
             .unwrap()
             .is_none(),
-        "an approved link nobody collected outlived its 24 hours",
+        "an approved link nobody collected outlived its hour",
     );
     assert!(
         state
@@ -624,14 +624,14 @@ async fn signed_up(state: &AppState, email: &str) -> Account {
         .unwrap()
 }
 
-/// A link that expired yesterday.
+/// A link that expired a while ago.
 async fn stale_link(
     state: &AppState,
     poll_token: &str,
     approved_by: Option<&Account>,
 ) -> uuid::Uuid {
     let id = uuid::Uuid::new_v4();
-    let created = Utc::now() - Duration::hours(30);
+    let created = Utc::now() - Duration::hours(2);
     state
         .device_links
         .insert(DeviceLink {
@@ -645,7 +645,7 @@ async fn stale_link(
             },
             account_id: approved_by.map(|a| a.id),
             created_at: created,
-            expires_at: created + Duration::hours(24),
+            expires_at: created + Duration::hours(1),
         })
         .await
         .unwrap();
@@ -656,4 +656,64 @@ async fn stale_link(
 #[allow(dead_code)]
 fn _assert_state_is_shareable(state: AppState) -> Arc<dyn DeviceLinkStore> {
     state.device_links
+}
+
+#[tokio::test]
+async fn opening_links_has_a_budget_of_its_own() {
+    // Opening a link is the one unauthenticated request here that leaves a
+    // row behind, so it is limited well below the polling budget.
+    let app = app();
+    for _ in 0..10 {
+        start_link(&app, "laptop").await;
+    }
+    let (status, headers, body) = send(
+        &app,
+        post_json("/api/v1/auth/device", json!({ "device_label": "laptop" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert!(headers.contains_key(header::RETRY_AFTER));
+
+    // Polling is not starved by it.
+    let (status, _, body) = send(
+        &app,
+        post_json(
+            "/api/v1/auth/device/poll",
+            json!({ "poll_token": "nothing" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn a_full_table_refuses_new_links() {
+    let state = state();
+    let app = app_with(state.clone());
+    let now = Utc::now();
+    for i in 0..askrypt_server::devicelink::MAX_LIVE_DEVICE_LINKS {
+        state
+            .device_links
+            .insert(DeviceLink {
+                id: uuid::Uuid::new_v4(),
+                poll_token: format!("flood-{i}"),
+                user_code: "AAAA-BBBB".to_string(),
+                device_label: None,
+                status: DeviceLinkStatus::Pending,
+                account_id: None,
+                created_at: now,
+                expires_at: now + Duration::hours(1),
+            })
+            .await
+            .unwrap();
+    }
+
+    let (status, headers, body) = send(
+        &app,
+        post_json("/api/v1/auth/device", json!({ "device_label": "laptop" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(body.contains("device_links_busy"), "{body}");
+    assert!(headers.contains_key(header::RETRY_AFTER));
 }
