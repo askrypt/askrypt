@@ -30,6 +30,7 @@
   <nav>
     {#- Offered signed-out too: opening a file from the device needs no
         account, and that is the case the page is most useful in. -#}
+    <a href="/#get-askrypt">Get Askrypt</a>
     <a href="/open">Open a vault</a>
 {%- if let Some(email) = chrome.email.as_deref() %}
     <a href="/vaults">Vaults</a>

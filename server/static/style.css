@@ -85,6 +85,7 @@ header nav a:hover { text-decoration: underline; }
    it brightens rather than underlining, since there is no text to underline. */
 .icon-link { display: inline-flex; align-items: center; color: var(--muted); }
 header nav a.icon-link:hover { color: var(--fg); text-decoration: none; }
+.landing-ledger-row a.icon-link:hover { color: var(--fg); }
 
 main {
   flex: 1;
