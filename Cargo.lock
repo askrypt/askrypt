@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "askrypt"
-version = "0.7.2-dev"
+version = "0.8.0"
 dependencies = [
  "askrypt-core",
  "chrono",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "askrypt-core"
-version = "0.7.2-dev"
+version = "0.8.0"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "askrypt-server"
-version = "0.7.2-dev"
+version = "0.8.0"
 dependencies = [
  "argon2",
  "askama",
