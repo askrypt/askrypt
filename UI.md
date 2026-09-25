@@ -83,7 +83,7 @@ is now used for **file pickers only**.
 | `follow.rs` | following the stored vault: the probe, the `decide` policy, `Notice`, the `dialog` for the kinds that pose a choice and the banner for the kinds that only have news. Not a pane, for `link.rs`'s reason — both sit over the working area, whichever pane is showing |
 | `panes/mod.rs` | `Action` — the pane → shell navigation contract |
 | `panes/sidebar.rs` | the nav rail: filters, the vault actions, Quit, Settings |
-| `panes/list.rs`, `panes/detail.rs` | the item split |
+| `panes/list.rs`, `panes/detail.rs` | the item split; `list.rs` also owns the ⋯ menu and selecting mode (`list::State`, `list::Msg`, handled by `App::update_list`) |
 | `panes/entry_editor.rs` | the item draft, drawn in the detail slot |
 | `panes/questions.rs` | the security questions — the only pane that can create a vault. Rows reorder with per-row Move up / Move down (hidden at the ends and while busy); like every edit here, the new order takes effect on Apply (question 1 is the one shown before unlocking and its answer alone derives the first key) |
 | `panes/passgen.rs` | the password generator |
@@ -293,7 +293,29 @@ line and the list pane's empty state.
 **Delete asks.** It used to take two presses — the first armed the button, the
 second committed — which was a confirmation nobody could recognise as one. It is
 now `confirm::Kind::DeleteEntry`, the same dialog everything else asks through,
-and the *only* one of them with no Enter binding: the affirmative deletes.
+and — with its bulk twin below — the only ones with no Enter binding: the
+affirmative deletes.
+
+**Selecting mode** (multi-select). The item list has a header strip: the row
+count on the left (`N selected` while selecting) and a **⋯** button on the
+right that opens a popover menu over the list. A click anywhere else on the
+list, or Escape, closes it; every menu action closes it too.
+
+| Menu item | Enabled when | Does |
+|---|---|---|
+| Selecting mode | always (refused while the editor is open) | toggles the mode; the glyph shows its state |
+| Select all visible | selecting | checks every row the section + search show |
+| Clear selection | selecting, something checked | unchecks everything |
+| Delete *(danger)* | selecting, something checked | asks `confirm::Kind::DeleteEntries` |
+
+These are **shown but disabled** rather than hidden — the one exception to the
+rail's hide-don't-disable rule, so the menu says what selecting mode is for
+before it is on. While selecting, a row click toggles its checkbox instead of
+opening the item, the add button is hidden, and the detail pane shows only
+"N items selected" plus a **Delete N** button — no item, so no secret is on
+screen while picking. Escape leaves selecting mode (after closing the menu).
+A confirmed bulk delete removes the checked rows highest index first, leaves
+selecting mode and marks the vault modified.
 
 ### The confirmation dialog
 
@@ -316,6 +338,7 @@ paints a solid `palette().background`, so the dialog itself is fully themed.
 | `Kind::Quit` | Quit | — | Cancel | Affirm |
 | `Kind::UnsavedChanges` | Save | Don't save | Cancel | Affirm |
 | `Kind::DeleteEntry` | Delete *(danger)* | — | Cancel | — |
+| `Kind::DeleteEntries` | Delete *(danger)* | — | Cancel | — |
 | `follow` `Diverged` | Save mine *(danger)* | Discard mine & reload *(danger)* | Keep editing | — |
 | `follow` `Rekeyed` | Reload and answer again | — | Keep this copy | Affirm |
 
@@ -667,6 +690,15 @@ Three details carry the rest:
    `a_local_vault_is_not_copied_next_to_itself`,
    `a_failed_copy_does_not_fail_the_save` and
    `a_backup_file_name_cannot_escape_the_chosen_directory`.
+13. **Checked rows are always visible rows, and never outlive their indices.**
+   `list::State.checked` indexes `session.entries` like `App.selected`, so a
+   bulk delete must only ever remove what the list shows. →
+   `reconcile_selection` prunes it on every filter/search change
+   (`State::retain_visible`, guarded by
+   `checks_on_rows_the_filter_hides_are_dropped`); `reselect_after_reload`
+   clears it; `clear_secret_panes` resets the whole mode on every lock path;
+   `AddEntry`/`EditEntry` reset it and `ToggleSelecting` is refused while the
+   editor is open, so the editor and selecting mode never coexist.
 
 ---
 

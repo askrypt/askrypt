@@ -15,6 +15,11 @@ use crate::{App, Message, icon, theme};
 const DOTS: &str = "••••••••";
 
 pub fn view(app: &App) -> Element<'_, Message> {
+    // Selecting mode draws no item at all: the user is picking rows, and no
+    // secret needs to be on screen for that.
+    if app.list.selecting {
+        return selection_summary(app.list.checked.len());
+    }
     let Some(index) = app.selected else {
         return empty_pane();
     };
@@ -106,6 +111,39 @@ pub fn view(app: &App) -> Element<'_, Message> {
             toolbar
         ]
         .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(theme::detail_background)
+    .into()
+}
+
+/// What the detail pane shows in selecting mode.
+fn selection_summary<'a>(count: usize) -> Element<'a, Message> {
+    let caption = match count {
+        0 => "Select items in the list".to_string(),
+        1 => "1 item selected".to_string(),
+        n => format!("{n} items selected"),
+    };
+    let mut content = column![text(caption).size(14).style(text::secondary)]
+        .spacing(12)
+        .align_x(iced::alignment::Horizontal::Center);
+    if count > 0 {
+        content = content.push(
+            button(
+                row![icon::trash(14), text(format!("Delete {count}")).size(14)]
+                    .spacing(8)
+                    .align_y(Vertical::Center),
+            )
+            .padding([8, 16])
+            .style(button::danger)
+            .on_press(Message::List(crate::panes::list::Msg::DeleteChecked)),
+        );
+    }
+    container(
+        container(content)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
     )
     .width(Length::Fill)
     .height(Length::Fill)

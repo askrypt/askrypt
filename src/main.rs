@@ -189,6 +189,8 @@ pub enum Message {
     /// message: the banner sits above the working area, over whichever pane
     /// happens to be showing.
     Follow(follow::Msg),
+    /// The item list's ⋯ menu and selecting mode.
+    List(panes::list::Msg),
     Unlock(panes::unlock::Msg),
     Wizard(panes::wizard::Msg),
     /// Signing in to a server through the browser. Not a pane message: the
@@ -288,6 +290,7 @@ pub struct App {
     window_position: Option<[f32; 2]>,
     /// A move or resize is waiting for its `is_maximized` answer.
     probe_window: bool,
+    list: panes::list::State,
     unlock: panes::unlock::State,
     wizard: panes::wizard::State,
     questions: panes::questions::State,
@@ -317,6 +320,7 @@ impl App {
             window_size: window.size,
             window_position: window.position,
             probe_window: false,
+            list: panes::list::State::default(),
             unlock: panes::unlock::State::default(),
             wizard: panes::wizard::State::default(),
             questions: panes::questions::State::default(),
@@ -475,6 +479,10 @@ impl App {
     fn reconcile_selection(&mut self) {
         let visible: Vec<usize> = self.visible().into_iter().map(|(index, _)| index).collect();
 
+        // Checks follow the filter too, so a bulk delete only ever removes
+        // rows the user can see.
+        self.list.retain_visible(&visible);
+
         if self.selected.is_some_and(|index| visible.contains(&index)) {
             return;
         }
@@ -579,6 +587,7 @@ impl App {
         self.pane = pane;
         // Leaving the pane a question was asked over abandons the question.
         self.confirm = None;
+        self.list.menu_open = false;
         if pane == Pane::Items {
             self.reconcile_selection();
         }
@@ -617,6 +626,7 @@ impl App {
         self.cvv_revealed = false;
         self.revealed_fields.clear();
         self.confirm = None;
+        self.list.reset();
     }
 
     // -----------------------------------------------------------------------
@@ -731,11 +741,14 @@ impl App {
                 Action::None
             }
             Message::AddEntry => {
+                // The editor and selecting mode never share the window.
+                self.list.reset();
                 self.editor = Some(panes::entry_editor::State::new());
                 Action::pane_run(Pane::Items, operation::focus_next())
             }
             Message::EditEntry(index) => match self.session.entries().get(index) {
                 Some(entry) => {
+                    self.list.reset();
                     self.editor = Some(panes::entry_editor::State::edit(entry.clone(), index));
                     self.selected = Some(index);
                     Action::pane_run(Pane::Items, operation::focus_next())
@@ -750,6 +763,7 @@ impl App {
                 None => Action::None,
             },
             Message::DeleteEntry(index) => self.delete_entry(index),
+            Message::List(msg) => self.update_list(msg),
             Message::ExtractAttachment(id) => self.extract_attachment(id),
             Message::ExtractTo(id, dest) => match dest {
                 Some(dest) => self.write_attachment(id, dest),
@@ -933,6 +947,93 @@ impl App {
         self.selected = None;
         self.reconcile_selection();
         self.session.success_message = Some(format!("Deleted '{}'", name));
+        Action::None
+    }
+
+    /// The item list's ⋯ menu and selecting mode.
+    fn update_list(&mut self, msg: panes::list::Msg) -> Action {
+        use panes::list::Msg;
+
+        // Every menu action is also the end of the menu.
+        self.list.menu_open = matches!(msg, Msg::ToggleMenu) && !self.list.menu_open;
+
+        match msg {
+            Msg::ToggleMenu | Msg::CloseMenu => {}
+            Msg::ToggleSelecting => {
+                if self.list.selecting {
+                    self.list.reset();
+                    self.reconcile_selection();
+                } else if self.editor.is_some() {
+                    self.session.status_message =
+                        Some("Finish or cancel the open item first".into());
+                } else {
+                    self.list.selecting = true;
+                    self.list.checked.clear();
+                    // The detail pane shows a summary now; nothing revealed
+                    // should be waiting when it comes back.
+                    self.revealed = false;
+                    self.cvv_revealed = false;
+                    self.revealed_fields.clear();
+                }
+            }
+            Msg::ToggleChecked(index) => {
+                if self.list.selecting && !self.list.checked.remove(&index) {
+                    self.list.checked.insert(index);
+                }
+            }
+            Msg::SelectAllVisible => {
+                if self.list.selecting {
+                    let visible: Vec<usize> =
+                        self.visible().into_iter().map(|(index, _)| index).collect();
+                    self.list.checked.extend(visible);
+                }
+            }
+            Msg::ClearChecked => self.list.checked.clear(),
+            Msg::DeleteChecked => return self.delete_checked(),
+        }
+        Action::None
+    }
+
+    /// Ask before removing every checked item. Names are taken now, as in
+    /// [`App::delete_entry`].
+    fn delete_checked(&mut self) -> Action {
+        if !self.list.selecting || self.list.checked.is_empty() {
+            return Action::None;
+        }
+        let entries = self.session.entries();
+        let (indices, names): (Vec<usize>, Vec<String>) = self
+            .list
+            .checked
+            .iter()
+            .filter_map(|&index| entries.get(index).map(|entry| (index, entry.name.clone())))
+            .unzip();
+        if indices.is_empty() {
+            return Action::None;
+        }
+        self.ask(confirm::Kind::DeleteEntries { indices, names })
+    }
+
+    /// The answer was Delete. Highest index first, so no removal shifts one
+    /// still to come.
+    fn remove_entries(&mut self, mut indices: Vec<usize>) -> Action {
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        indices.dedup();
+        let mut removed = 0;
+        if let Some(vault) = self.session.vault.unlocked_mut() {
+            for index in indices {
+                if vault.remove_entry(index) {
+                    removed += 1;
+                }
+            }
+        }
+        self.editor = None;
+        self.list.reset();
+        self.selected = None;
+        self.reconcile_selection();
+        self.session.success_message = Some(match removed {
+            1 => "Deleted 1 item".to_string(),
+            n => format!("Deleted {n} items"),
+        });
         Action::None
     }
 
@@ -1367,6 +1468,8 @@ impl App {
             .and_then(|index| self.session.entries().get(index))
             .map(|entry| (entry.name.clone(), entry.entry_type.clone()));
 
+        // Every index may have moved; a check must not land on another item.
+        self.list.checked.clear();
         self.selected = previous.and_then(|(name, entry_type)| {
             self.session
                 .entries()
@@ -1452,6 +1555,7 @@ impl App {
             // Don't save: go ahead and lose the changes.
             (confirm::Kind::UnsavedChanges(action), Answer::Deny) => self.perform(action),
             (confirm::Kind::DeleteEntry { index, name }, _) => self.remove_entry(index, name),
+            (confirm::Kind::DeleteEntries { indices, .. }, _) => self.remove_entries(indices),
         }
     }
 
@@ -1822,6 +1926,20 @@ impl App {
                     Some(message) => Action::Run(Task::done(message)),
                     None => Action::None,
                 }
+            }
+            // Escape backs out of the list's menu first, then out of
+            // selecting mode.
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(key::Named::Escape),
+                ..
+            }) if self.list.menu_open || self.list.selecting => {
+                if self.list.menu_open {
+                    self.list.menu_open = false;
+                } else {
+                    self.list.reset();
+                    self.reconcile_selection();
+                }
+                Action::None
             }
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(key::Named::Tab),

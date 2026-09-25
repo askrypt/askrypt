@@ -84,6 +84,21 @@ pub fn trash(size: u16) -> Text<'static> {
     glyph('\u{F5DE}', size)
 }
 
+/// `three-dots-vertical` — the item list's menu button.
+pub fn three_dots_vertical(size: u16) -> Text<'static> {
+    glyph('\u{F5D3}', size)
+}
+
+/// `square` — an unchecked row in selecting mode.
+pub fn square(size: u16) -> Text<'static> {
+    glyph('\u{F584}', size)
+}
+
+/// `check-square-fill` — a checked row in selecting mode.
+pub fn check_square_fill(size: u16) -> Text<'static> {
+    glyph('\u{F26C}', size)
+}
+
 pub fn files(size: u16) -> Text<'static> {
     glyph('\u{F3C2}', size)
 }

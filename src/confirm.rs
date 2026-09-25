@@ -68,7 +68,16 @@ pub enum Kind {
     /// is what the dialog says, and re-reading it on the way out would be
     /// re-reading a list the answer is about to change.
     DeleteEntry { index: usize, name: String },
+    /// Removing every item checked in selecting mode. Indices and names are
+    /// captured together when the question is raised, for the same reason.
+    DeleteEntries {
+        indices: Vec<usize>,
+        names: Vec<String>,
+    },
 }
+
+/// How many names the bulk-delete question lists before summarising the rest.
+const NAMES_SHOWN: usize = 5;
 
 impl Kind {
     /// The question, as the user sees it.
@@ -106,8 +115,34 @@ impl Kind {
             )
             .danger("Delete", Message::Confirm(Answer::Affirm))
             .cancel("Cancel", Message::Confirm(Answer::Cancel)),
+
+            // No `on_enter`, as above.
+            Kind::DeleteEntries { names, .. } => {
+                Dialog::new("Delete items", delete_entries_body(names))
+                    .danger("Delete", Message::Confirm(Answer::Affirm))
+                    .cancel("Cancel", Message::Confirm(Answer::Cancel))
+            }
         }
     }
+}
+
+fn delete_entries_body(names: &[String]) -> String {
+    if let [name] = names {
+        return format!(
+            "Delete \u{201c}{name}\u{201d}? This cannot be undone once the vault is saved."
+        );
+    }
+    let mut body = format!(
+        "Delete {} items? This cannot be undone once the vault is saved.\n",
+        names.len()
+    );
+    for name in names.iter().take(NAMES_SHOWN) {
+        body.push_str(&format!("\n\u{2022} {name}"));
+    }
+    if names.len() > NAMES_SHOWN {
+        body.push_str(&format!("\n\u{2026}and {} more", names.len() - NAMES_SHOWN));
+    }
+    body
 }
 
 /// One question, and the buttons that answer it.
