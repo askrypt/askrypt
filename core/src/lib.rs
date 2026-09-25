@@ -504,7 +504,7 @@ impl AskryptFile {
         &self,
         out: W,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let json = serde_json::to_string_pretty(self)?;
+        let json = self.to_json()?;
 
         let mut zip = zip::ZipWriter::new(out);
         let options = SimpleFileOptions::default();
@@ -551,6 +551,15 @@ impl AskryptFile {
         let mut out = zip.finish()?;
         out.flush()?;
         Ok(())
+    }
+
+    /// The `askrypt.json` member exactly as [`write_archive`](Self::write_archive)
+    /// writes it.
+    ///
+    /// Attachments are not in it — they are ZIP members of their own — so this
+    /// text alone is a complete vault only when no entry references a file.
+    pub fn to_json(&self) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(serde_json::to_string_pretty(self)?)
     }
 
     /// Serialize the AskryptFile to an in-memory ZIP archive with internal file
@@ -2362,6 +2371,44 @@ mod tests {
         assert!(archive.by_name("askrypt.json").is_ok());
 
         // Decryption still works on the buffer-loaded file
+        let questions_data = loaded.get_questions_data(answers[0].clone()).unwrap();
+        let decrypted = loaded
+            .decrypt(&questions_data, answers[1..].into())
+            .unwrap();
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_to_json_zipped_alone_is_a_vault() {
+        let questions = vec!["Q1?".to_string(), "Q2?".to_string()];
+        let answers = vec!["one".to_string(), "two".to_string()];
+        let mut entry = SecretEntry::default();
+        entry.name = "example".to_string();
+        entry.secret = "password123".to_string();
+        entry.entry_type = "Login".to_string();
+        let data = vec![entry];
+        let file = AskryptFile::create(
+            questions,
+            answers.clone(),
+            data.clone(),
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .unwrap();
+        let json = file.to_json().unwrap();
+
+        // What someone would do by hand: a one-member ZIP named askrypt.json.
+        let mut bytes = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+            zip.start_file(VAULT_ENTRY, SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(json.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let loaded = AskryptFile::from_bytes(&bytes).unwrap();
         let questions_data = loaded.get_questions_data(answers[0].clone()).unwrap();
         let decrypted = loaded
             .decrypt(&questions_data, answers[1..].into())

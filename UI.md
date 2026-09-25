@@ -306,16 +306,31 @@ list, or Escape, closes it; every menu action closes it too.
 | Selecting mode | always (refused while the editor is open) | toggles the mode; the glyph shows its state |
 | Select all visible | selecting | checks every row the section + search show |
 | Clear selection | selecting, something checked | unchecks everything |
+| Copy *(Ctrl+C)* | selecting with something checked, or — outside selecting mode — an item open and the editor closed | puts the checked items (or the open one) on the clipboard as a complete `askrypt.json` |
 | Delete *(danger)* | selecting, something checked | asks `confirm::Kind::DeleteEntries` |
 
 These are **shown but disabled** rather than hidden — the one exception to the
 rail's hide-don't-disable rule, so the menu says what selecting mode is for
 before it is on. While selecting, a row click toggles its checkbox instead of
 opening the item, the add button is hidden, and the detail pane shows only
-"N items selected" plus a **Delete N** button — no item, so no secret is on
-screen while picking. Escape leaves selecting mode (after closing the menu).
+"N items selected" plus **Copy N** and **Delete N** buttons — no item, so no
+secret is on screen while picking. Escape leaves selecting mode (after closing
+the menu).
 A confirmed bulk delete removes the checked rows highest index first, leaves
 selecting mode and marks the vault modified.
+
+**Copy** (menu, detail button, or Ctrl+C on the item section) takes the
+checked items while selecting, else the open item (never while the editor is
+open — its fields own Ctrl+C); `App::copy_targets` is the rule. It encrypts them on a worker
+(`manager::CopyInputs`, spinner "Copying…") under the vault's own questions and
+answers with a fresh master key, and writes the resulting `askrypt.json` text
+to the clipboard: zipped alone and renamed `.askrypt` it opens as a vault.
+The status line says *Copied N items to clipboard*. Attached files cannot
+travel in the JSON, so their references are dropped (the entries still come)
+and a one-button warning dialog, `confirm::Kind::FilesSkipped`, lists them
+(first ten, then "…and N more"; OK, Enter and Escape all dismiss it). No
+clear-clipboard timer — it is ciphertext meant to be pasted. Selecting mode
+stays on.
 
 ### The confirmation dialog
 

@@ -524,6 +524,34 @@ impl Vault<Unlocked> {
         }
     }
 
+    /// Collect what the worker needs to build a stand-alone copy of the
+    /// entries at `indices`, plus the names of the files that cannot come along.
+    ///
+    /// The copy is an `askrypt.json` and nothing else, so an attachment's blob
+    /// — a ZIP member of its own — has nowhere to go; its reference is dropped
+    /// rather than left dangling. The entry itself still comes (a `File` item
+    /// keeps its name and notes). Indices that no longer exist are skipped.
+    pub fn copy_inputs(&self, indices: &[usize]) -> (CopyInputs, Vec<String>) {
+        let mut skipped = Vec::new();
+        let entries = indices
+            .iter()
+            .filter_map(|&index| self.state.entries.get(index))
+            .map(|entry| {
+                let mut entry = entry.clone();
+                skipped.extend(entry.attachments.drain(..).map(|a| a.name.clone()));
+                entry
+            })
+            .collect();
+        let inputs = CopyInputs {
+            questions: self.questions(),
+            answers: self.answers(),
+            entries,
+            iterations: self.iterations(),
+            translit: self.translit(),
+        };
+        (inputs, skipped)
+    }
+
     /// Where a plain "Save" writes. `None` means this vault has never been
     /// persisted, so Save has to become Save As.
     pub fn save_target(&self) -> Option<VaultHome> {
@@ -1455,6 +1483,46 @@ impl Drop for SaveRequest {
         self.answers.zeroize();
         // `entries` are `SecretEntry` and `master` is a `MasterSecret`, both of
         // which wipe themselves on drop.
+    }
+}
+
+/// What a worker needs to turn some entries into a stand-alone `askrypt.json`.
+///
+/// Same questions, answers and KDF settings as the open vault, so the copy
+/// opens with what the user already knows — but under a **fresh** master key:
+/// the copy carries no attachments that would need the old one, and it leaves
+/// the app, so it must not share a key with the vault it came from.
+pub struct CopyInputs {
+    pub questions: Vec<String>,
+    pub answers: Vec<String>,
+    /// Already stripped of attachment references.
+    pub entries: Vec<SecretEntry>,
+    pub iterations: u32,
+    pub translit: bool,
+}
+
+impl Drop for CopyInputs {
+    fn drop(&mut self) {
+        self.answers.zeroize();
+    }
+}
+
+impl CopyInputs {
+    /// **Worker-thread only.** Answers the `askrypt.json` text: zipped on its
+    /// own as `askrypt.json`, it is a complete vault.
+    pub fn run(mut self) -> Result<String, String> {
+        let file = AskryptFile::create(
+            std::mem::take(&mut self.questions),
+            std::mem::take(&mut self.answers),
+            std::mem::take(&mut self.entries),
+            Some(self.iterations),
+            self.translit,
+            None,
+            &Attachments::new(),
+        )
+        .map_err(|e| format!("Could not encrypt the copy: {e}"))?;
+        file.to_json()
+            .map_err(|e| format!("Could not encode the copy: {e}"))
     }
 }
 
@@ -2894,5 +2962,35 @@ mod tests {
         // must reject it — the entries would silently describe another file.
         assert!(!state.apply_refreshed(file));
         assert!(state.is_unlocked());
+    }
+
+    #[test]
+    fn a_copy_drops_files_and_opens_with_the_same_answers() {
+        let mut files = entry("Scans");
+        files.entry_type = "File".to_string();
+        for name in ["a.pdf", "b.png"] {
+            files.attachments.push(Attachment {
+                name: name.to_string(),
+                ..Default::default()
+            });
+        }
+        let mut vault = VaultState::default();
+        vault.adopt_built(build_new(vec![entry("GitHub"), files, entry("Other")]));
+
+        let (inputs, skipped) = vault.unlocked().unwrap().copy_inputs(&[1, 0, 9]);
+        assert_eq!(skipped, vec!["a.pdf".to_string(), "b.png".to_string()]);
+        let json = inputs.run().expect("the copy should build");
+
+        let copy: AskryptFile = serde_json::from_str(&json).expect("valid askrypt.json");
+        assert_eq!(copy.version, "0.9");
+        let questions_data = copy.get_questions_data("Rex".to_string()).unwrap();
+        let entries = copy
+            .decrypt(&questions_data, vec!["Baker Street".to_string()])
+            .expect("the vault's answers open the copy");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Scans", "GitHub"]);
+        assert!(entries.iter().all(|e| e.attachments.is_empty()));
+        // The source vault keeps its references.
+        assert_eq!(vault.unlocked().unwrap().entries()[1].attachments.len(), 2);
     }
 }

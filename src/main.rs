@@ -221,6 +221,13 @@ pub enum GlobalMsg {
     QuitRequested,
     ExitApp,
     SmartLockCreated(Result<SmartLocked, String>),
+    /// Selected items encrypted for the clipboard: the `askrypt.json` text,
+    /// how many items it holds, and the attached files left out.
+    EntriesCopied {
+        result: Result<String, String>,
+        count: usize,
+        skipped: Vec<String>,
+    },
     /// Boxed: a `SavedVault` carries the whole re-encrypted file and would
     /// otherwise set the size of every `GlobalMsg` this app passes around.
     Saved(Box<Result<SavedVault, VaultError>>),
@@ -989,9 +996,61 @@ impl App {
                 }
             }
             Msg::ClearChecked => self.list.checked.clear(),
+            Msg::Copy => return self.copy_items(),
             Msg::DeleteChecked => return self.delete_checked(),
         }
         Action::None
+    }
+
+    /// What Copy (menu, detail button, Ctrl+C) would take: the checked items
+    /// while selecting, otherwise the open item — never while the editor is
+    /// open, whose fields own Ctrl+C. `None` when there is nothing to copy.
+    pub fn copy_targets(&self) -> Option<Vec<usize>> {
+        let targets: Vec<usize> = if self.list.selecting {
+            self.list.checked.iter().copied().collect()
+        } else if self.editor.is_none() {
+            self.selected.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        (!targets.is_empty() && self.session.vault.is_unlocked()).then_some(targets)
+    }
+
+    /// Encrypt [`App::copy_targets`] into a stand-alone `askrypt.json` (on a
+    /// worker — it is two PBKDF2 passes) for the clipboard. Attached files
+    /// cannot come along; their names ride with the task for the warning.
+    fn copy_items(&mut self) -> Action {
+        if self.session.busy {
+            return Action::None;
+        }
+        let Some(indices) = self.copy_targets() else {
+            return Action::None;
+        };
+        let Some(vault) = self.session.vault.unlocked() else {
+            return Action::None;
+        };
+        let (inputs, skipped) = vault.copy_inputs(&indices);
+        let count = inputs.entries.len();
+        if count == 0 {
+            return Action::None;
+        }
+
+        self.session.clear_messages();
+        self.session.begin_work("Copying…");
+        Action::Run(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || inputs.run())
+                    .await
+                    .expect("copy task panicked")
+            },
+            move |result| {
+                Message::Global(GlobalMsg::EntriesCopied {
+                    result,
+                    count,
+                    skipped,
+                })
+            },
+        ))
     }
 
     /// Ask before removing every checked item. Names are taken now, as in
@@ -1556,6 +1615,8 @@ impl App {
             (confirm::Kind::UnsavedChanges(action), Answer::Deny) => self.perform(action),
             (confirm::Kind::DeleteEntry { index, name }, _) => self.remove_entry(index, name),
             (confirm::Kind::DeleteEntries { indices, .. }, _) => self.remove_entries(indices),
+            // Its only button answers Cancel; nothing to do either way.
+            (confirm::Kind::FilesSkipped { .. }, _) => Action::None,
         }
     }
 
@@ -1756,6 +1817,36 @@ impl App {
                     }
                 }
             }
+            GlobalMsg::EntriesCopied {
+                result,
+                count,
+                skipped,
+            } => {
+                self.session.finish_work();
+                match result {
+                    // Ciphertext under the vault's answers, and meant to be
+                    // pasted somewhere — so no clear-clipboard timer.
+                    Ok(json) => {
+                        self.session.success_message = Some(match count {
+                            1 => "Copied 1 item to clipboard".to_string(),
+                            n => format!("Copied {n} items to clipboard"),
+                        });
+                        let write = iced::clipboard::write(json);
+                        if skipped.is_empty() {
+                            return Action::Run(write);
+                        }
+                        // A warning the user has to acknowledge, not a status
+                        // line the next message would overwrite. Same raising
+                        // as `ask`, batched with the clipboard write.
+                        self.confirm = Some(confirm::Kind::FilesSkipped { names: skipped });
+                        Action::Run(Task::batch([write, operation::focus(confirm::NO_FOCUS)]))
+                    }
+                    Err(e) => {
+                        self.session.error_message = Some(e);
+                        Action::None
+                    }
+                }
+            }
             GlobalMsg::Saved(result) => {
                 self.session.finish_work();
                 match *result {
@@ -1953,7 +2044,13 @@ impl App {
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 let on_items = self.effective_pane() == Pane::Items;
 
-                if modifiers.control() && key.as_ref() == keyboard::Key::Character("s") {
+                if modifiers.control()
+                    && key.as_ref() == keyboard::Key::Character("c")
+                    && on_items
+                    && self.copy_targets().is_some()
+                {
+                    self.copy_items()
+                } else if modifiers.control() && key.as_ref() == keyboard::Key::Character("s") {
                     if self.session.vault.can_save() {
                         self.session.clear_messages();
                         return self.save_now();

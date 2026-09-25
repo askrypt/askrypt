@@ -57,6 +57,9 @@ pub enum Msg {
     ToggleChecked(usize),
     SelectAllVisible,
     ClearChecked,
+    /// Put the checked items — or, outside selecting mode, the open one — on
+    /// the clipboard as an `askrypt.json`.
+    Copy,
     /// Ask, then delete every checked item.
     DeleteChecked,
 }
@@ -142,7 +145,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             content,
             mouse_area(container(space()).width(Length::Fill).height(Length::Fill))
                 .on_press(Message::List(Msg::CloseMenu)),
-            container(opaque(menu(state)))
+            container(opaque(menu(state, app.copy_targets().is_some())))
                 .width(Length::Fill)
                 .align_x(Horizontal::Right)
                 .padding(iced::Padding {
@@ -166,7 +169,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
 /// The ⋯ popover. The bulk actions are shown but inert until they can act, so
 /// the user can see what selecting mode is for before turning it on.
-fn menu(state: &State) -> Element<'_, Message> {
+fn menu(state: &State, can_copy: bool) -> Element<'_, Message> {
     let any = !state.checked.is_empty();
     let selecting = state.selecting;
 
@@ -178,6 +181,7 @@ fn menu(state: &State) -> Element<'_, Message> {
         },
         "Selecting mode",
         Some(Msg::ToggleSelecting),
+        None,
         false,
     );
 
@@ -189,18 +193,28 @@ fn menu(state: &State) -> Element<'_, Message> {
                 icon::check_square_fill(14),
                 "Select all visible",
                 selecting.then_some(Msg::SelectAllVisible),
+                None,
                 false,
             ),
             menu_item(
                 icon::square(14),
                 "Clear selection",
                 (selecting && any).then_some(Msg::ClearChecked),
+                None,
+                false,
+            ),
+            menu_item(
+                icon::copy(14),
+                "Copy",
+                can_copy.then_some(Msg::Copy),
+                Some("Ctrl+C"),
                 false,
             ),
             menu_item(
                 icon::trash(14),
                 "Delete",
                 (selecting && any).then_some(Msg::DeleteChecked),
+                None,
                 true,
             ),
         ]
@@ -215,31 +229,36 @@ fn menu_item<'a>(
     glyph: Text<'a>,
     label: &'a str,
     msg: Option<Msg>,
+    shortcut: Option<&'a str>,
     danger: bool,
 ) -> Element<'a, Message> {
-    button(
-        row![
-            container(glyph).width(Length::Fixed(theme::ITEM_ICON_WIDTH)),
-            text(label).size(13),
-        ]
-        .spacing(8)
-        .align_y(Vertical::Center),
-    )
-    .width(Length::Fill)
-    .padding([6, 8])
-    .style(move |t: &Theme, status| {
-        let base = button::subtle(t, status);
-        if danger && status != button::Status::Disabled {
-            button::Style {
-                text_color: t.palette().danger,
-                ..base
+    let mut content = row![
+        container(glyph).width(Length::Fixed(theme::ITEM_ICON_WIDTH)),
+        text(label).size(13),
+    ]
+    .spacing(8)
+    .align_y(Vertical::Center);
+    if let Some(shortcut) = shortcut {
+        content = content
+            .push(space().width(Length::Fill))
+            .push(text(shortcut).size(11).style(text::secondary));
+    }
+    button(content)
+        .width(Length::Fill)
+        .padding([6, 8])
+        .style(move |t: &Theme, status| {
+            let base = button::subtle(t, status);
+            if danger && status != button::Status::Disabled {
+                button::Style {
+                    text_color: t.palette().danger,
+                    ..base
+                }
+            } else {
+                base
             }
-        } else {
-            base
-        }
-    })
-    .on_press_maybe(msg.map(Message::List))
-    .into()
+        })
+        .on_press_maybe(msg.map(Message::List))
+        .into()
 }
 
 /// How a row marks itself: the accent bar of the open item, or a checkbox.

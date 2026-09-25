@@ -74,10 +74,15 @@ pub enum Kind {
         indices: Vec<usize>,
         names: Vec<String>,
     },
+    /// Not a question: a copy went to the clipboard without these attached
+    /// files. One button, so every answer — OK, Escape, Enter — is Cancel.
+    FilesSkipped { names: Vec<String> },
 }
 
 /// How many names the bulk-delete question lists before summarising the rest.
 const NAMES_SHOWN: usize = 5;
+/// The same for the skipped-files warning, which has nothing else to say.
+const FILE_NAMES_SHOWN: usize = 10;
 
 impl Kind {
     /// The question, as the user sees it.
@@ -122,7 +127,32 @@ impl Kind {
                     .danger("Delete", Message::Confirm(Answer::Affirm))
                     .cancel("Cancel", Message::Confirm(Answer::Cancel))
             }
+
+            Kind::FilesSkipped { names } => {
+                Dialog::new("Files not copied", files_skipped_body(names))
+                    .cancel("OK", Message::Confirm(Answer::Cancel))
+                    .on_enter(Message::Confirm(Answer::Cancel))
+            }
         }
+    }
+}
+
+fn files_skipped_body(names: &[String]) -> String {
+    let mut body = match names.len() {
+        1 => "Attached files are not copied. This file was skipped:\n".to_string(),
+        n => format!("Attached files are not copied. These {n} files were skipped:\n"),
+    };
+    push_names(&mut body, names, FILE_NAMES_SHOWN);
+    body
+}
+
+/// A bullet per name, the first `shown` of them, then how many more.
+fn push_names(body: &mut String, names: &[String], shown: usize) {
+    for name in names.iter().take(shown) {
+        body.push_str(&format!("\n\u{2022} {name}"));
+    }
+    if names.len() > shown {
+        body.push_str(&format!("\n\u{2026}and {} more", names.len() - shown));
     }
 }
 
@@ -136,12 +166,7 @@ fn delete_entries_body(names: &[String]) -> String {
         "Delete {} items? This cannot be undone once the vault is saved.\n",
         names.len()
     );
-    for name in names.iter().take(NAMES_SHOWN) {
-        body.push_str(&format!("\n\u{2022} {name}"));
-    }
-    if names.len() > NAMES_SHOWN {
-        body.push_str(&format!("\n\u{2026}and {} more", names.len() - NAMES_SHOWN));
-    }
+    push_names(&mut body, names, NAMES_SHOWN);
     body
 }
 
@@ -245,8 +270,9 @@ pub fn overlay<'a>(base: Element<'a, Message>, dialog: Dialog) -> Element<'a, Me
     let last = buttons.len().saturating_sub(1);
     for (i, (label, danger, message)) in buttons.into_iter().enumerate() {
         let styled = button(text(label).size(14)).padding([8, 16]);
-        // The cancel is always last, and always the quiet one.
-        let styled = if i == last {
+        // The cancel is always last, and always the quiet one — unless it is
+        // the only button (an acknowledgement), which then looks primary.
+        let styled = if i == last && last > 0 {
             styled.style(button::secondary)
         } else if danger {
             styled.style(button::danger)
@@ -274,4 +300,23 @@ pub fn overlay<'a>(base: Element<'a, Message>, dialog: Dialog) -> Element<'a, Me
         opaque(mouse_area(center(opaque(card)).style(theme::modal_scrim)).on_press(escape)),
     ]
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::files_skipped_body;
+
+    #[test]
+    fn the_skipped_files_warning_lists_names_then_counts_the_rest() {
+        let names: Vec<String> = (1..=12).map(|i| format!("f{i}.pdf")).collect();
+        let one = files_skipped_body(&names[..1]);
+        assert!(one.contains("This file was skipped"));
+        assert!(one.ends_with("\u{2022} f1.pdf"));
+
+        let many = files_skipped_body(&names);
+        assert!(many.contains("These 12 files were skipped"));
+        assert!(many.contains("\u{2022} f10.pdf"));
+        assert!(!many.contains("f11.pdf"));
+        assert!(many.ends_with("\u{2026}and 2 more"));
+    }
 }

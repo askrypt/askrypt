@@ -129,16 +129,23 @@ fn selection_summary<'a>(count: usize) -> Element<'a, Message> {
         .spacing(12)
         .align_x(iced::alignment::Horizontal::Center);
     if count > 0 {
-        content = content.push(
-            button(
-                row![icon::trash(14), text(format!("Delete {count}")).size(14)]
-                    .spacing(8)
-                    .align_y(Vertical::Center),
-            )
-            .padding([8, 16])
-            .style(button::danger)
-            .on_press(Message::List(crate::panes::list::Msg::DeleteChecked)),
-        );
+        let copy = button(
+            row![icon::copy(14), text(format!("Copy {count}")).size(14)]
+                .spacing(8)
+                .align_y(Vertical::Center),
+        )
+        .padding([8, 16])
+        .style(button::secondary)
+        .on_press(Message::List(crate::panes::list::Msg::Copy));
+        let delete = button(
+            row![icon::trash(14), text(format!("Delete {count}")).size(14)]
+                .spacing(8)
+                .align_y(Vertical::Center),
+        )
+        .padding([8, 16])
+        .style(button::danger)
+        .on_press(Message::List(crate::panes::list::Msg::DeleteChecked));
+        content = content.push(row![copy, delete].spacing(8));
     }
     container(
         container(content)
