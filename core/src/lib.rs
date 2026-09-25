@@ -654,12 +654,20 @@ impl AskryptFile {
                 &mut std::io::Read::take(askrypt_json, MAX_JSON_BYTES + 1),
                 &mut json,
             )?;
-            if json.len() as u64 > MAX_JSON_BYTES {
-                return Err("The vault's metadata is implausibly large".into());
-            }
         }
+        Self::from_json(&json)
+    }
 
-        let askrypt_file: AskryptFile = serde_json::from_str(&json)?;
+    /// Parse and validate `askrypt.json` text on its own — the inverse of
+    /// [`to_json`](Self::to_json), and what a pasted copy of some entries is.
+    ///
+    /// The same size cap and version check as reading it out of an archive.
+    /// Attachments are left empty: blobs never travel in this text.
+    pub fn from_json(json: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        if json.len() as u64 > MAX_JSON_BYTES {
+            return Err("The vault's metadata is implausibly large".into());
+        }
+        let askrypt_file: AskryptFile = serde_json::from_str(json)?;
         // TODO: Support multiple versions in future
         if askrypt_file.version != "0.9" {
             return Err(
@@ -2414,6 +2422,30 @@ mod tests {
             .decrypt(&questions_data, answers[1..].into())
             .unwrap();
         assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_from_json_reads_to_json_and_checks_the_version() {
+        let file = AskryptFile::create(
+            vec!["Q1?".to_string(), "Q2?".to_string()],
+            vec!["one".to_string(), "two".to_string()],
+            Vec::new(),
+            Some(6000),
+            false,
+            None,
+            &Attachments::new(),
+        )
+        .unwrap();
+        let json = file.to_json().unwrap();
+        let back = AskryptFile::from_json(&json).unwrap();
+        assert_eq!(back.question0, "Q1?");
+        assert_eq!(back.data, file.data);
+
+        let other = json.replace("\"0.9\"", "\"1.0\"");
+        assert!(AskryptFile::from_json(&other).is_err());
+        assert!(AskryptFile::from_json("not json").is_err());
+        let huge = " ".repeat(MAX_JSON_BYTES as usize + 1);
+        assert!(AskryptFile::from_json(&huge).is_err());
     }
 
     #[test]

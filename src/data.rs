@@ -79,6 +79,23 @@ pub fn normalize_types(entries: &mut [SecretEntry]) {
     }
 }
 
+/// The name a pasted entry takes: its own when `taken` says it is free, else
+/// `Name (copy)`, then `Name (copy 2)`, `Name (copy 3)`… Compared exactly —
+/// `taken` decides what counts as a clash.
+pub fn copy_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(name) {
+        return name.to_string();
+    }
+    let first = format!("{name} (copy)");
+    if !taken(&first) {
+        return first;
+    }
+    (2..)
+        .map(|n| format!("{name} (copy {n})"))
+        .find(|candidate| !taken(candidate))
+        .expect("an unbounded range finds a free name")
+}
+
 /// Whether an entry should be drawn with the card fields rather than the login
 /// ones.
 ///
@@ -324,6 +341,17 @@ mod tests {
             custom_fields: Vec::new(),
             card: Default::default(),
         }
+    }
+
+    #[test]
+    fn copy_name_counts_up_past_taken_names() {
+        let taken = ["GitHub", "GitHub (copy)", "GitHub (copy 2)"];
+        let is_taken = |name: &str| taken.contains(&name);
+        assert_eq!(copy_name("Other", is_taken), "Other");
+        assert_eq!(copy_name("GitHub", is_taken), "GitHub (copy 3)");
+        assert_eq!(copy_name("GitHub", |n| n == "GitHub"), "GitHub (copy)");
+        // Exact comparison: a different case is a different name.
+        assert_eq!(copy_name("github", is_taken), "github");
     }
 
     fn card(name: &str) -> SecretEntry {

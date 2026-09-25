@@ -552,6 +552,47 @@ impl Vault<Unlocked> {
         (inputs, skipped)
     }
 
+    /// Prepare to decrypt a pasted `askrypt.json` with the answers this vault
+    /// already holds (see [`PasteInputs::run`]).
+    ///
+    /// Clipboard text is untrusted: an iteration count past
+    /// [`MAX_PASTE_ITERATIONS`] would pin a worker for as long as it liked, so
+    /// it is refused here, before any derivation.
+    pub fn paste_inputs(&self, file: AskryptFile) -> Result<PasteInputs, String> {
+        check_paste_iterations(&file)?;
+        Ok(PasteInputs {
+            file,
+            questions: self.questions(),
+            answers: Zeroizing::new(self.answers()),
+        })
+    }
+
+    /// Append decrypted pasted entries, returning how many were renamed.
+    ///
+    /// Types fold to their canonical spelling as on unlock, and attachment
+    /// references are dropped: no blob travels in the JSON, and a dangling
+    /// reference would keep this vault's master key from rotating for nothing.
+    /// A name already taken — by an existing entry or by one pasted earlier in
+    /// the same batch — becomes `Name (copy)`, `Name (copy 2)`, …
+    pub fn paste_entries(&mut self, mut entries: Vec<SecretEntry>) -> usize {
+        data::normalize_types(&mut entries);
+        let mut renamed = 0;
+        for mut entry in entries {
+            entry.attachments.clear();
+            let entries = &self.state.entries;
+            let name = data::copy_name(&entry.name, |candidate| {
+                entries.iter().any(|existing| existing.name == candidate)
+            });
+            if name != entry.name {
+                entry.name = name;
+                renamed += 1;
+            }
+            self.state.entries.push(entry);
+            self.state.modified = true;
+        }
+        renamed
+    }
+
     /// Where a plain "Save" writes. `None` means this vault has never been
     /// persisted, so Save has to become Save As.
     pub fn save_target(&self) -> Option<VaultHome> {
@@ -1523,6 +1564,157 @@ impl CopyInputs {
         .map_err(|e| format!("Could not encrypt the copy: {e}"))?;
         file.to_json()
             .map_err(|e| format!("Could not encode the copy: {e}"))
+    }
+}
+
+/// The highest `params.iterations` a pasted copy may ask for — the browser
+/// port's ceiling. A vault's own is 600,000.
+pub const MAX_PASTE_ITERATIONS: u32 = 5_000_000;
+
+fn check_paste_iterations(file: &AskryptFile) -> Result<(), String> {
+    if file.params.iterations > MAX_PASTE_ITERATIONS {
+        return Err("The copied items ask for an implausible amount of key derivation".to_string());
+    }
+    Ok(())
+}
+
+/// Questions are human text typed twice: compare them the way a person would
+/// read them, ignoring case and surrounding whitespace.
+fn same_question(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// What a worker needs to try opening a pasted copy with the answers the open
+/// vault already holds.
+pub struct PasteInputs {
+    file: AskryptFile,
+    /// Every question of the open vault, first included.
+    questions: Vec<String>,
+    /// Aligned with `questions`.
+    answers: Zeroizing<Vec<String>>,
+}
+
+impl PasteInputs {
+    /// **Worker-thread only.** Tries the known answers, question by question:
+    /// the pasted file's first question is looked up first — it is the only one
+    /// in the clear — and its answer reveals the rest, each of which must then
+    /// be known too. Anything short of that, or answers that turn out wrong for
+    /// the copy, is [`PasteOutcome::NeedAnswers`]: the user answers every
+    /// question of the copy. No derivation is spent when the first question is
+    /// unknown.
+    pub fn run(self) -> Result<PasteOutcome, String> {
+        let known = |question: &str| {
+            self.questions
+                .iter()
+                .position(|q| same_question(q, question))
+                .map(|index| self.answers[index].clone())
+        };
+        let Some(answer0) = known(&self.file.question0) else {
+            return Ok(PasteOutcome::NeedAnswers(Box::new(self.file)));
+        };
+        let Ok(questions_data) = self.file.get_questions_data(answer0) else {
+            return Ok(PasteOutcome::NeedAnswers(Box::new(self.file)));
+        };
+        let rest: Option<Vec<String>> = questions_data
+            .questions
+            .iter()
+            .map(|question| known(question))
+            .collect();
+        let Some(rest) = rest.map(Zeroizing::new) else {
+            return Ok(PasteOutcome::NeedAnswers(Box::new(self.file)));
+        };
+        match self.file.decrypt(&questions_data, rest.to_vec()) {
+            Ok(entries) => Ok(PasteOutcome::Pasted(entries)),
+            Err(_) => Ok(PasteOutcome::NeedAnswers(Box::new(self.file))),
+        }
+    }
+}
+
+/// How trying the known answers on a pasted copy went.
+#[derive(Clone)]
+pub enum PasteOutcome {
+    /// Decrypted; ready for [`Vault::<Unlocked>::paste_entries`].
+    Pasted(Vec<SecretEntry>),
+    /// The copy has questions this vault does not know, or other answers: the
+    /// user has to answer them. The file is ciphertext.
+    NeedAnswers(Box<AskryptFile>),
+}
+
+// Rides in a `Message`; must not print the entries (see `Decrypted`).
+impl std::fmt::Debug for PasteOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PasteOutcome::Pasted(entries) => {
+                write!(f, "Pasted(<{} redacted>)", entries.len())
+            }
+            PasteOutcome::NeedAnswers(_) => f.write_str("NeedAnswers(..)"),
+        }
+    }
+}
+
+/// The first answer the user typed for a pasted copy: one derivation that
+/// reveals the copy's remaining questions.
+pub struct PasteRevealInputs {
+    file: AskryptFile,
+    answer0: Zeroizing<String>,
+}
+
+impl PasteRevealInputs {
+    pub fn new(file: AskryptFile, answer0: String) -> Result<Self, String> {
+        check_paste_iterations(&file)?;
+        Ok(PasteRevealInputs {
+            file,
+            answer0: Zeroizing::new(answer0),
+        })
+    }
+
+    /// **Worker-thread only.**
+    pub fn run(self) -> Result<QuestionsData, String> {
+        self.file
+            .get_questions_data(self.answer0.to_string())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Every answer the user typed for a pasted copy, the first one excluded (it
+/// already revealed `questions_data`): decrypts the copy's entries.
+pub struct PasteDecryptInputs {
+    file: AskryptFile,
+    questions_data: QuestionsData,
+    answers: Zeroizing<Vec<String>>,
+}
+
+impl PasteDecryptInputs {
+    pub fn new(
+        file: AskryptFile,
+        questions_data: QuestionsData,
+        answers: Vec<String>,
+    ) -> Result<Self, String> {
+        check_paste_iterations(&file)?;
+        Ok(PasteDecryptInputs {
+            file,
+            questions_data,
+            answers: Zeroizing::new(answers),
+        })
+    }
+
+    /// **Worker-thread only.**
+    pub fn run(self) -> Result<PastedEntries, String> {
+        self.file
+            .decrypt(&self.questions_data, self.answers.to_vec())
+            .map(PastedEntries)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Entries decrypted from a pasted copy by answers the user typed. A newtype
+/// only for its redacting `Debug` — it rides in a `Message`.
+#[derive(Clone)]
+pub struct PastedEntries(pub Vec<SecretEntry>);
+
+impl std::fmt::Debug for PastedEntries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PastedEntries(<{} redacted>)", self.0.len())
     }
 }
 
@@ -2962,6 +3154,157 @@ mod tests {
         // must reject it — the entries would silently describe another file.
         assert!(!state.apply_refreshed(file));
         assert!(state.is_unlocked());
+    }
+
+    /// A copy of `entries` under `questions`/`answers`, as Copy would put it
+    /// on the clipboard.
+    fn clipboard_copy(
+        questions: Vec<String>,
+        answers: Vec<String>,
+        entries: Vec<SecretEntry>,
+    ) -> AskryptFile {
+        let json = CopyInputs {
+            questions,
+            answers,
+            entries,
+            iterations: ITERATIONS,
+            translit: false,
+        }
+        .run()
+        .expect("the copy should build");
+        AskryptFile::from_json(&json).expect("the copy should parse")
+    }
+
+    fn pasted(outcome: PasteOutcome) -> Vec<SecretEntry> {
+        match outcome {
+            PasteOutcome::Pasted(entries) => entries,
+            PasteOutcome::NeedAnswers(_) => panic!("the known answers should open the copy"),
+        }
+    }
+
+    fn needs_answers(outcome: PasteOutcome) -> bool {
+        matches!(outcome, PasteOutcome::NeedAnswers(_))
+    }
+
+    #[test]
+    fn a_paste_with_the_same_questions_opens_silently_and_renames_clashes() {
+        let mut vault = VaultState::default();
+        vault.adopt_built(build_new(vec![entry("GitHub"), entry("GitHub (copy)")]));
+        let mut files = entry("Scans");
+        files.attachments.push(Attachment {
+            name: "a.pdf".to_string(),
+            ..Default::default()
+        });
+        let mut legacy = entry("GitHub");
+        legacy.entry_type = "password".to_string();
+        // Different order, case and spacing: still the same questions.
+        let copy = clipboard_copy(
+            vec![" FIRST STREET? ".to_string(), "first pet?".to_string()],
+            vec!["Baker Street".to_string(), "Rex".to_string()],
+            vec![legacy, entry("GitHub"), files],
+        );
+
+        let unlocked = vault.unlocked_mut().unwrap();
+        let entries = pasted(unlocked.paste_inputs(copy).unwrap().run().unwrap());
+        let renamed = unlocked.paste_entries(entries);
+
+        assert_eq!(renamed, 2);
+        assert!(unlocked.is_modified());
+        let names: Vec<&str> = unlocked.entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "GitHub",
+                "GitHub (copy)",
+                "GitHub (copy 2)",
+                "GitHub (copy 3)",
+                "Scans"
+            ]
+        );
+        assert_eq!(unlocked.entries()[2].entry_type, "Login");
+        assert!(unlocked.entries()[4].attachments.is_empty());
+    }
+
+    #[test]
+    fn a_paste_asks_when_a_question_is_unknown_or_an_answer_differs() {
+        let mut vault = VaultState::default();
+        vault.adopt_built(build_new(vec![entry("GitHub")]));
+        let unlocked = vault.unlocked().unwrap();
+        let try_known = |questions: [&str; 2], answers: [&str; 2]| {
+            let copy = clipboard_copy(
+                questions.map(str::to_string).to_vec(),
+                answers.map(str::to_string).to_vec(),
+                vec![entry("Other")],
+            );
+            unlocked.paste_inputs(copy).unwrap().run().unwrap()
+        };
+
+        // The first question is unknown.
+        assert!(needs_answers(try_known(
+            ["Mother's name?", "First pet?"],
+            ["Ann", "Rex"]
+        )));
+        // The first is known, a later one is not.
+        assert!(needs_answers(try_known(
+            ["First pet?", "Favourite film?"],
+            ["Rex", "Heat"]
+        )));
+        // Same questions, other answers.
+        assert!(needs_answers(try_known(
+            ["First pet?", "First street?"],
+            ["Rex", "Elm"]
+        )));
+        assert!(needs_answers(try_known(
+            ["First pet?", "First street?"],
+            ["Max", "Baker Street"]
+        )));
+    }
+
+    #[test]
+    fn answers_typed_for_a_pasted_copy_open_it() {
+        let copy = clipboard_copy(
+            vec!["Mother's name?".to_string(), "Favourite film?".to_string()],
+            vec!["Ann".to_string(), "Heat".to_string()],
+            vec![entry("Other")],
+        );
+        assert!(
+            PasteRevealInputs::new(copy.clone(), "Bob".to_string())
+                .unwrap()
+                .run()
+                .is_err()
+        );
+        let questions_data = PasteRevealInputs::new(copy.clone(), "ann".to_string())
+            .unwrap()
+            .run()
+            .expect("the right first answer reveals the rest");
+        assert_eq!(questions_data.questions, ["Favourite film?"]);
+
+        let wrong =
+            PasteDecryptInputs::new(copy.clone(), questions_data.clone(), vec!["Up".into()]);
+        assert!(wrong.unwrap().run().is_err());
+        let entries = PasteDecryptInputs::new(copy, questions_data, vec!["heat".into()])
+            .unwrap()
+            .run()
+            .expect("the right answers open the copy");
+        assert_eq!(entries.0.len(), 1);
+        assert_eq!(entries.0[0].name, "Other");
+    }
+
+    #[test]
+    fn a_paste_refuses_an_implausible_iteration_count() {
+        let mut vault = VaultState::default();
+        vault.adopt_built(build_new(vec![]));
+        let mut copy = clipboard_copy(questions(), answers(), vec![entry("Other")]);
+        copy.params.iterations = MAX_PASTE_ITERATIONS + 1;
+
+        assert!(
+            vault
+                .unlocked()
+                .unwrap()
+                .paste_inputs(copy.clone())
+                .is_err()
+        );
+        assert!(PasteRevealInputs::new(copy, "Rex".to_string()).is_err());
     }
 
     #[test]

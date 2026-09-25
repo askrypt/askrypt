@@ -111,6 +111,10 @@ pub fn copy(size: u16) -> Text<'static> {
     glyph('\u{F759}', size)
 }
 
+pub fn clipboard(size: u16) -> Text<'static> {
+    glyph('\u{F290}', size)
+}
+
 pub fn x_lg(size: u16) -> Text<'static> {
     glyph('\u{F659}', size)
 }

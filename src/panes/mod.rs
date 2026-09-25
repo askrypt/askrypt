@@ -13,6 +13,7 @@ pub mod detail;
 pub mod entry_editor;
 pub mod list;
 pub mod passgen;
+pub mod paste;
 pub mod questions;
 pub mod settings;
 pub mod sidebar;

@@ -28,7 +28,7 @@ invariants a redesign can quietly break. Keep it current.
 │  nav rail  │   working area                             │
 │            │     Items  = list │ detail-or-editor       │
 │  filters   │     Settings / Unlock / Wizard /           │
-│  ───────   │     Questions / PassGen = one pane         │
+│  ───────   │     Questions / PassGen / Paste = one pane │
 │  vault     │                                            │
 │  actions   │                                            │
 │  ───────   │                                            │
@@ -87,6 +87,7 @@ is now used for **file pickers only**.
 | `panes/entry_editor.rs` | the item draft, drawn in the detail slot |
 | `panes/questions.rs` | the security questions — the only pane that can create a vault. Rows reorder with per-row Move up / Move down (hidden at the ends and while busy); like every edit here, the new order takes effect on Apply (question 1 is the one shown before unlocking and its answer alone derives the first key) |
 | `panes/passgen.rs` | the password generator |
+| `panes/paste.rs` | the pasted copy's questions, when the open vault's answers could not open it |
 | `panes/settings.rs` | the settings screen, writing through to `AppSettings` |
 | `panes/unlock.rs` | the layered unlock screen |
 | `panes/wizard.rs` | the Open / Save As source picker |
@@ -307,6 +308,7 @@ list, or Escape, closes it; every menu action closes it too.
 | Select all visible | selecting | checks every row the section + search show |
 | Clear selection | selecting, something checked | unchecks everything |
 | Copy *(Ctrl+C)* | selecting with something checked, or — outside selecting mode — an item open and the editor closed | puts the checked items (or the open one) on the clipboard as a complete `askrypt.json` |
+| Paste *(Ctrl+V)* | the editor closed and nothing running (`App::can_paste`) | adds the items a Copy put on the clipboard to this vault |
 | Delete *(danger)* | selecting, something checked | asks `confirm::Kind::DeleteEntries` |
 
 These are **shown but disabled** rather than hidden — the one exception to the
@@ -331,6 +333,27 @@ and a one-button warning dialog, `confirm::Kind::FilesSkipped`, lists them
 (first ten, then "…and N more"; OK, Enter and Escape all dismiss it). No
 clear-clipboard timer — it is ciphertext meant to be pasted. Selecting mode
 stays on.
+
+**Paste** (menu, or Ctrl+V on the item section — a focused text field keeps
+its own Ctrl+V, since the shell only sees uncaptured keys) reads the clipboard
+and parses it with `AskryptFile::from_json`; anything else is the error
+*The clipboard holds no items copied from Askrypt*. A copy asking for more than
+`MAX_PASTE_ITERATIONS` (5,000,000) is refused before any derivation. Then, on
+a worker (`manager::PasteInputs`, spinner "Pasting…"), it **tries the open
+vault's own answers**: the copy's first question — the only one in the clear —
+is looked up among this vault's questions (trimmed, case-insensitive), its
+answer reveals the copy's other questions, and each of those must be known
+too. If every question is known and the answers open the copy, the items are
+added with no question asked. Otherwise — an unknown question, or known
+questions with other answers — the **paste pane** (`Pane::Paste`) asks every
+question of the copy, layered like the unlock pane: its first question
+(Continue), then the rest (Paste); a wrong answer is an inline error, Cancel or
+leaving the pane abandons the paste. Both paths end in `App::apply_paste` →
+`Unlocked::paste_entries`: types fold to canonical, attachment references are
+dropped, and a name already taken (by an existing item or one pasted earlier
+in the batch, compared exactly) becomes *Name (copy)*, *Name (copy 2)*, … The
+vault is marked modified; the status line says *Pasted N items* and
+*(M renamed)* when any were.
 
 ### The confirmation dialog
 
@@ -627,7 +650,7 @@ Three details carry the rest:
    dirty flag lives *in* that state (`VaultState::is_modified()` is false in every
    other one), so it cannot survive the edits it describes.
 7. **Pane state that holds secrets wipes on drop.** → `Drop` impls on
-   `unlock::State` (answers), `questions::State` (answers), `passgen::State`
+   `unlock::State` (answers), `paste::State` (answers), `questions::State` (answers), `passgen::State`
    (the generated password) and `manager::SaveRequest`; the editor's draft is
    wiped by `SecretEntry`'s own `ZeroizeOnDrop` — **except the notes**, which
    are a multi-line `text_editor` and live in cosmic-text's own buffer until

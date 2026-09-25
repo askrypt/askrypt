@@ -111,6 +111,9 @@ pub enum Pane {
     Wizard,
     Questions,
     PassGen,
+    /// Answering the questions of a pasted copy the open vault's answers
+    /// could not open.
+    Paste,
 }
 
 /// The vault-lifecycle buttons on the rail. Each one only routes — the state
@@ -200,6 +203,7 @@ pub enum Message {
     Editor(panes::entry_editor::Msg),
     Questions(panes::questions::Msg),
     PassGen(panes::passgen::Msg),
+    Paste(panes::paste::Msg),
     Global(GlobalMsg),
 }
 
@@ -228,6 +232,13 @@ pub enum GlobalMsg {
         count: usize,
         skipped: Vec<String>,
     },
+    /// The clipboard's text, read for a paste. `None` when it held none.
+    ClipboardRead(Option<String>),
+    /// The known answers were tried on the pasted copy. Boxed: the outcome can
+    /// carry a whole `AskryptFile`.
+    PasteTried(Box<Result<manager::PasteOutcome, String>>),
+    /// Pasted items decrypted by the paste pane's answers, ready to merge.
+    PasteReady(manager::PastedEntries),
     /// Boxed: a `SavedVault` carries the whole re-encrypted file and would
     /// otherwise set the size of every `GlobalMsg` this app passes around.
     Saved(Box<Result<SavedVault, VaultError>>),
@@ -302,6 +313,7 @@ pub struct App {
     wizard: panes::wizard::State,
     questions: panes::questions::State,
     passgen: panes::passgen::State,
+    paste: panes::paste::State,
 }
 
 impl App {
@@ -332,6 +344,7 @@ impl App {
             wizard: panes::wizard::State::default(),
             questions: panes::questions::State::default(),
             passgen: panes::passgen::State::default(),
+            paste: panes::paste::State::default(),
         };
 
         // Reopen the vault named on the command line, else the last one used —
@@ -564,6 +577,7 @@ impl App {
         match self.pane {
             Pane::Items if !vault.is_unlocked() => self.default_pane(),
             Pane::Unlock if !vault.can_unlock() => self.default_pane(),
+            Pane::Paste if !vault.is_unlocked() || !self.paste.is_active() => self.default_pane(),
             pane => pane,
         }
     }
@@ -572,6 +586,7 @@ impl App {
         match pane {
             Pane::Items => SEARCH_INPUT_ID,
             Pane::Unlock => panes::unlock::focus_target(),
+            Pane::Paste => panes::paste::focus_target(),
             _ => "",
         }
     }
@@ -591,6 +606,10 @@ impl App {
             Task::none()
         };
 
+        // Walking away from a paste's questions abandons that paste.
+        if self.pane == Pane::Paste && pane != Pane::Paste {
+            self.paste.reset();
+        }
         self.pane = pane;
         // Leaving the pane a question was asked over abandons the question.
         self.confirm = None;
@@ -626,6 +645,7 @@ impl App {
         self.editor = None;
         self.questions.reset();
         self.passgen.forget();
+        self.paste.reset();
         self.unlock.reset_for(&self.session.vault);
         self.query.clear();
         self.selected = None;
@@ -838,6 +858,7 @@ impl App {
             Message::PassGen(msg) => {
                 panes::passgen::update(&mut self.passgen, &mut self.session, msg)
             }
+            Message::Paste(msg) => panes::paste::update(&mut self.paste, &mut self.session, msg),
             Message::Global(msg) => self.update_global(msg),
         };
 
@@ -997,6 +1018,7 @@ impl App {
             }
             Msg::ClearChecked => self.list.checked.clear(),
             Msg::Copy => return self.copy_items(),
+            Msg::Paste => return self.paste_items(),
             Msg::DeleteChecked => return self.delete_checked(),
         }
         Action::None
@@ -1051,6 +1073,74 @@ impl App {
                 })
             },
         ))
+    }
+
+    /// Whether Paste (menu, Ctrl+V) can start: an unlocked vault, the editor
+    /// closed (its fields own Ctrl+V), nothing else running.
+    pub fn can_paste(&self) -> bool {
+        self.session.vault.is_unlocked() && self.editor.is_none() && !self.session.busy
+    }
+
+    /// Read the clipboard for a paste; [`GlobalMsg::ClipboardRead`] carries on.
+    fn paste_items(&mut self) -> Action {
+        if !self.can_paste() {
+            return Action::None;
+        }
+        Action::Run(
+            iced::clipboard::read().map(|text| Message::Global(GlobalMsg::ClipboardRead(text))),
+        )
+    }
+
+    /// The clipboard text is in: if it is a copy of some items, try the open
+    /// vault's own answers on it, on a worker (two PBKDF2 passes).
+    fn paste_from(&mut self, text: Option<String>) -> Action {
+        if !self.can_paste() {
+            return Action::None;
+        }
+        let Some(file) = text.and_then(|text| askrypt::AskryptFile::from_json(text.trim()).ok())
+        else {
+            self.session.error_message =
+                Some("The clipboard holds no items copied from Askrypt".to_string());
+            return Action::None;
+        };
+        let Some(vault) = self.session.vault.unlocked() else {
+            return Action::None;
+        };
+        let inputs = match vault.paste_inputs(file) {
+            Ok(inputs) => inputs,
+            Err(e) => {
+                self.session.error_message = Some(e);
+                return Action::None;
+            }
+        };
+
+        self.session.begin_work("Pasting…");
+        Action::Run(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || inputs.run())
+                    .await
+                    .expect("paste task panicked")
+            },
+            |result| Message::Global(GlobalMsg::PasteTried(Box::new(result))),
+        ))
+    }
+
+    /// Merge pasted items into the open vault — the end of both paste paths.
+    fn apply_paste(&mut self, entries: Vec<askrypt::SecretEntry>) -> Action {
+        let count = entries.len();
+        let Some(vault) = self.session.vault.unlocked_mut() else {
+            return Action::None;
+        };
+        let renamed = vault.paste_entries(entries);
+        let mut message = match count {
+            1 => "Pasted 1 item".to_string(),
+            n => format!("Pasted {n} items"),
+        };
+        if renamed > 0 {
+            message.push_str(&format!(" ({renamed} renamed)"));
+        }
+        self.session.success_message = Some(message);
+        Action::Pane(Pane::Items)
     }
 
     /// Ask before removing every checked item. Names are taken now, as in
@@ -1847,6 +1937,28 @@ impl App {
                     }
                 }
             }
+            GlobalMsg::ClipboardRead(text) => self.paste_from(text),
+            GlobalMsg::PasteTried(result) => {
+                self.session.finish_work();
+                match *result {
+                    Ok(manager::PasteOutcome::Pasted(entries)) => self.apply_paste(entries),
+                    Ok(manager::PasteOutcome::NeedAnswers(file)) => {
+                        if !self.session.vault.is_unlocked() {
+                            return Action::None;
+                        }
+                        self.paste.start(*file);
+                        Action::pane_run(
+                            Pane::Paste,
+                            operation::focus(panes::paste::focus_target()),
+                        )
+                    }
+                    Err(e) => {
+                        self.session.error_message = Some(e);
+                        Action::None
+                    }
+                }
+            }
+            GlobalMsg::PasteReady(entries) => self.apply_paste(entries.0),
             GlobalMsg::Saved(result) => {
                 self.session.finish_work();
                 match *result {
@@ -2050,6 +2162,11 @@ impl App {
                     && self.copy_targets().is_some()
                 {
                     self.copy_items()
+                } else if modifiers.control()
+                    && key.as_ref() == keyboard::Key::Character("v")
+                    && on_items
+                {
+                    self.paste_items()
                 } else if modifiers.control() && key.as_ref() == keyboard::Key::Character("s") {
                     if self.session.vault.can_save() {
                         self.session.clear_messages();
@@ -2094,6 +2211,7 @@ impl App {
             Pane::Wizard => panes::wizard::view(self),
             Pane::Questions => panes::questions::view(self),
             Pane::PassGen => panes::passgen::view(self),
+            Pane::Paste => panes::paste::view(self),
         };
 
         // Only the panes row is `Fill`, so the search strip keeps its

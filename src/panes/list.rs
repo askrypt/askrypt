@@ -60,6 +60,8 @@ pub enum Msg {
     /// Put the checked items — or, outside selecting mode, the open one — on
     /// the clipboard as an `askrypt.json`.
     Copy,
+    /// Add the items a Copy put on the clipboard to the open vault.
+    Paste,
     /// Ask, then delete every checked item.
     DeleteChecked,
 }
@@ -145,15 +147,19 @@ pub fn view(app: &App) -> Element<'_, Message> {
             content,
             mouse_area(container(space()).width(Length::Fill).height(Length::Fill))
                 .on_press(Message::List(Msg::CloseMenu)),
-            container(opaque(menu(state, app.copy_targets().is_some())))
-                .width(Length::Fill)
-                .align_x(Horizontal::Right)
-                .padding(iced::Padding {
-                    top: HEADER_HEIGHT,
-                    right: 8.0,
-                    bottom: 0.0,
-                    left: 0.0,
-                }),
+            container(opaque(menu(
+                state,
+                app.copy_targets().is_some(),
+                app.can_paste(),
+            )))
+            .width(Length::Fill)
+            .align_x(Horizontal::Right)
+            .padding(iced::Padding {
+                top: HEADER_HEIGHT,
+                right: 8.0,
+                bottom: 0.0,
+                left: 0.0,
+            }),
         ]
         .into()
     } else {
@@ -169,7 +175,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
 /// The ⋯ popover. The bulk actions are shown but inert until they can act, so
 /// the user can see what selecting mode is for before turning it on.
-fn menu(state: &State, can_copy: bool) -> Element<'_, Message> {
+fn menu(state: &State, can_copy: bool, can_paste: bool) -> Element<'_, Message> {
     let any = !state.checked.is_empty();
     let selecting = state.selecting;
 
@@ -208,6 +214,13 @@ fn menu(state: &State, can_copy: bool) -> Element<'_, Message> {
                 "Copy",
                 can_copy.then_some(Msg::Copy),
                 Some("Ctrl+C"),
+                false,
+            ),
+            menu_item(
+                icon::clipboard(14),
+                "Paste",
+                can_paste.then_some(Msg::Paste),
+                Some("Ctrl+V"),
                 false,
             ),
             menu_item(
