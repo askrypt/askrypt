@@ -69,6 +69,7 @@ pub enum Msg {
 pub fn view(app: &App) -> Element<'_, Message> {
     let rows = app.visible();
     let state = &app.list;
+    let vault = app.session.vault.unlocked();
 
     let caption = if state.selecting {
         format!("{} selected", state.checked.len())
@@ -108,7 +109,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
             } else {
                 Mark::Plain(app.selected == Some(index))
             };
-            items = items.push(row_widget(index, entry, mark));
+            let changed = vault.is_some_and(|vault| vault.is_entry_changed(index));
+            items = items.push(row_widget(index, entry, mark, changed));
         }
         scrollable(items)
             .width(Length::Fill)
@@ -281,7 +283,14 @@ enum Mark {
     Check(bool),
 }
 
-fn row_widget(index: usize, entry: &SecretEntry, mark: Mark) -> Element<'_, Message> {
+/// `changed` marks an item added or edited since the last save: its name gets
+/// a trailing asterisk, like an editor tab with unsaved work.
+fn row_widget(
+    index: usize,
+    entry: &SecretEntry,
+    mark: Mark,
+    changed: bool,
+) -> Element<'_, Message> {
     let selected = match mark {
         Mark::Plain(on) | Mark::Check(on) => on,
     };
@@ -290,7 +299,12 @@ fn row_widget(index: usize, entry: &SecretEntry, mark: Mark) -> Element<'_, Mess
         .height(Length::Fill)
         .style(move |t: &Theme| theme::accent_bar(t, selected));
 
-    let mut title = row![text(&entry.name).size(14).font(theme::bold())]
+    let name = if changed {
+        format!("{} *", entry.name)
+    } else {
+        entry.name.clone()
+    };
+    let mut title = row![text(name).size(14).font(theme::bold())]
         .spacing(6)
         .align_y(Vertical::Center);
     if entry.hidden {

@@ -178,6 +178,10 @@ pub struct Unlocked {
     /// rotated, and a key that cannot be absent cannot be forgotten.
     master: MasterSecret,
     modified: bool,
+    /// Which entries were added or edited since the vault was last read or
+    /// written, aligned index-for-index with `entries`. What the item list
+    /// marks with an asterisk; never persisted.
+    changed: Vec<bool>,
     /// When an earlier Smart Lock's 8-hour ceiling runs out, for a vault that
     /// reached this state through one. The bundle itself is *not* kept: only
     /// this deadline was ever read from it, and holding the re-encrypted
@@ -379,6 +383,7 @@ impl Vault<PartiallyUnlocked> {
         data::normalize_types(&mut entries);
         let questions_data = self.state.questions_data.clone();
         let answer0 = self.state.answer0.clone();
+        let changed = vec![false; entries.len()];
         self.with_state(Unlocked {
             answer0,
             answers: Zeroizing::new(answers),
@@ -386,6 +391,7 @@ impl Vault<PartiallyUnlocked> {
             entries,
             master,
             modified: false,
+            changed,
             smart_lock_deadline: None,
         })
     }
@@ -400,6 +406,7 @@ impl Vault<Unlocked> {
     /// [`Unlocked`] without an unlock, and the only place a master key is
     /// minted.
     pub fn created(built: Built, home: Option<VaultHome>) -> Self {
+        let changed = vec![false; built.entries.len()];
         Vault {
             file: built.file,
             home,
@@ -411,6 +418,9 @@ impl Vault<Unlocked> {
                 master: built.master,
                 // The built file exists only in memory until it is written.
                 modified: true,
+                // A questions change re-encrypts the entries but edits none of
+                // them; `VaultState::adopt_built` carries the old marks over.
+                changed,
                 smart_lock_deadline: None,
             },
         }
@@ -442,6 +452,12 @@ impl Vault<Unlocked> {
 
     pub fn entries(&self) -> &[SecretEntry] {
         &self.state.entries
+    }
+
+    /// Whether the entry at `index` was added or edited since the vault was
+    /// last read or written — the list's unsaved-item mark.
+    pub fn is_entry_changed(&self, index: usize) -> bool {
+        self.state.changed.get(index).copied().unwrap_or(false)
     }
 
     /// Where each of the vault's attachments can be read from.
@@ -478,6 +494,7 @@ impl Vault<Unlocked> {
     /// Append an entry, returning its index.
     pub fn add_entry(&mut self, entry: SecretEntry) -> usize {
         self.state.entries.push(entry);
+        self.state.changed.push(true);
         self.state.modified = true;
         self.state.entries.len() - 1
     }
@@ -487,6 +504,7 @@ impl Vault<Unlocked> {
     pub fn update_entry(&mut self, index: usize, entry: SecretEntry) {
         if let Some(slot) = self.state.entries.get_mut(index) {
             *slot = entry;
+            self.state.changed[index] = true;
             self.state.modified = true;
         }
     }
@@ -498,6 +516,7 @@ impl Vault<Unlocked> {
             return false;
         }
         self.state.entries.remove(index);
+        self.state.changed.remove(index);
         self.state.modified = true;
         true
     }
@@ -588,6 +607,7 @@ impl Vault<Unlocked> {
                 renamed += 1;
             }
             self.state.entries.push(entry);
+            self.state.changed.push(true);
             self.state.modified = true;
         }
         renamed
@@ -612,6 +632,7 @@ impl Vault<Unlocked> {
         self.home = Some(saved.home);
         self.state.master = saved.master;
         self.state.modified = false;
+        self.state.changed.fill(false);
         self
     }
 
@@ -633,6 +654,7 @@ impl Vault<Unlocked> {
         // to write. Anything the user had typed was discarded by their own
         // choice before this ran.
         self.state.modified = false;
+        self.state.changed = vec![false; self.state.entries.len()];
         self
     }
 
@@ -707,6 +729,7 @@ impl Vault<SmartLocked> {
     /// applies to the session it reopened.
     pub fn smart_unlock(self, mut recovered: SmartUnlockResult) -> Vault<Unlocked> {
         data::normalize_types(&mut recovered.entries);
+        let changed = vec![false; recovered.entries.len()];
         self.with_state(Unlocked {
             answer0: Zeroizing::new(recovered.answer0),
             answers: Zeroizing::new(recovered.answers),
@@ -714,6 +737,7 @@ impl Vault<SmartLocked> {
             entries: recovered.entries,
             master: recovered.master,
             modified: false,
+            changed,
             smart_lock_deadline: Some(Instant::now() + SMART_LOCK_TIMEOUT),
         })
     }
@@ -958,15 +982,25 @@ impl VaultState {
     /// Adopt a vault the questions editor built, keeping the home of the vault
     /// it replaces: changing the questions does not move the file, and a vault
     /// created from nothing has no home to keep.
+    ///
+    /// A questions change on an unlocked vault rebuilds it from the very
+    /// entries it held, so their unsaved-item marks carry over.
     pub fn adopt_built(&mut self, built: Built) {
-        let home = match std::mem::take(self) {
-            VaultState::None => None,
-            VaultState::Locked(vault) => vault.home,
-            VaultState::Partial(vault) => vault.home,
-            VaultState::Unlocked(vault) => vault.home,
-            VaultState::Smart(vault) => vault.home,
+        let (home, changed) = match std::mem::take(self) {
+            VaultState::None => (None, None),
+            VaultState::Locked(vault) => (vault.home, None),
+            VaultState::Partial(vault) => (vault.home, None),
+            VaultState::Unlocked(mut vault) => {
+                let changed = std::mem::take(&mut vault.state.changed);
+                (vault.home, Some(changed))
+            }
+            VaultState::Smart(vault) => (vault.home, None),
         };
-        *self = VaultState::Unlocked(Vault::created(built, home));
+        let mut vault = Vault::created(built, home);
+        if let Some(changed) = changed.filter(|c| c.len() == vault.state.entries.len()) {
+            vault.state.changed = changed;
+        }
+        *self = VaultState::Unlocked(vault);
     }
 
     /// The first answer decrypted the question list.
@@ -2239,6 +2273,7 @@ mod tests {
                     entries: vec![],
                     master: MasterSecret::generate(),
                     modified: false,
+                    changed: vec![],
                     smart_lock_deadline: None,
                 },
             }),
@@ -2750,6 +2785,35 @@ mod tests {
         assert_eq!(vault.entries()[0].name, "GitHub Enterprise");
         assert_eq!(vault.save_request().entries.len(), 1);
         assert!(state.is_modified());
+    }
+
+    /// The list's unsaved-item marks: set by an add, an edit or a paste, kept
+    /// aligned through a delete and a questions change, cleared by a save.
+    #[test]
+    fn changed_entries_are_marked_until_saved() {
+        let (mut state, home) = stored_vault();
+        let vault = state.unlocked_mut().unwrap();
+        assert!(!vault.is_entry_changed(0), "a saved entry carries no mark");
+
+        vault.add_entry(entry("GitLab"));
+        vault.add_entry(entry("Bank"));
+        vault.update_entry(0, entry("GitHub Enterprise"));
+        vault.remove_entry(1);
+        vault.paste_entries(vec![entry("Mail")]);
+        let marks: Vec<bool> = (0..3).map(|i| vault.is_entry_changed(i)).collect();
+        assert_eq!(marks, vec![true, true, true]);
+        assert!(!vault.is_entry_changed(9), "an out-of-range index is unmarked");
+
+        save(&mut state, &home);
+        let vault = state.unlocked_mut().unwrap();
+        assert!((0..3).all(|i| !vault.is_entry_changed(i)));
+
+        vault.update_entry(1, entry("Bank"));
+        let built = build_new(vault.entries().to_vec());
+        state.adopt_built(built);
+        let vault = state.unlocked().unwrap();
+        let marks: Vec<bool> = (0..3).map(|i| vault.is_entry_changed(i)).collect();
+        assert_eq!(marks, vec![false, true, false], "a questions change keeps marks");
     }
 
     // -----------------------------------------------------------------------

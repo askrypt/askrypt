@@ -104,6 +104,11 @@ Rules that are easy to undo by accident:
   the list row's icon is *derived* from the entry's tags, name and URL
   (`icon::item`/`icon::card`, and `icon::placeholder` when they match nothing)
   rather than actually randomized — a real random pick would flicker.
+- **An item added, edited or pasted since the last read or write shows its
+  name with a trailing ` *`** (`Unlocked::is_entry_changed`, a `changed`
+  vector kept index-aligned with `entries` by add/update/remove/paste). A save
+  clears every mark; unlock, smart unlock and reload start with none; a
+  questions change (`adopt_built`) carries them over. Never persisted.
 - **Panes never switch the working area themselves.** They return a
   `panes::Action`, and `App::apply` does the switching.
 - **The editor's form is chosen by the Type picker, and switching it clears
@@ -183,7 +188,7 @@ that the rail's buttons and the pane router both ask about directly.
 | `None` | — | — | `Wizard` |
 | `Locked` | `Locked` | — | `Unlock` |
 | `Partial` | `PartiallyUnlocked` | `answer0`, `questions_data` | `Unlock` |
-| `Unlocked` | `Unlocked` | `answer0`, `answers`, `questions_data`, `entries`, `master`, `modified`, `smart_lock_deadline` | `Items` |
+| `Unlocked` | `Unlocked` | `answer0`, `answers`, `questions_data`, `entries`, `master`, `modified`, `changed`, `smart_lock_deadline` | `Items` |
 | `Smart` | `SmartLocked` | `key_answer_index`, `key_question`, `encrypted_answer0`, `encrypted_answers`, `salt`, `iv_answer0`, `iv_answers`, `armed_at` | `Unlock` |
 
 Every state also carries `file` (the ciphertext, never absent while a vault is
