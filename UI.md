@@ -355,7 +355,8 @@ question of the copy, layered like the unlock pane: its first question
 (Continue), then the rest (Paste); a wrong answer is an inline error, Cancel or
 leaving the pane abandons the paste. Both paths end in `App::apply_paste` →
 `Unlocked::paste_entries`: types fold to canonical, attachment references are
-dropped, and a name already taken (by an existing item or one pasted earlier
+dropped, each item's update time (`modified`) is restamped to now (`created`
+is kept), and a name already taken (by an existing item or one pasted earlier
 in the batch, compared exactly) becomes *Name (copy)*, *Name (copy 2)*, … The
 vault is marked modified; the status line says *Pasted N items* and
 *(M renamed)* when any were.

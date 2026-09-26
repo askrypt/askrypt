@@ -593,11 +593,16 @@ impl Vault<Unlocked> {
     /// reference would keep this vault's master key from rotating for nothing.
     /// A name already taken — by an existing entry or by one pasted earlier in
     /// the same batch — becomes `Name (copy)`, `Name (copy 2)`, …
+    ///
+    /// Each pasted entry's `modified` is restamped with the current time — the
+    /// paste is its latest change in this vault — while `created` is kept.
     pub fn paste_entries(&mut self, mut entries: Vec<SecretEntry>) -> usize {
         data::normalize_types(&mut entries);
+        let now = chrono::Utc::now().timestamp();
         let mut renamed = 0;
         for mut entry in entries {
             entry.attachments.clear();
+            entry.modified = now;
             let entries = &self.state.entries;
             let name = data::copy_name(&entry.name, |candidate| {
                 entries.iter().any(|existing| existing.name == candidate)
@@ -3270,9 +3275,14 @@ mod tests {
 
         let unlocked = vault.unlocked_mut().unwrap();
         let entries = pasted(unlocked.paste_inputs(copy).unwrap().run().unwrap());
+        let before = chrono::Utc::now().timestamp();
         let renamed = unlocked.paste_entries(entries);
 
         assert_eq!(renamed, 2);
+        for pasted in &unlocked.entries()[2..] {
+            assert!(pasted.modified >= before, "a paste restamps `modified`");
+            assert_eq!(pasted.created, 1_581_428_873, "a paste keeps `created`");
+        }
         assert!(unlocked.is_modified());
         let names: Vec<&str> = unlocked.entries().iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
