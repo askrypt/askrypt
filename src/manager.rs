@@ -2807,7 +2807,10 @@ mod tests {
         vault.paste_entries(vec![entry("Mail")]);
         let marks: Vec<bool> = (0..3).map(|i| vault.is_entry_changed(i)).collect();
         assert_eq!(marks, vec![true, true, true]);
-        assert!(!vault.is_entry_changed(9), "an out-of-range index is unmarked");
+        assert!(
+            !vault.is_entry_changed(9),
+            "an out-of-range index is unmarked"
+        );
 
         save(&mut state, &home);
         let vault = state.unlocked_mut().unwrap();
@@ -2818,7 +2821,11 @@ mod tests {
         state.adopt_built(built);
         let vault = state.unlocked().unwrap();
         let marks: Vec<bool> = (0..3).map(|i| vault.is_entry_changed(i)).collect();
-        assert_eq!(marks, vec![false, true, false], "a questions change keeps marks");
+        assert_eq!(
+            marks,
+            vec![false, true, false],
+            "a questions change keeps marks"
+        );
     }
 
     // -----------------------------------------------------------------------
