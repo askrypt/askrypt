@@ -136,6 +136,7 @@ void main() {
         vaultIoProvider.overrideWithValue(_NoIo()),
         biometricStoreProvider.overrideWithValue(_NoBiometrics()),
         platformSecurityProvider.overrideWithValue(_NoopSecurity()),
+        ...quietLeakCheckOverrides,
       ],
       child: const AskryptApp(),
     ));
@@ -193,6 +194,7 @@ void main() {
             .overrideWithValue(FakeServerSessionStore()..url = base),
         recentVaultStoreProvider.overrideWithValue(_Recent()),
         urlOpenerProvider.overrideWithValue((_) async => true),
+        ...quietLeakCheckOverrides,
       ],
       child: const AskryptApp(),
     ));

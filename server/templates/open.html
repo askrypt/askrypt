@@ -6,8 +6,10 @@
   The one entry point, which pulls in the other three modules itself. An
   external file, like every other script on the site: the CSP is
   `script-src 'self'` here as everywhere else, and this page deliberately does
-  not widen it. `type="module"` defers by itself, and covers the static imports
-  of `vault-format.js`, `vault-smartlock.js` and `vault-passgen.js`.
+  not widen it (its one widening is `connect-src` for the breach lookup, see
+  `CSP_OPEN`). `type="module"` defers by itself, and covers the static imports
+  of `vault-format.js`, `vault-smartlock.js`, `vault-passgen.js` and
+  `vault-leak.js`.
 -#}
 {% block head %}
 <script type="module" src="/assets/vault-open.js"></script>
@@ -186,6 +188,7 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
         <button class="button small secondary" type="button" data-copy="entry-secret">Copy</button>
         <button class="button small secondary" type="button" id="entry-generate">Generate</button>
       </div>
+      <p class="leak-warning" id="entry-secret-leak" role="status" hidden></p>
 
       {#- The password generator, the port of `src/panes/passgen.rs`. It sits
           inside the entry form, so every one of its buttons is a
@@ -311,6 +314,17 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   you picked.</p>
 </section>
 
+{#- Not remembered: this page stores nothing, so it is back on at every visit. -#}
+<section class="card" id="open-security">
+  <h2>Security</h2>
+  <label class="open-check"><input id="open-leak-check" type="checkbox" checked>
+  Warn about leaked passwords</label>
+  <p class="hint">Checks entry passwords against the passwords known from data
+  breaches, using the Have I Been Pwned range API. Only the first five
+  characters of a SHA-1 hash are sent &mdash; never the password
+  itself.</p>
+</section>
+
 <section class="card">
   <h2>What this page can and cannot promise</h2>
   <p>The decrypting happens here, in your browser, over the Web Cryptography
@@ -326,10 +340,11 @@ HTTP rather than HTTPS, or the browser is an old one.</p>
   <p>It is still JavaScript that this server sent you, so it cannot offer what
   the desktop and mobile apps do: there, the code was installed once and the
   server has no say in it. If that difference matters for your vault, use an
-  app. The four files this page runs are
+  app. The five files this page runs are
   <a href="/assets/vault-format.js">vault-format.js</a>,
   <a href="/assets/vault-smartlock.js">vault-smartlock.js</a>,
-  <a href="/assets/vault-passgen.js">vault-passgen.js</a> and
+  <a href="/assets/vault-passgen.js">vault-passgen.js</a>,
+  <a href="/assets/vault-leak.js">vault-leak.js</a> and
   <a href="/assets/vault-open.js">vault-open.js</a>, they have no dependencies,
   and they are meant to be read.</p>
 </section>

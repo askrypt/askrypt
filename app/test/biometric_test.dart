@@ -16,6 +16,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'cloud_fakes.dart';
+
 /// In-memory [BiometricStore] keyed by question0 (the real impl hashes the key
 /// internally, but the interface is question0-based).
 class FakeBiometricStore implements BiometricStore {
@@ -119,6 +121,7 @@ void main() {
           vaultIoProvider.overrideWithValue(io),
           biometricStoreProvider.overrideWithValue(bio),
           platformSecurityProvider.overrideWithValue(NoopPlatformSecurity()),
+          ...quietLeakCheckOverrides,
         ],
         child: const AskryptApp(),
       ),

@@ -71,6 +71,7 @@ void main() {
               .overrideWithValue(recent ?? FakeRecentVaultStore()),
           serverSessionStoreProvider
               .overrideWithValue(FakeServerSessionStore()),
+          ...quietLeakCheckOverrides,
         ],
         child: const AskryptApp(),
       ),

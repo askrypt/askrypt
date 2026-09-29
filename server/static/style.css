@@ -667,6 +667,13 @@ code {
 }
 .open-toolbar .open-check { margin-top: 0; }
 
+/* "Found in N known data breaches" under a Password or Answer field. */
+.leak-warning {
+  margin: 0.3rem 0 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
 /* One security question and its answer, on the create-a-vault form. The rule
    down the side groups the pair: a vault with five questions is otherwise ten
    fields in a column with nothing saying which belongs to which. */

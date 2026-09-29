@@ -1,10 +1,12 @@
 // The `/open` page: pick a vault, answer the questions, browse and edit, save.
 //
 // All the crypto lives in `vault-format.js` and `vault-smartlock.js`, and the
-// password generator in `vault-passgen.js`; this file is the DOM around the
-// three of them. Nothing here writes to `localStorage`,
-// `sessionStorage`, IndexedDB, the URL fragment or the console — a decrypted
-// vault exists only in this page's variables and only until it locks.
+// password generator in `vault-passgen.js`, the breach lookup in
+// `vault-leak.js`; this file is the DOM around them. Nothing here writes to
+// `localStorage`, `sessionStorage`, IndexedDB or the URL fragment, and the
+// console only ever gets a failed breach lookup's error message — never a
+// value — so a decrypted vault exists only in this page's variables and only
+// until it locks.
 //
 // The CSP is `script-src 'self'` on this page as on every other, so there is
 // no inline script anywhere and every value the markup hands over arrives as a
@@ -18,6 +20,7 @@ import {
   canonicalEntryType, createVault, customFieldKind, decryptWithMaster, generateMasterKey,
   getQuestionsData, isCard, isChecked, masterForWrite, openAttachment, parseVault,
 } from "./vault-format.js";
+import { breachCount } from "./vault-leak.js";
 import {
   SMART_LOCK_TIMEOUT_MS, createSmartLock, recoverSmartLock, smartLockRemaining,
 } from "./vault-smartlock.js";
@@ -680,6 +683,7 @@ function fillEditor(entry) {
   $("entry-name").value = entry.name;
   $("entry-user").value = entry.user_name;
   $("entry-secret").value = entry.secret;
+  checkLeak($("entry-secret"));
   $("entry-url").value = entry.url;
   $("entry-notes").value = entry.notes;
   $("entry-tags").value = entry.tags.join(", ");
@@ -1000,6 +1004,8 @@ function clearEditorFields() {
     $(id).value = "";
   }
   $("entry-hidden").checked = false;
+  // An emptied field schedules nothing; this only drops the old warning.
+  checkLeak($("entry-secret"));
   // Custom field values can be secrets, like every other field here.
   $("entry-field-list").replaceChildren();
   // The file rows carry names out of the vault, so they go with the rest.
@@ -1117,6 +1123,7 @@ async function usePassgen() {
   }
   const password = passgenValue;
   $("entry-secret").value = password;
+  checkLeak($("entry-secret"));
   closePassgen();
   await copyText(password);
 }
@@ -1423,6 +1430,51 @@ function saveDownload() {
 function withExtension(name) {
   const base = name.trim() || "vault";
   return base.toLowerCase().endsWith(VAULT_EXTENSION) ? base : base + VAULT_EXTENSION;
+}
+
+// ---------------------------------------------------------------------------
+// Leak check — the port of `src/leak.rs`
+// ---------------------------------------------------------------------------
+
+/// Quiet time after the last keystroke before a lookup goes out.
+const LEAK_DEBOUNCE_MS = 800;
+
+/// Every watched input → `{ warning, valueOf, timer, generation }`. Only the
+/// entry's Password field is watched; security answers are not checked.
+const leakWatches = new WeakMap();
+let leakGeneration = 0;
+
+function watchLeaks(input, warning, valueOf) {
+  leakWatches.set(input, { warning, valueOf, timer: 0, generation: 0 });
+  input.addEventListener("input", () => checkLeak(input));
+}
+
+/// The input's value changed (or the rules did): drop the old warning and,
+/// when the check is on and there is a value, look it up after a pause. A
+/// reply is kept only while the input still holds the value that asked.
+/// A failed lookup shows nothing; its message — never the value — is logged.
+function checkLeak(input) {
+  const watch = leakWatches.get(input);
+  if (!watch) return;
+  const generation = ++leakGeneration;
+  watch.generation = generation;
+  clearTimeout(watch.timer);
+  watch.warning.hidden = true;
+  watch.warning.textContent = "";
+  if (!$("open-leak-check").checked || !watch.valueOf()) return;
+
+  watch.timer = setTimeout(async () => {
+    try {
+      const count = await breachCount(watch.valueOf());
+      if (watch.generation !== generation || count === 0) return;
+      const noun = count === 1 ? "breach" : "breaches";
+      watch.warning.textContent =
+        `⚠️ Found in ${count.toLocaleString("en-US")} known data ${noun} — choose another.`;
+      watch.warning.hidden = false;
+    } catch (err) {
+      console.warn("Leak check failed:", err?.message ?? String(err));
+    }
+  }, LEAK_DEBOUNCE_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -1745,6 +1797,8 @@ function init() {
   $("open-new").addEventListener("click", beginCreate);
   $("open-create-add").addEventListener("click", addQuestionRow);
   $("open-create-show").addEventListener("change", toggleCreateAnswers);
+  $("open-leak-check").addEventListener("change", () => checkLeak($("entry-secret")));
+  watchLeaks($("entry-secret"), $("entry-secret-leak"), () => $("entry-secret").value);
   $("open-create-form").addEventListener("submit", createNew);
 
   $("open-first-form").addEventListener("submit", revealQuestions);

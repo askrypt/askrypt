@@ -14,6 +14,7 @@ import '../session/vault_home.dart';
 import 'cloud_screen.dart';
 import 'password_generator_screen.dart';
 import 'questions_editor_screen.dart';
+import 'settings_screen.dart';
 import 'unlock_screen.dart';
 
 class WelcomeScreen extends ConsumerStatefulWidget {
@@ -98,6 +99,12 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
     );
   }
 
+  void _settings(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -105,6 +112,15 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
     // or when nothing was remembered yet).
     final recent = ref.watch(recentVaultProvider).value;
     return Scaffold(
+      appBar: AppBar(
+        actions: [
+          IconButton(
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => _settings(context),
+          ),
+        ],
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),

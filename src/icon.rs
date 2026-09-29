@@ -80,6 +80,11 @@ pub fn plus_lg(size: u16) -> Text<'static> {
     glyph('\u{F64D}', size)
 }
 
+/// `exclamation-triangle-fill` — the leaked-password warning.
+pub fn warning(size: u16) -> Text<'static> {
+    glyph('\u{F33A}', size)
+}
+
 pub fn trash(size: u16) -> Text<'static> {
     glyph('\u{F5DE}', size)
 }

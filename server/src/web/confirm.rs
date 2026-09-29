@@ -153,6 +153,7 @@ fn render(
     let relaxed = hardening::RelaxedCsp {
         captcha: notice.captcha_field().is_some(),
         google: false,
+        leak_check: false,
     };
     let body = if is_htmx(headers) {
         Page(notice).into_response()

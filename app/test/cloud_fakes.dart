@@ -6,7 +6,10 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:askrypt/platform/preferences_store.dart';
+import 'package:askrypt/platform/pwned_client.dart';
 import 'package:askrypt/platform/server_session_store.dart';
+import 'package:askrypt/session/leak_check.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -150,3 +153,21 @@ class FakeServer {
     return _error(405, 'method_not_allowed', 'nope');
   }
 }
+
+class FakePreferencesStore implements PreferencesStore {
+  bool? checkLeaks;
+
+  @override
+  Future<bool?> loadCheckLeaks() async => checkLeaks;
+
+  @override
+  Future<void> saveCheckLeaks(bool value) async => checkLeaks = value;
+}
+
+/// Keeps the leak check off the network — and off a fake server's request
+/// log — in widget tests that are not about it: every lookup finds nothing.
+final quietLeakCheckOverrides = [
+  preferencesStoreProvider.overrideWithValue(FakePreferencesStore()),
+  pwnedClientProvider.overrideWithValue(
+      PwnedClient(MockClient((_) async => http.Response('', 200)))),
+];

@@ -27,6 +27,8 @@ path = "src/lib.rs"
 [features]
 default = []
 server-storage = ["dep:ureq"]
+# Password leak check against the Have I Been Pwned range API (`pwned`).
+leak-check = ["dep:ureq", "dep:sha1"]
 
 [dependencies]
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
@@ -49,6 +51,8 @@ gethostname = "1.1"
 # when built inside an async context — which is exactly where the desktop app
 # calls storage from (`spawn_blocking`). rustls, never native-tls, to keep
 # OpenSSL out of the build (the server crate makes the same choice).
+# SHA-1 only because the HIBP range protocol is keyed by it; never vault crypto.
+sha1 = { version = "0.11", optional = true }
 ureq = { version = "3", optional = true, default-features = false, features = ["rustls", "json"] }
 
 # Manual end-to-end conformance run against a *local* `askrypt-server`; needs

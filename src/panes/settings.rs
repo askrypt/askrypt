@@ -25,6 +25,7 @@ pub enum Msg {
     ShowHiddenToggled(bool),
     ClearClipboardToggled(bool),
     ShowInputLanguageToggled(bool),
+    CheckLeaksToggled(bool),
     BackupToLocalDirToggled(bool),
     /// Open the folder picker (the "Choose"/"Change" button).
     ChooseBackupDir,
@@ -42,6 +43,7 @@ pub fn update(session: &mut Session, message: Msg) -> Action {
         Msg::ShowHiddenToggled(value) => session.settings.show_hidden_by_default = value,
         Msg::ClearClipboardToggled(value) => session.settings.clear_clipboard = value,
         Msg::ShowInputLanguageToggled(value) => session.settings.show_input_language = value,
+        Msg::CheckLeaksToggled(value) => session.settings.check_leaks = value,
         // Turning it *on* has to end with a directory, or it means nothing —
         // so the picker opens straight away when there is none remembered.
         Msg::BackupToLocalDirToggled(value) => {
@@ -135,6 +137,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
             "Wipes a copied password 30 seconds later.",
             settings.clear_clipboard,
             Msg::ClearClipboardToggled,
+        ),
+        hairline(),
+        toggle_row(
+            "Warn about leaked passwords",
+            "Checks item passwords against known breaches; only 5 characters of a hash leave this computer.",
+            settings.check_leaks,
+            Msg::CheckLeaksToggled,
         ),
     ]);
 

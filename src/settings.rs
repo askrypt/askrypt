@@ -341,6 +341,11 @@ pub struct AppSettings {
     /// default.
     #[serde(default)]
     pub show_input_language: bool,
+    /// Whether the entry editor's Password field warns when the value appears
+    /// in a known breach (see `leak`; only a 5-character hash prefix is sent). On
+    /// by default.
+    #[serde(default = "default_true")]
+    pub check_leaks: bool,
     /// The one Askrypt server this app talks to. Sign-in happens in the
     /// browser, so this is the *only* thing about a server the app asks for.
     ///
@@ -387,6 +392,7 @@ impl Default for AppSettings {
             show_hidden_by_default: false,
             clear_clipboard: true,
             show_input_language: false,
+            check_leaks: true,
             // The `#[serde(default)]` above only covers *parsing*; a default
             // built in code needs it spelled out again or the app starts with
             // no server at all.
@@ -717,6 +723,8 @@ mod tests {
         assert!(!settings.show_hidden_by_default);
         assert!(settings.clear_clipboard);
         assert!(!settings.show_input_language);
+        assert!(settings.check_leaks);
+        assert!(AppSettings::default().check_leaks);
         assert!(!settings.backup_to_local_dir);
         assert_eq!(settings.backup_dir, None);
         assert_eq!(settings.window, None);

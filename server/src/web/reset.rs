@@ -181,6 +181,7 @@ fn card(
     let relaxed = hardening::RelaxedCsp {
         captcha: card.captcha_field().is_some(),
         google: false,
+        leak_check: false,
     };
     let body = if is_htmx(headers) {
         Page(card).into_response()

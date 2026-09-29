@@ -114,9 +114,20 @@ font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; \
 frame-src https://www.google.com https://accounts.google.com/gsi/; \
 frame-ancestors 'none'";
 
+/// The `/open` viewer's policy: [`CSP`] with one host added to `connect-src`,
+/// and nothing else.
+///
+/// The viewer warns when a typed password or answer is in a known breach, and
+/// asks the Have I Been Pwned range API from the page (`vault-leak.js`). Only
+/// five hex characters of a SHA-1 are sent, and the host can answer with data
+/// only — `script-src` and everything else stay exactly as strict.
+pub const CSP_OPEN: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
+img-src 'self' data:; connect-src 'self' https://api.pwnedpasswords.com; font-src 'self'; \
+object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
 /// Every policy this server sends, for the tests that assert on all of them
 /// at once. Adding one means adding it here.
-pub const POLICIES: [&str; 4] = [CSP, CSP_CAPTCHA, CSP_GOOGLE, CSP_CAPTCHA_GOOGLE];
+pub const POLICIES: [&str; 5] = [CSP, CSP_CAPTCHA, CSP_GOOGLE, CSP_CAPTCHA_GOOGLE, CSP_OPEN];
 
 /// The policy for a response, given what it said it rendered.
 ///
@@ -128,9 +139,13 @@ pub fn policy(relaxed: Option<&RelaxedCsp>) -> &'static str {
         Some(RelaxedCsp {
             captcha: true,
             google: true,
+            ..
         }) => CSP_CAPTCHA_GOOGLE,
         Some(RelaxedCsp { captcha: true, .. }) => CSP_CAPTCHA,
         Some(RelaxedCsp { google: true, .. }) => CSP_GOOGLE,
+        Some(RelaxedCsp {
+            leak_check: true, ..
+        }) => CSP_OPEN,
         _ => CSP,
     }
 }
@@ -346,12 +361,33 @@ mod tests {
     /// be handed the other's hosts.
     #[test]
     fn the_policy_matches_what_the_page_actually_rendered() {
-        let relaxed = |captcha, google| RelaxedCsp { captcha, google };
+        let relaxed = |captcha, google| RelaxedCsp {
+            captcha,
+            google,
+            leak_check: false,
+        };
         assert_eq!(policy(None), CSP);
         assert_eq!(policy(Some(&relaxed(false, false))), CSP);
         assert_eq!(policy(Some(&relaxed(true, false))), CSP_CAPTCHA);
         assert_eq!(policy(Some(&relaxed(false, true))), CSP_GOOGLE);
         assert_eq!(policy(Some(&relaxed(true, true))), CSP_CAPTCHA_GOOGLE);
+
+        // The viewer's lookup host, and only on the viewer.
+        let open = RelaxedCsp {
+            leak_check: true,
+            ..RelaxedCsp::default()
+        };
+        assert_eq!(policy(Some(&open)), CSP_OPEN);
+        assert_eq!(
+            CSP_OPEN,
+            CSP.replace(
+                "connect-src 'self';",
+                "connect-src 'self' https://api.pwnedpasswords.com;"
+            )
+        );
+        for csp in [CSP, CSP_CAPTCHA, CSP_GOOGLE, CSP_CAPTCHA_GOOGLE] {
+            assert!(!csp.contains("pwnedpasswords"), "{csp}");
+        }
 
         // A captcha alone never names the sign-in host, and the button alone
         // never names the captcha's.

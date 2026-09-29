@@ -23,8 +23,9 @@ import 'cloud_screen.dart';
 import 'entry_edit_screen.dart';
 import 'password_generator_screen.dart';
 import 'questions_editor_screen.dart';
+import 'settings_screen.dart';
 
-enum _Menu { editQuestions, passwordGenerator, disableBiometric }
+enum _Menu { editQuestions, passwordGenerator, settings, disableBiometric }
 
 enum _SaveTarget { device, cloud }
 
@@ -418,6 +419,9 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
       case _Menu.passwordGenerator:
         Navigator.of(context).push(MaterialPageRoute<void>(
             builder: (_) => const PasswordGeneratorScreen()));
+      case _Menu.settings:
+        Navigator.of(context).push(MaterialPageRoute<void>(
+            builder: (_) => const SettingsScreen()));
       case _Menu.disableBiometric:
         _disableBiometric();
     }
@@ -479,6 +483,8 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
               const PopupMenuItem(
                   value: _Menu.passwordGenerator,
                   child: Text('Password generator')),
+              const PopupMenuItem(
+                  value: _Menu.settings, child: Text('Settings')),
               if (_hasBiometric)
                 const PopupMenuItem(
                     value: _Menu.disableBiometric,

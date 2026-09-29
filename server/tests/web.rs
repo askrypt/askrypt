@@ -1840,6 +1840,24 @@ async fn the_viewer_serves_a_signed_out_visitor() {
     assert!(html.contains("<noscript>"));
 }
 
+/// The viewer asks the breach API from the page, so it — and only it — may
+/// connect to that host. Its picker fragment keeps the strict policy.
+#[tokio::test]
+async fn only_the_viewer_may_reach_the_breach_api() {
+    use askrypt_server::hardening::{CSP, CSP_OPEN};
+    let app = app();
+    let cookies = register(&app, "leakcsp@example.com").await;
+
+    for jar in ["", cookies.as_str()] {
+        let (_, headers, _) = send(&app, get_with_cookies("/open", jar)).await;
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP_OPEN);
+    }
+    for path in ["/", "/vaults", "/open/vaults"] {
+        let (_, headers, _) = send(&app, get_with_cookies(path, &cookies)).await;
+        assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP, "{path}");
+    }
+}
+
 #[tokio::test]
 async fn the_viewer_lists_the_account_s_vaults_with_their_etags() {
     let app = app();

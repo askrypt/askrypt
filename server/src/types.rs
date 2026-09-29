@@ -299,7 +299,7 @@ pub(crate) struct Window {
 /// A response extension rather than a path match, so the decision stays with
 /// the handler that knows what it rendered — and so that layer, which is the
 /// outermost one and therefore the last to touch the headers, is still the
-/// only place a CSP is written. Only the two auth pages ever attach one, and
+/// only place a CSP is written. Only the auth pages and `/open` ever attach one, and
 /// they attach it **once**: a second insert would replace the first, so the
 /// flags are gathered before the response is built rather than or-ed into it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -310,6 +310,9 @@ pub struct RelaxedCsp {
     /// widens `Cross-Origin-Opener-Policy`, since the button signs in through
     /// a popup that has to keep talking to its opener.
     pub google: bool,
+    /// The `/open` viewer, which looks typed passwords up in the Have I Been
+    /// Pwned range API from the page. Never set together with the other two.
+    pub leak_check: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

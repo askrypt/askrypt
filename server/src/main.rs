@@ -325,6 +325,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         "vault-format.js",
         "vault-smartlock.js",
         "vault-passgen.js",
+        "vault-leak.js",
         "vault-open.js",
     ];
     if config.recaptcha.is_some() {

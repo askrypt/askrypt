@@ -32,8 +32,10 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
+use crate::hardening;
 use crate::state::AppState;
 use crate::web::error::WebResult;
+use crate::web::relax_csp;
 use crate::web::render::{Page, Shell, timestamp, with_cookies};
 use crate::web::session::{MaybeWebSession, WebSession};
 use crate::web::types::{OpenPage, OpenRow};
@@ -62,8 +64,14 @@ pub async fn page(
         None => None,
     };
 
+    // The page looks typed passwords up in the breach API, so it — and not the
+    // picker fragment below — gets `connect-src` for that one host.
+    let relaxed = hardening::RelaxedCsp {
+        leak_check: true,
+        ..hardening::RelaxedCsp::default()
+    };
     Ok(with_cookies(
-        Page(OpenPage { chrome, vaults }).into_response(),
+        relax_csp(Page(OpenPage { chrome, vaults }).into_response(), relaxed),
         cookies,
     ))
 }

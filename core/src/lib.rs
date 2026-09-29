@@ -72,6 +72,8 @@
 //! ```
 
 pub mod passgen;
+#[cfg(feature = "leak-check")]
+pub mod pwned;
 pub mod storage;
 pub mod translit;
 pub mod types;

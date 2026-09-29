@@ -116,6 +116,7 @@ impl AuthForm {
         RelaxedCsp {
             captcha: self.captcha_key.is_some(),
             google: self.google_client_id.is_some(),
+            leak_check: false,
         }
     }
 

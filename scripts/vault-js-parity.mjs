@@ -23,6 +23,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const vault = await import(join(root, "server/static/vault-format.js"));
 const smartlock = await import(join(root, "server/static/vault-smartlock.js"));
 const passgen = await import(join(root, "server/static/vault-passgen.js"));
+const leak = await import(join(root, "server/static/vault-leak.js"));
 
 const vectors = JSON.parse(
   await readFile(join(root, "app/test/fixtures/vectors.json"), "utf8"),
@@ -475,6 +476,45 @@ await group("the password generator follows core/src/passgen.rs", () => {
     refused = err instanceof vault.VaultError;
   }
   check("no character type selected is refused", refused, true);
+});
+
+// --- the breach lookup (vault-leak.js) ---------------------------------------
+//
+// The same known vector as `core/src/pwned.rs`, and a fake `fetch` so the gate
+// never touches the network.
+await group("the breach lookup follows core/src/pwned.rs", async () => {
+  const { prefix, suffix } = await leak.rangeQuery("password");
+  check("prefix", prefix, "5BAA6");
+  check("suffix", suffix, "1E4C9B93F3F0682250B6CF8331B7EE68FD8");
+
+  const body = "0018A45C4D1DEF81644B54AB7F969B88D65:1\r\n"
+    + "1E4C9B93F3F0682250B6CF8331B7EE68FD8:9659365\r\n"
+    + "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF:0\r\n";
+  check("hit", leak.countInRange(body, suffix), 9659365);
+  check("hit, lower case", leak.countInRange(body, suffix.toLowerCase()), 9659365);
+  check("padding row reads as absent",
+    leak.countInRange(body, "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"), 0);
+  check("miss", leak.countInRange(body, "0000000000000000000000000000000000A"), 0);
+
+  let asked = null;
+  const fake = async (url, init) => {
+    asked = { url, padding: init.headers["Add-Padding"], credentials: init.credentials };
+    return { ok: true, text: async () => body };
+  };
+  check("breachCount", await leak.breachCount("password", fake), 9659365);
+  check("only the prefix is sent", asked, {
+    url: "https://api.pwnedpasswords.com/range/5BAA6",
+    padding: "true",
+    credentials: "omit",
+  });
+
+  let rejected = false;
+  try {
+    await leak.breachCount("password", async () => ({ ok: false, status: 503 }));
+  } catch {
+    rejected = true;
+  }
+  check("a failed lookup rejects rather than reading as clean", rejected, true);
 });
 
 // The entry as the Rust core serializes it: the six card keys, `attachments` and `custom_fields`

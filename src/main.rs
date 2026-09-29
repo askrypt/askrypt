@@ -18,6 +18,7 @@ mod data;
 mod follow;
 mod icon;
 mod input_language;
+mod leak;
 mod link;
 mod manager;
 mod panes;
@@ -777,16 +778,20 @@ impl App {
             Message::EditEntry(index) => match self.session.entries().get(index) {
                 Some(entry) => {
                     self.list.reset();
-                    self.editor = Some(panes::entry_editor::State::edit(entry.clone(), index));
+                    let mut editor = panes::entry_editor::State::edit(entry.clone(), index);
+                    let check = editor.check_secret(self.session.settings.check_leaks);
+                    self.editor = Some(editor);
                     self.selected = Some(index);
-                    Action::pane_run(Pane::Items, operation::focus_next())
+                    Action::pane_run(Pane::Items, Task::batch([operation::focus_next(), check]))
                 }
                 None => Action::None,
             },
             Message::DuplicateEntry(index) => match self.session.entries().get(index) {
                 Some(entry) => {
-                    self.editor = Some(panes::entry_editor::State::duplicate(entry.clone()));
-                    Action::pane_run(Pane::Items, operation::focus_next())
+                    let mut editor = panes::entry_editor::State::duplicate(entry.clone());
+                    let check = editor.check_secret(self.session.settings.check_leaks);
+                    self.editor = Some(editor);
+                    Action::pane_run(Pane::Items, Task::batch([operation::focus_next(), check]))
                 }
                 None => Action::None,
             },
@@ -810,10 +815,10 @@ impl App {
             }
             Message::UseGeneratedPassword(password) => match self.editor.as_mut() {
                 Some(editor) => {
-                    editor.set_secret(password);
+                    let check = editor.set_secret(password, self.session.settings.check_leaks);
                     self.session.status_message =
                         Some("Password copied and applied to the item".into());
-                    Action::Pane(Pane::Items)
+                    Action::pane_run(Pane::Items, check)
                 }
                 None => {
                     self.session.status_message = Some("Password copied to clipboard".into());

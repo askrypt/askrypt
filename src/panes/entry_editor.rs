@@ -19,6 +19,9 @@ use iced::{Element, Length, Task, alignment::Vertical};
 
 use crate::panes::Action;
 use crate::session::Session;
+use zeroize::Zeroizing;
+
+use crate::leak::{self, LeakCheck};
 use crate::{Message, Pane, data, icon, manager, theme};
 
 const NAME_INPUT_ID: &str = "GUI_EDITOR_NAME";
@@ -54,6 +57,8 @@ pub struct State {
     /// clear. Emptied whenever the rows shift, so a reveal never lands on a
     /// different field.
     revealed_fields: HashSet<usize>,
+    /// Whether the password is in a known breach (see `leak`).
+    leak: LeakCheck,
     error: Option<String>,
 }
 
@@ -67,6 +72,7 @@ impl State {
             revealed: false,
             cvv_revealed: false,
             revealed_fields: HashSet::new(),
+            leak: LeakCheck::default(),
             error: None,
         }
     }
@@ -80,6 +86,7 @@ impl State {
             revealed: false,
             cvv_revealed: false,
             revealed_fields: HashSet::new(),
+            leak: LeakCheck::default(),
             error: None,
         }
     }
@@ -98,9 +105,19 @@ impl State {
     /// Called when the password generator hands one back. The field stays
     /// masked: the password is already on the clipboard, so showing it only
     /// puts a fresh secret on screen for whoever is behind the user.
-    pub fn set_secret(&mut self, secret: String) {
+    pub fn set_secret(&mut self, secret: String, check_leaks: bool) -> Task<Message> {
         self.entry.secret = secret;
         self.revealed = false;
+        self.check_secret(check_leaks)
+    }
+
+    /// (Re)check the password against known breaches: on every edit, and once
+    /// when the editor opens on an item that already has one.
+    pub fn check_secret(&mut self, check_leaks: bool) -> Task<Message> {
+        self.leak
+            .edited(&self.entry.secret, check_leaks, |generation| {
+                Message::Editor(Msg::LeakDue(generation))
+            })
     }
 
     fn is_new(&self) -> bool {
@@ -150,6 +167,11 @@ pub enum Msg {
     CustomFieldTypeSelected(usize, String),
     CustomFieldToggled(usize, bool),
     CustomFieldReveal(usize),
+    /// The typing pause is over: look the password up, if it is still the
+    /// value that started the wait.
+    LeakDue(u64),
+    /// A breach lookup finished (see `leak`).
+    LeakChecked(u64, leak::Checked),
     Save,
     Cancel,
 }
@@ -168,6 +190,21 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
         }
         Msg::SecretEdited(value) => {
             state.entry.secret = value;
+            let check = state.check_secret(session.settings.check_leaks);
+            (Action::Run(check), false)
+        }
+        Msg::LeakDue(generation) => {
+            if !state.leak.is(generation) {
+                return (Action::None, false);
+            }
+            let value = Zeroizing::new(state.entry.secret.clone());
+            let lookup = state.leak.run(value, |generation, result| {
+                Message::Editor(Msg::LeakChecked(generation, result))
+            });
+            (Action::Run(lookup), false)
+        }
+        Msg::LeakChecked(generation, result) => {
+            state.leak.finish(generation, result);
             (Action::None, false)
         }
         Msg::UrlEdited(value) => {
@@ -534,7 +571,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
         // whole of it, and all three are drawn outside this branch.
         Vec::new()
     } else {
-        login_fields(state)
+        login_fields(state, session.settings.check_leaks)
     } {
         body = body.push(control);
     }
@@ -618,7 +655,7 @@ pub fn view<'a>(state: &'a State, session: &'a Session) -> Element<'a, Message> 
 }
 
 /// The Username / Password / Website middle of the form.
-fn login_fields(state: &State) -> Vec<Element<'_, Message>> {
+fn login_fields(state: &State, check_leaks: bool) -> Vec<Element<'_, Message>> {
     let secret_row = row![
         text_input("", &state.entry.secret)
             .id("GUI_EDITOR_SECRET")
@@ -634,6 +671,11 @@ fn login_fields(state: &State) -> Vec<Element<'_, Message>> {
     .spacing(6)
     .align_y(Vertical::Center);
 
+    let mut password = column![secret_row].spacing(4);
+    if let Some(warning) = state.leak.view(check_leaks) {
+        password = password.push(warning);
+    }
+
     vec![
         field(
             "Username",
@@ -643,7 +685,7 @@ fn login_fields(state: &State) -> Vec<Element<'_, Message>> {
                 .size(14)
                 .into(),
         ),
-        field("Password", secret_row.into()),
+        field("Password", password.into()),
         field(
             "Website",
             text_input("https://example.com", &state.entry.url)

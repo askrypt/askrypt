@@ -13,7 +13,9 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
 import '../crypto/secret_entry.dart';
+import '../session/leak_check.dart';
 import '../session/vault_session.dart';
+import '../widgets/leak_warning.dart';
 import 'password_generator_screen.dart';
 
 class EntryEditScreen extends ConsumerStatefulWidget {
@@ -62,6 +64,7 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
   late final TextEditingController _name;
   late final TextEditingController _userName;
   late final TextEditingController _secret;
+  late final LeakWatcher _leak;
   late final TextEditingController _url;
   late final TextEditingController _notes;
   late final TextEditingController _tags;
@@ -89,6 +92,11 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
     _name = TextEditingController(text: e?.name ?? '');
     _userName = TextEditingController(text: e?.userName ?? '');
     _secret = TextEditingController(text: e?.secret ?? '');
+    _leak = LeakWatcher(
+      controller: _secret,
+      client: ref.read(pwnedClientProvider),
+      enabled: () => ref.read(leakCheckEnabledProvider),
+    );
     _url = TextEditingController(text: e?.url ?? '');
     _notes = TextEditingController(text: e?.notes ?? '');
     _tags = TextEditingController(text: e?.tags.join(', ') ?? '');
@@ -104,6 +112,7 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
   void dispose() {
     _name.dispose();
     _userName.dispose();
+    _leak.dispose();
     _secret.dispose();
     _url.dispose();
     _notes.dispose();
@@ -282,6 +291,7 @@ class _EntryEditScreenState extends ConsumerState<EntryEditScreen> {
               ),
             ),
           ),
+          LeakWarning(_leak, enabled: ref.watch(leakCheckEnabledProvider)),
           const SizedBox(height: 12),
           TextField(
             controller: _url,
