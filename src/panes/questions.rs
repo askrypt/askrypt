@@ -297,15 +297,24 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let mut rows = column![].spacing(14);
     let count = state.questions.len();
     for index in 0..count {
-        rows = rows.push(question_row(
+        let answer = state.answers.get(index).map(String::as_str).unwrap_or("");
+        let mut field = column![question_row(
             index,
             &state.questions[index],
-            state.answers.get(index).map(String::as_str).unwrap_or(""),
+            answer,
             state.shown == Some(index),
             count > 2,
             count,
             session.busy,
-        ));
+        )]
+        .spacing(4);
+        // Sits right under the answer, the row's last line.
+        if session.settings.show_input_language
+            && let Some(language) = crate::input_language::hint(answer)
+        {
+            field = field.push(text(language).size(11).style(text::secondary));
+        }
+        rows = rows.push(field);
     }
     body = body.push(theme::card(container(rows).padding(14)));
 

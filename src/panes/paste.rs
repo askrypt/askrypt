@@ -241,6 +241,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             state.shown == Some(index),
             position == 0,
             position + 1 == asked_count,
+            session.settings.show_input_language,
         ));
     }
 
@@ -306,7 +307,12 @@ fn answer_field<'a>(
     revealed: bool,
     focused: bool,
     last: bool,
+    show_language: bool,
 ) -> Element<'a, Message> {
+    let language = show_language
+        .then(|| crate::input_language::hint(&answer))
+        .flatten();
+
     let mut input = text_input("Answer", &answer)
         .on_input(move |value| Message::Paste(Msg::AnswerChanged(index, value)))
         .on_submit(Message::Paste(if last {
@@ -337,12 +343,15 @@ fn answer_field<'a>(
     )
     .on_press(Message::Paste(Msg::ToggleReveal(index)));
 
-    column![
+    let mut field = column![
         text(question).size(13),
         row![input, toggle].spacing(6).align_y(Vertical::Center),
     ]
-    .spacing(6)
-    .into()
+    .spacing(6);
+    if let Some(language) = language {
+        field = field.push(text(language).size(11).style(text::secondary));
+    }
+    field.into()
 }
 
 /// The id the shell focuses when it switches to this pane.

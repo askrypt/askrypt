@@ -17,6 +17,7 @@ mod confirm;
 mod data;
 mod follow;
 mod icon;
+mod input_language;
 mod link;
 mod manager;
 mod panes;

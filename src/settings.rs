@@ -336,6 +336,11 @@ pub struct AppSettings {
     pub show_hidden_by_default: bool,
     #[serde(default = "default_true")]
     pub clear_clipboard: bool,
+    /// Whether answer fields name the language(s) the typed answer could be
+    /// in (see `input_language`), to catch a wrong keyboard layout. Off by
+    /// default.
+    #[serde(default)]
+    pub show_input_language: bool,
     /// The one Askrypt server this app talks to. Sign-in happens in the
     /// browser, so this is the *only* thing about a server the app asks for.
     ///
@@ -381,6 +386,7 @@ impl Default for AppSettings {
             minimize_to_tray: true,
             show_hidden_by_default: false,
             clear_clipboard: true,
+            show_input_language: false,
             // The `#[serde(default)]` above only covers *parsing*; a default
             // built in code needs it spelled out again or the app starts with
             // no server at all.
@@ -710,6 +716,7 @@ mod tests {
         assert!(settings.minimize_to_tray);
         assert!(!settings.show_hidden_by_default);
         assert!(settings.clear_clipboard);
+        assert!(!settings.show_input_language);
         assert!(!settings.backup_to_local_dir);
         assert_eq!(settings.backup_dir, None);
         assert_eq!(settings.window, None);
