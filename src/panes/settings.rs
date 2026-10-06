@@ -27,6 +27,7 @@ pub enum Msg {
     ShowInputLanguageToggled(bool),
     CheckLeaksToggled(bool),
     BackupToLocalDirToggled(bool),
+    OfflineCopiesToggled(bool),
     /// Open the folder picker (the "Choose"/"Change" button).
     ChooseBackupDir,
     /// What the picker answered. `None` is a cancel.
@@ -55,6 +56,14 @@ pub fn update(session: &mut Session, message: Msg) -> Action {
             return Action::None;
         }
         Msg::ChooseBackupDir => return Action::Run(choose_dir()),
+        // Off means no copy is left behind either: nothing would offer the
+        // ones already kept, and they are copies of the user's vaults.
+        Msg::OfflineCopiesToggled(value) => {
+            session.settings.offline_copies = value;
+            if !value && let Err(e) = crate::offline::clear_all() {
+                session.error_message = Some(format!("Could not delete the offline copies — {e}"));
+            }
+        }
         Msg::BackupDirPicked(Some(dir)) => {
             session.settings.backup_dir = Some(dir);
             // Choosing a directory is also how the toggle is *confirmed*: the
@@ -254,6 +263,13 @@ fn account(app: &App) -> Element<'_, Message> {
 fn backup(app: &App) -> Element<'_, Message> {
     let settings = &app.session.settings;
 
+    let offline = toggle_row(
+        "Keep offline copies of server vaults",
+        "Every server vault you open or save is kept, encrypted, on this computer, so it can be opened when the server is unreachable.",
+        settings.offline_copies,
+        Msg::OfflineCopiesToggled,
+    );
+
     let toggle = toggle_row(
         "Keep a local copy of cloud saves",
         "Every save to your Askrypt server is also written to a folder on this computer.",
@@ -262,7 +278,7 @@ fn backup(app: &App) -> Element<'_, Message> {
     );
 
     if !settings.backup_to_local_dir {
-        return theme::card(toggle).into();
+        return theme::card(column![offline, hairline(), toggle]).into();
     }
 
     let (label, description, action): (&'static str, String, &'static str) =
@@ -287,7 +303,7 @@ fn backup(app: &App) -> Element<'_, Message> {
             .into(),
     );
 
-    theme::card(column![toggle, hairline(), folder]).into()
+    theme::card(column![offline, hairline(), toggle, hairline(), folder]).into()
 }
 
 fn group<'a>(label: &'a str) -> Element<'a, Message> {

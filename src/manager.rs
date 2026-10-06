@@ -71,6 +71,7 @@ use askrypt::{
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::data;
+use crate::offline;
 use crate::scratch::Scratch;
 use crate::session::VaultError;
 use crate::settings::VaultLocation;
@@ -147,6 +148,10 @@ pub struct SavedVault {
     /// error from the write, because the vault itself was saved and the session
     /// must adopt the new bytes either way.
     pub backup: Option<Result<PathBuf, String>>,
+    /// Why the offline copy of a server vault could not be updated, if it
+    /// could not. The vault was saved regardless — this is only ever a status
+    /// line.
+    pub offline: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,6 +1110,7 @@ impl VaultState {
             storage,
             keys,
             scratch,
+            offline: None,
         })
     }
 
@@ -1441,9 +1447,23 @@ pub struct ReloadInputs {
     /// Where a server vault's fresh copy of the archive is spilled. A local
     /// vault re-reads itself in place and never touches this.
     scratch: Option<Arc<Scratch>>,
+    /// Where to keep the freshly read server copy for offline use, if anywhere.
+    offline: Option<offline::Target>,
 }
 
 impl ReloadInputs {
+    /// Also keep what is read as the vault's offline copy.
+    pub fn keep_offline(mut self, target: Option<offline::Target>) -> Self {
+        self.offline = target;
+        self
+    }
+
+    /// [`run_keeping`](Self::run_keeping) without the offline copy's outcome.
+    #[cfg(test)]
+    pub fn run(self) -> Result<ReloadOutcome, VaultError> {
+        self.run_keeping().0
+    }
+
     /// **Worker-thread only.** A backend round trip, then up to two
     /// 600k-iteration derivations.
     ///
@@ -1451,10 +1471,23 @@ impl ReloadInputs {
     /// fresh one — so the backend also learns the revision it just fetched and
     /// the next save is conflict-checked against *that* rather than against
     /// the version this reload replaced.
-    pub fn run(self) -> Result<ReloadOutcome, VaultError> {
-        let file = read_vault(&self.storage, self.scratch.as_ref())
-            .map_err(|e| VaultError::log("Failed to re-read vault", &e))?;
+    ///
+    /// The second half is the status-line complaint when keeping the offline
+    /// copy failed. The bytes are the server's whether or not the reload is
+    /// then applied, so they are kept either way.
+    pub fn run_keeping(mut self) -> (Result<ReloadOutcome, VaultError>, Option<String>) {
+        let file = match read_vault(&self.storage, self.scratch.as_ref()) {
+            Ok(file) => file,
+            Err(e) => return (Err(VaultError::log("Failed to re-read vault", &e)), None),
+        };
+        let kept = self
+            .offline
+            .take()
+            .and_then(|target| target.keep(&file, self.storage.as_ref()).err());
+        (self.open_read(file), kept)
+    }
 
+    fn open_read(self, file: AskryptFile) -> Result<ReloadOutcome, VaultError> {
         match self.keys {
             ReloadKeys::None => Ok(ReloadOutcome::Refreshed(Box::new(file))),
             ReloadKeys::First(answer0) => match file.get_questions_data(answer0.to_string()) {
@@ -1906,10 +1939,15 @@ impl ExtractInputs {
 /// The copy is made only for a *server* vault — a local one is already a file
 /// on this machine — and only after the real save landed, so a vault is never
 /// backed up in a state the server never accepted.
+///
+/// `offline` is where a server vault's offline copy is kept
+/// ([`offline::Target`]). Like the backup it is refreshed only once the server
+/// accepted the bytes, so the copy is always something the server held.
 pub fn write_vault(
     request: SaveRequest,
     home: VaultHome,
     backup_dir: Option<PathBuf>,
+    offline: Option<offline::Target>,
     scratch: Option<Arc<Scratch>>,
 ) -> Result<SavedVault, VaultError> {
     // A vault with nothing sealed under its key is written under a new one, so
@@ -1975,12 +2013,14 @@ pub fn write_vault(
     let backup = backup_dir
         .filter(|_| home.location().is_server())
         .map(|dir| back_up_locally(&file, home.location(), &dir));
+    let offline = offline.and_then(|target| target.keep(&file, home.storage().as_ref()).err());
 
     Ok(SavedVault {
         file,
         home,
         master,
         backup,
+        offline,
     })
 }
 
@@ -2117,6 +2157,53 @@ pub fn read_vault(
             }
         }
     }
+}
+
+/// Open the offline copy of a server vault that cannot be reached.
+/// **Worker-thread only.**
+///
+/// The copy is duplicated into the scratch directory first and opened from
+/// there, exactly as a download is spilled by [`read_vault`]: the vault's
+/// attachments are read out of its archive for as long as it stays open, and
+/// the kept copy must stay free to be replaced by the next download.
+///
+/// The home is a [`askrypt::ServerStorage::pinned`] backend at the copy's
+/// ETag, so Save reaches the server once it is back — conflict-checked against
+/// the version the copy was taken at — and the change follower can tell when
+/// that is.
+pub fn open_offline_copy(
+    copy: offline::OfflineCopy,
+    client: Arc<askrypt::ServerClient>,
+    scratch: Option<Arc<Scratch>>,
+) -> Result<OpenedVault, VaultError> {
+    let location = copy.meta.location.clone();
+    let VaultLocation::Server { name, .. } = &location else {
+        return Err(VaultError::Other);
+    };
+    let spill = match scratch.as_ref() {
+        Some(scratch) => scratch.vault_path(),
+        None => std::env::temp_dir().join(format!("askrypt-vault-{}", fallback_tag())),
+    };
+    std::fs::copy(&copy.archive, &spill).map_err(|e| {
+        Scratch::discard(&spill);
+        VaultError::log("Failed to read the offline copy", &StorageError::Io(e))
+    })?;
+    let file = AskryptFile::from_path(&spill).map_err(|e| {
+        Scratch::discard(&spill);
+        VaultError::log(
+            "Failed to read the offline copy",
+            &StorageError::Format(e.to_string()),
+        )
+    })?;
+    let storage: Arc<dyn VaultStorage> = Arc::new(askrypt::ServerStorage::pinned(
+        client,
+        name.clone(),
+        copy.meta.etag,
+    ));
+    Ok(OpenedVault {
+        file,
+        home: VaultHome::new(location, storage),
+    })
 }
 
 /// Write the just-saved bytes into the user's backup directory.
@@ -2306,8 +2393,8 @@ mod tests {
         vault.adopt_built(build_new(vec![entry("GitHub")]));
 
         let request = vault.unlocked().unwrap().save_request();
-        let saved =
-            write_vault(request, home.clone(), None, None).expect("the vault should be written");
+        let saved = write_vault(request, home.clone(), None, None, None)
+            .expect("the vault should be written");
         vault.apply_saved(saved);
 
         (vault, home)
@@ -2362,8 +2449,8 @@ mod tests {
     /// Save through the real write path and take the result.
     fn save(vault: &mut VaultState, home: &VaultHome) {
         let request = vault.unlocked().unwrap().save_request();
-        let saved =
-            write_vault(request, home.clone(), None, None).expect("the vault should be written");
+        let saved = write_vault(request, home.clone(), None, None, None)
+            .expect("the vault should be written");
         // The staging archive a `MemoryStorage` home leaves behind is this
         // vault's origin now, so it is cleaned up by the caller's `TestDir`
         // only if it lives there — it does not, so take it out of the way here.
@@ -2580,7 +2667,7 @@ mod tests {
         // The request still carries the key the vault is on: it is what the
         // decision is made against, and what a vault holding a file would keep.
         assert_eq!(request.master, previous);
-        let saved = write_vault(request, home.clone(), None, None)
+        let saved = write_vault(request, home.clone(), None, None, None)
             .expect("the vault should be written again");
         assert!(vault.apply_saved(saved));
         assert!(!vault.is_modified(), "a save clears the dirty flag");
@@ -2669,8 +2756,8 @@ mod tests {
         let request = vault.unlocked().unwrap().save_request();
         assert_eq!(request.questions, vec!["New first?", "New second?"]);
         assert_eq!(request.answers, vec!["alpha", "beta"]);
-        let saved =
-            write_vault(request, home.clone(), None, None).expect("the vault should be written");
+        let saved = write_vault(request, home.clone(), None, None, None)
+            .expect("the vault should be written");
         vault.apply_saved(saved);
 
         let reopened = home.storage().load_vault().expect("the vault should load");
@@ -2915,7 +3002,7 @@ mod tests {
         let vault = Vault::created(built, Some(home));
         // Write it out so the backend holds the same bytes the vault does.
         let request = vault.save_request();
-        let saved = write_vault(request, vault.home().unwrap().clone(), None, None)
+        let saved = write_vault(request, vault.home().unwrap().clone(), None, None, None)
             .expect("the vault should save");
         VaultState::Unlocked(vault.saved(saved))
     }
@@ -2996,7 +3083,7 @@ mod tests {
 
         let request = vault.save_request();
         let home = state.home().cloned().expect("a stored vault has a home");
-        let saved = write_vault(request, home, None, None).expect("the save should land");
+        let saved = write_vault(request, home, None, None, None).expect("the save should land");
         state.apply_saved(saved);
 
         let file = AskryptFile::from_bytes(&storage.read().unwrap()).unwrap();
@@ -3140,6 +3227,7 @@ mod tests {
             vault.home().unwrap().clone(),
             Some(dir.clone()),
             None,
+            None,
         )
         .expect("the vault should save");
 
@@ -3167,6 +3255,7 @@ mod tests {
             vault.home().unwrap().clone(),
             Some(dir.clone()),
             None,
+            None,
         )
         .expect("the vault should save");
 
@@ -3191,6 +3280,7 @@ mod tests {
             vault.save_request(),
             vault.home().unwrap().clone(),
             Some(dir.clone()),
+            None,
             None,
         )
         .expect("the vault itself should still save");

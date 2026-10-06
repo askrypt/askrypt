@@ -78,6 +78,7 @@ is now used for **file pickers only**.
 | `theme.rs` | the styled-widget helpers plus pane styles, the spinner and layout constants |
 | `icon.rs` | glyph codepoints read out of `static/bootstrap-icons.ttf`, plus `KEYWORDS`/`lookup` — the keyword table that turns an item's name and URL into an icon (longest keyword wins; `Any` matches inside a word, `Word` only as one), and `item`/`card`, the two front doors `panes/list.rs` calls |
 | `scratch.rs` | this run's working directory (`<cache>/session-<pid>/`): a freshly attached file's ciphertext and, for a cloud vault, a copy of its archive. Holds an exclusive lock on its own `.lock` for the life of the process, which is what makes the startup sweep exact — a sibling session directory whose lock can be *taken* belongs to a process that has exited. Emptied on close (`Session::close_vault` → `clear`), file-by-file when a vault is opened over another (`Session::open_vault` → `manager::retire_working_files`), and removed on drop |
+| `offline.rs` | offline copies of server vaults in `<cache>/vaults/` (`<sha256(base_url,email,name)>.askrypt` + `.json` sidecar with location, ETag, `cached_at`): `Target::keep` (worker, after a download/reload/save — a failure is a status line, never a dialog), `load`, `remove` (the server said the vault is gone), `clear_all` (setting switched off). Settings → Backup "Keep offline copies of server vaults", **on** by default (`settings.offline_copies`, read via `AppSettings::offline_dir`) |
 | `data.rs` | pure item helpers over `SecretEntry`: the three entry types (`Login`/`Card`/`File`) and the `is_card`/`is_file` predicates, the filter (which reaches attachment file names — visible metadata, unlike the card secrets it skips), tags, the write stamp, `format_size`, the card helpers (`is_card`, `card_digits`, `card_last4`, `mask_card_number`, `group_card_number`, `card_subtitle`, `CARD_BRANDS`), and `DATETIME_FORMAT` — the one date/time rendering (`format_timestamp_local` for Unix seconds, `format_rfc3339_local` for RFC 3339 text) every pane uses |
 | `input_language.rs` | pure `detect`/`hint`: which of English, German, Russian, Ukrainian a typed answer could be in (whole value; Latin and Cyrillic letters judged separately, a language kept only if its alphabet holds every letter of its script; non-letters ignored). Drawn as a small secondary line under every answer field — unlock, paste, questions editor — only while `settings.show_input_language` (Settings → General, off by default) is on |
 | `leak.rs` | the breach warning's pacing around core's `askrypt::pwned` (Have I Been Pwned range API, only a 5-hex SHA-1 prefix is sent): `LeakCheck` per field — `edited` (bump an app-wide generation, clear the verdict, wait 800 ms), `run` (lookup on `spawn_blocking`, the value captured, never in a message), `finish` (stale generations dropped; a failure is only logged). Drawn as a danger-colored `⚠ Found in N known data breaches — choose another.` line under the editor's Password field, also checked once when the editor opens on an existing password. Only while `settings.check_leaks` (Settings → Security, **on** by default). Security answers are not checked |
@@ -736,7 +737,23 @@ Three details carry the rest:
    `a_local_vault_is_not_copied_next_to_itself`,
    `a_failed_copy_does_not_fail_the_save` and
    `a_backup_file_name_cannot_escape_the_chosen_directory`.
-13. **Checked rows are always visible rows, and never outlive their indices.**
+13. **An offline copy is only ever the server's bytes.** Every download
+   (wizard, boot), follow reload and server save keeps the archive it moved in
+   `<cache>/vaults/` (`offline::Target::keep`) — never an edit made to the copy.
+   When opening a server vault fails with `VaultError::Network` and a copy
+   exists, `confirm::Kind::OpenOffline` offers it (Enter = open);
+   `manager::open_offline_copy` spills it into scratch and gives it a
+   `ServerStorage::pinned` home at the copy's ETag, so Save reaches the server
+   once it is back and is conflict-checked against that version (412 → the
+   usual "changed elsewhere"); Save As works as for any vault. While
+   `Session.offline` is set the status line ends "— offline copy from <date>",
+   the title gains " [Offline]", and a Network save error suggests Save As. It
+   clears on any open/close, a successful save or reload, and the first
+   successful follow probe ("The server is reachable again"). A server that
+   answers the vault is gone (open → `Io`, probe → `Missing`) deletes its copy.
+   → guarded by `a_pinned_write_is_checked_against_the_pinned_etag` (core) and
+   `offline::tests`.
+14. **Checked rows are always visible rows, and never outlive their indices.**
    `list::State.checked` indexes `session.entries` like `App.selected`, so a
    bulk delete must only ever remove what the list shows. →
    `reconcile_selection` prunes it on every filter/search change

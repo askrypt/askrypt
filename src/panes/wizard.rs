@@ -20,6 +20,7 @@ use iced::{Element, Length, Task, alignment::Vertical};
 
 use crate::data;
 use crate::manager::{self, OpenedVault, VaultHome};
+use crate::offline;
 use crate::panes::Action;
 use crate::scratch::Scratch;
 use crate::session::{Session, VaultError, describe_open_error, describe_sign_in_error};
@@ -167,7 +168,14 @@ pub enum Msg {
     ServerVaultPicked(usize),
     VaultNameChanged(String),
     /// A vault finished downloading (or failed to).
-    Opened(Box<Result<OpenedVault, VaultError>>),
+    Opened {
+        /// Where it was read from — what an unreachable server's offline copy
+        /// is looked up by.
+        location: VaultLocation,
+        result: Box<Result<OpenedVault, VaultError>>,
+        /// Why the offline copy of a server vault could not be updated.
+        offline: Option<String>,
+    },
 }
 
 pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action {
@@ -302,7 +310,11 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
             state.vault_name = value;
             Action::None
         }
-        Msg::Opened(result) => {
+        Msg::Opened {
+            location,
+            result,
+            offline,
+        } => {
             session.finish_work();
             match *result {
                 Ok(opened) => {
@@ -313,11 +325,29 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                     // is no longer open.
                     session.reset_follow();
                     session.status_message = Some(format!("Opened {name}"));
+                    // A status line, never a dialog: the open itself worked.
+                    if let Some(e) = offline {
+                        session.error_message = Some(format!("Opened {name}, but {e}"));
+                    }
                     Action::Run(Task::done(Message::Vault(crate::VaultMsg::Unlock)))
                 }
                 Err(error) => {
                     state.error = Some(describe_open_error(&error));
-                    Action::None
+                    match error {
+                        // The server is out of reach: offer what was kept of it.
+                        VaultError::Network if location.is_server() => {
+                            Action::Run(Task::done(Message::OfferOffline(location)))
+                        }
+                        // The server answered that it has no such vault, so the
+                        // copy kept of it is a copy of nothing.
+                        VaultError::Io if location.is_server() => {
+                            if let Some(dir) = crate::offline::dir() {
+                                crate::offline::remove(&dir, &location);
+                            }
+                            Action::None
+                        }
+                        _ => Action::None,
+                    }
                 }
             }
         }
@@ -404,8 +434,9 @@ fn open_location(state: &mut State, session: &mut Session, location: VaultLocati
     };
 
     let scratch = session.scratch.clone();
+    let offline = offline::Target::new(&session.settings, &location);
     session.begin_work("Opening…");
-    Action::Run(load_task(location, storage, scratch))
+    Action::Run(load_task(location, storage, scratch, offline))
 }
 
 /// Download a server vault through the instance pre-seeded with its id and
@@ -430,14 +461,16 @@ fn download(
     let storage: Arc<dyn VaultStorage> = Arc::new(ServerStorage::existing(client, &vault));
 
     let scratch = session.scratch.clone();
+    let offline = offline::Target::new(&session.settings, &location);
     session.begin_work("Downloading…");
-    Action::Run(load_task(location, storage, scratch))
+    Action::Run(load_task(location, storage, scratch, offline))
 }
 
 fn load_task(
     location: VaultLocation,
     storage: Arc<dyn VaultStorage>,
     scratch: Option<Arc<Scratch>>,
+    offline: Option<offline::Target>,
 ) -> Task<Message> {
     Task::perform(
         async move {
@@ -445,18 +478,27 @@ fn load_task(
                 // An `OpenedVault`, never a `SavedVault`: these bytes are still
                 // locked, so there is no master key here — the type says so,
                 // rather than an `Option` that happens to be `None`.
-                let home = VaultHome::new(location, Arc::clone(&storage));
+                let home = VaultHome::new(location.clone(), Arc::clone(&storage));
                 // `read_vault` rather than `load_vault`: it claims the file for
                 // this app and leaves the vault's attachments pointing at an
                 // archive they can be streamed out of.
-                manager::read_vault(&storage, scratch.as_ref())
-                    .map(|file| OpenedVault { file, home })
-                    .map_err(|e| VaultError::log("Failed to open vault", &e))
+                let result = manager::read_vault(&storage, scratch.as_ref())
+                    .map_err(|e| VaultError::log("Failed to open vault", &e));
+                // A server vault just downloaded is kept for offline use.
+                let kept = match (&result, offline) {
+                    (Ok(file), Some(target)) => target.keep(file, storage.as_ref()).err(),
+                    _ => None,
+                };
+                Msg::Opened {
+                    location,
+                    result: Box::new(result.map(|file| OpenedVault { file, home })),
+                    offline: kept,
+                }
             })
             .await
             .expect("load vault task panicked")
         },
-        |result| Message::Wizard(Msg::Opened(Box::new(result))),
+        Message::Wizard,
     )
 }
 

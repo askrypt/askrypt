@@ -364,6 +364,12 @@ pub struct AppSettings {
     /// off, so turning it back on does not ask again.
     #[serde(default)]
     pub backup_dir: Option<PathBuf>,
+    /// Whether every server vault this app downloads or saves is also kept, as
+    /// the same ciphertext, in the cache directory — and offered when the server
+    /// cannot be reached (see `offline`). On by default. Read it through
+    /// [`AppSettings::offline_dir`].
+    #[serde(default = "default_true")]
+    pub offline_copies: bool,
     /// Where the window was last seen. `None` on a first run and in any
     /// `settings.json` from a release before the window was remembered.
     #[serde(default)]
@@ -399,6 +405,7 @@ impl Default for AppSettings {
             server_url: default_server_url(),
             backup_to_local_dir: false,
             backup_dir: None,
+            offline_copies: true,
             window: None,
         }
     }
@@ -429,6 +436,15 @@ impl AppSettings {
             return None;
         }
         self.backup_dir.as_deref()
+    }
+
+    /// Where offline copies of server vaults are kept, or `None` for "don't" —
+    /// the setting is off, or the platform has no cache directory.
+    pub fn offline_dir(&self) -> Option<PathBuf> {
+        if !self.offline_copies {
+            return None;
+        }
+        crate::offline::dir()
     }
 
     /// Load settings from the config file
@@ -727,6 +743,8 @@ mod tests {
         assert!(AppSettings::default().check_leaks);
         assert!(!settings.backup_to_local_dir);
         assert_eq!(settings.backup_dir, None);
+        assert!(settings.offline_copies);
+        assert!(AppSettings::default().offline_copies);
         assert_eq!(settings.window, None);
     }
 

@@ -36,6 +36,8 @@ open = "5.3.5"
 image = "0.25.10"
 tray-item = "0.10.0"
 zeroize = "1"
+# Names offline copies of server vaults (`offline.rs`) by a hash of their location.
+sha2 = "0.11"
 # `spawn_blocking` for off-main-thread key derivation and vault I/O (matches
 # iced's tokio); `time` is the delay behind the clipboard auto-clear.
 tokio = { version = "1", features = ["rt", "time"] }

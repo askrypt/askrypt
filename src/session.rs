@@ -179,6 +179,11 @@ pub struct Session {
     /// platform offered no cache directory: everything still works, one
     /// fallback down in `manager`, and only attaching a file is worse for it.
     pub scratch: Option<Arc<Scratch>>,
+    /// Set while the open vault is an offline copy of a server vault, opened
+    /// because the server could not be reached: when the copy was taken, as
+    /// display text. Cleared by anything that proves the server is back (a
+    /// save, a reload, a follow probe) and by opening or closing a vault.
+    pub offline: Option<String>,
 }
 
 impl Session {
@@ -220,6 +225,7 @@ impl Session {
             last_reload: None,
             follow_stopped: false,
             scratch: Scratch::open().map(Arc::new),
+            offline: None,
         }
     }
 
@@ -231,6 +237,9 @@ impl Session {
             }
             if !self.vault.is_unlocked() {
                 title.push_str(" [Locked]");
+            }
+            if self.offline.is_some() {
+                title.push_str(" [Offline]");
             }
             title.push_str(" - ");
             title.push_str(APP_TITLE);
@@ -267,12 +276,18 @@ impl Session {
 
         let dirty = if self.vault.is_modified() { "*" } else { "" };
         match self.vault.location() {
-            Some(location) => format!(
-                "{}{} — {}",
-                location.display_name(),
-                dirty,
-                self.vault.label()
-            ),
+            Some(location) => {
+                let mut line = format!(
+                    "{}{} — {}",
+                    location.display_name(),
+                    dirty,
+                    self.vault.label()
+                );
+                if let Some(cached_at) = &self.offline {
+                    line.push_str(&format!(" — offline copy from {cached_at}"));
+                }
+                line
+            }
             // A vault composed in the questions editor has no location yet.
             None if self.vault.is_open() => {
                 format!("Untitled vault{} — {}", dirty, self.vault.label())
@@ -369,6 +384,7 @@ impl Session {
         }
         self.settings.last_opened_file = None;
         self.reset_follow();
+        self.offline = None;
     }
 
     /// Adopt a freshly read vault, retiring the working files of the one it
@@ -380,6 +396,8 @@ impl Session {
     pub fn open_vault(&mut self, opened: OpenedVault) {
         manager::retire_working_files(self.vault.file(), self.scratch.as_deref());
         self.vault.open(opened);
+        // Whoever opened an offline copy sets this again afterwards.
+        self.offline = None;
     }
 
     /// Update user activity timestamp (for auto Smart Lock after inactivity)
@@ -477,6 +495,10 @@ impl Session {
                 self.sign_out();
                 "Your server session expired. Sign in again.".to_string()
             }
+            VaultError::Network if self.offline.is_some() => format!(
+                "Could not reach the server to {} the vault — use Save As to keep a local copy",
+                action
+            ),
             VaultError::Network => {
                 format!("Could not reach the server to {} the vault", action)
             }

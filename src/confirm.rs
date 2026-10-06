@@ -77,6 +77,9 @@ pub enum Kind {
     /// Not a question: a copy went to the clipboard without these attached
     /// files. One button, so every answer — OK, Escape, Enter — is Cancel.
     FilesSkipped { names: Vec<String> },
+    /// A server vault could not be reached, and a copy of it was kept on this
+    /// computer. Affirm opens that copy (see [`crate::offline`]).
+    OpenOffline { copy: crate::offline::OfflineCopy },
 }
 
 /// How many names the bulk-delete question lists before summarising the rest.
@@ -133,6 +136,23 @@ impl Kind {
                     .cancel("OK", Message::Confirm(Answer::Cancel))
                     .on_enter(Message::Confirm(Answer::Cancel))
             }
+
+            // Opening a copy loses nothing, so Enter may take it.
+            Kind::OpenOffline { copy } => Dialog::new(
+                "Server unreachable",
+                format!(
+                    "Askrypt could not reach the server to open \u{201c}{}\u{201d}. \
+                     Open the offline copy kept on this computer on {}?\n\n\
+                     You can edit it and save it to a local file with Save As, \
+                     or save it to the server once it is reachable again. \
+                     Changes made elsewhere since then are not in this copy.",
+                    copy.meta.location.display_name(),
+                    copy.meta.cached_at_display(),
+                ),
+            )
+            .affirm("Open offline copy", Message::Confirm(Answer::Affirm))
+            .cancel("Cancel", Message::Confirm(Answer::Cancel))
+            .on_enter(Message::Confirm(Answer::Affirm)),
         }
     }
 }

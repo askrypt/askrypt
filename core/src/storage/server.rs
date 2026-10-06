@@ -522,6 +522,9 @@ pub struct ServerStorage {
     client: Arc<ServerClient>,
     name: String,
     remote: Mutex<Option<Remote>>,
+    /// The ETag a [`pinned`](Self::pinned) instance was last known to hold,
+    /// used in place of whatever the listing reports once the name resolves.
+    pinned_etag: Option<String>,
 }
 
 impl ServerStorage {
@@ -532,6 +535,27 @@ impl ServerStorage {
             client,
             name: name.into(),
             remote: Mutex::new(None),
+            pinned_etag: None,
+        }
+    }
+
+    /// A vault identified by name whose bytes are already known — at `etag` —
+    /// from an earlier session, such as a copy kept for offline use.
+    ///
+    /// Resolving the name learns the id but **keeps this ETag**, so the first
+    /// write is conflict-checked against the version those bytes came from.
+    /// [`by_name`](Self::by_name) would adopt whatever the server holds now and
+    /// overwrite an edit made elsewhere in the meantime.
+    pub fn pinned(
+        client: Arc<ServerClient>,
+        name: impl Into<String>,
+        etag: impl Into<String>,
+    ) -> Self {
+        Self {
+            client,
+            name: name.into(),
+            remote: Mutex::new(None),
+            pinned_etag: Some(etag.into()),
         }
     }
 
@@ -545,6 +569,7 @@ impl ServerStorage {
                 id: vault.id.clone(),
                 etag: vault.etag.clone(),
             })),
+            pinned_etag: None,
         }
     }
 
@@ -577,7 +602,7 @@ impl ServerStorage {
             .find(|vault| vault.name == self.name)
             .map(|vault| Remote {
                 id: vault.id,
-                etag: vault.etag,
+                etag: self.pinned_etag.clone().unwrap_or(vault.etag),
             });
 
         if let Some(remote) = &found {
@@ -638,7 +663,11 @@ impl VaultStorage for ServerStorage {
             .lock()
             .unwrap()
             .as_ref()
-            .map(|remote| Revision(remote.etag.clone()))
+            .map(|remote| remote.etag.clone())
+            // A pinned vault knows its version before the name has resolved,
+            // which is what lets the change follower notice the server is back.
+            .or_else(|| self.pinned_etag.clone())
+            .map(Revision)
     }
 
     fn current_revision(&self) -> Result<Option<RemoteRevision>, StorageError> {
@@ -1563,6 +1592,59 @@ mod tests {
         second
             .write(b"PK\x03\x04second")
             .expect("write after reload failed");
+    }
+
+    /// A server holding one vault at `etag` that enforces If-Match.
+    fn if_match_server(etag: &str) -> FakeServer {
+        let etag: Arc<Mutex<String>> = Arc::new(Mutex::new(etag.to_string()));
+        FakeServer::new(move |request| {
+            let mut etag = etag.lock().unwrap();
+            match request.method.as_str() {
+                "GET" if request.target == "/api/v1/vaults" => {
+                    Reply::json(200, &format!("[{}]", vault_json(&etag)))
+                }
+                "PUT" => {
+                    let sent = request.header("if-match").map(unquote_etag);
+                    if sent.as_deref() != Some(etag.as_str()) {
+                        return Reply::json(412, &error_json("precondition_failed", "changed"));
+                    }
+                    *etag = "next".to_string();
+                    Reply::json(200, &vault_json(&etag))
+                }
+                _ => Reply::json(404, &error_json("not_found", "no such vault")),
+            }
+        })
+    }
+
+    #[test]
+    fn a_pinned_vault_reports_its_revision_before_any_request() {
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let client = Arc::new(ServerClient::with_token(&format!("http://{addr}"), TOKEN));
+        let storage = ServerStorage::pinned(client, VAULT_NAME, "cached");
+        assert_eq!(storage.revision(), Some(Revision("cached".to_string())));
+    }
+
+    #[test]
+    fn a_pinned_write_is_checked_against_the_pinned_etag() {
+        // The server moved on while the copy was offline: refused, rather
+        // than adopting the listed ETag and overwriting that edit.
+        let moved = if_match_server("newer");
+        let storage = ServerStorage::pinned(moved.client(), VAULT_NAME, "cached");
+        match storage.write(b"PK\x03\x04offline") {
+            Err(StorageError::Conflict(_)) => {}
+            other => panic!("expected Conflict, got {:?}", other.map(|_| ())),
+        }
+
+        // The server still holds the cached version: the write lands.
+        let unchanged = if_match_server("cached");
+        let storage = ServerStorage::pinned(unchanged.client(), VAULT_NAME, "cached");
+        storage
+            .write(b"PK\x03\x04offline")
+            .expect("write against the pinned etag failed");
+        assert_eq!(storage.revision(), Some(Revision("next".to_string())));
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod input_language;
 mod leak;
 mod link;
 mod manager;
+mod offline;
 mod panes;
 mod scratch;
 mod session;
@@ -183,6 +184,9 @@ pub enum Message {
     /// The wizard picked a destination. The shell owns the save, because it also
     /// owns what happens once one lands.
     SaveTo(VaultLocation),
+    /// The server could not be reached to open this vault: offer its offline
+    /// copy, if one was kept.
+    OfferOffline(VaultLocation),
     /// Leave the current pane for whatever the vault's state calls for.
     ReturnToDefaultPane,
     Vault(VaultMsg),
@@ -270,6 +274,14 @@ pub enum GlobalMsg {
         /// silently overwrite the other device.
         from: Option<askrypt::Revision>,
         result: Box<Result<manager::ReloadOutcome, VaultError>>,
+        /// Why the offline copy could not be refreshed from what was read.
+        offline: Option<String>,
+    },
+    /// An offline copy finished opening (or failed to).
+    OpenedOffline {
+        /// When the copy was taken, as display text.
+        cached_at: String,
+        result: Box<Result<OpenedVault, VaultError>>,
     },
 }
 
@@ -350,10 +362,11 @@ impl App {
         };
 
         // Reopen the vault named on the command line, else the last one used —
-        // but only if it is actually reachable. A server vault needs a live
-        // sign-in: `storage_for` fails without one, and `exists()` is false when
-        // the server is unreachable, so either way we fall through to the
-        // wizard.
+        // but only if it is actually reachable. A local file must exist. A
+        // server vault needs a live sign-in (`storage_for` fails without one)
+        // and is simply read: an unreachable server is the case the offline
+        // copy is for, so it has to be told apart from a missing vault rather
+        // than folded into `exists()`'s "no".
         let location = match std::env::args().nth(1).map(PathBuf::from) {
             Some(path) => Some(VaultLocation::LocalFile(path)),
             None => app
@@ -364,10 +377,12 @@ impl App {
                 .filter(|location| {
                     app.session
                         .storage_for(location)
-                        .is_ok_and(|storage| storage.exists())
+                        .is_ok_and(|storage| location.is_server() || storage.exists())
                 }),
         };
 
+        // Set when the last vault is on a server that could not be reached.
+        let mut unreachable = None;
         if let Some(location) = location {
             let scratch = app.session.scratch.clone();
             match app.session.storage_for(&location).and_then(|storage| {
@@ -376,10 +391,34 @@ impl App {
                 // be streamed out of later.
                 manager::read_vault(&storage, scratch.as_ref()).map(|file| (storage, file))
             }) {
-                Ok((storage, file)) => app.session.open_vault(OpenedVault {
-                    file,
-                    home: VaultHome::new(location, storage),
-                }),
+                Ok((storage, file)) => {
+                    // Kept here rather than on a worker: the read above
+                    // already ran on this thread, and the copy is of the same
+                    // bytes.
+                    let kept = offline::Target::new(&app.session.settings, &location)
+                        .and_then(|target| target.keep(&file, storage.as_ref()).err());
+                    app.session.open_vault(OpenedVault {
+                        file,
+                        home: VaultHome::new(location, storage),
+                    });
+                    if let Some(e) = kept {
+                        app.session.error_message = Some(format!("Opened, but {e}"));
+                    }
+                }
+                Err(e) if location.is_server() => {
+                    eprintln!("ERROR: Failed to open the last vault: {}", e);
+                    match e {
+                        askrypt::StorageError::Network(_) => unreachable = Some(location),
+                        // The server has no such vault any more, so neither
+                        // should the copy kept of it.
+                        askrypt::StorageError::Io(_) => {
+                            if let Some(dir) = offline::dir() {
+                                offline::remove(&dir, &location);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 Err(e) => {
                     eprintln!("ERROR: Failed to open the last vault: {}", e);
                     app.session.error_message = Some("Failed to open vault".into());
@@ -393,7 +432,14 @@ impl App {
         } else {
             app.unlock.reset_for(&app.session.vault);
         }
-        let task = operation::focus(app.focus_for(app.pane));
+        let mut task = operation::focus(app.focus_for(app.pane));
+        if let Some(location) = unreachable {
+            app.session.error_message = Some(describe_open_error(&VaultError::Network));
+            // Over the wizard, which is where the app lands without a vault.
+            if let Action::Run(ask) = app.offer_offline(&location) {
+                task = ask;
+            }
+        }
 
         (app, task)
     }
@@ -834,6 +880,7 @@ impl App {
                     Action::None
                 }
             },
+            Message::OfferOffline(location) => self.offer_offline(&location),
             Message::ReturnToDefaultPane => self.return_to_default(),
             Message::Vault(msg) => self.update_vault(msg),
             Message::Confirm(answer) => self.resolve_confirm(answer),
@@ -1286,6 +1333,7 @@ impl App {
             .settings
             .local_backup_dir()
             .map(Path::to_path_buf);
+        let offline = offline::Target::new(&self.session.settings, home.location());
         // Where a cloud vault's replacement archive is assembled, and where its
         // freshly attached files were sealed.
         let scratch = self.session.scratch.clone();
@@ -1294,7 +1342,7 @@ impl App {
         Action::Run(Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    manager::write_vault(request, home, backup_dir, scratch)
+                    manager::write_vault(request, home, backup_dir, offline, scratch)
                 })
                 .await
                 .expect("save task panicked")
@@ -1390,6 +1438,19 @@ impl App {
             Err(_) => return Action::None,
         };
 
+        // The server answered: an offline copy is connected again, and the
+        // next save reaches it.
+        if self.session.offline.take().is_some() {
+            self.session.status_message = Some("The server is reachable again".into());
+        }
+        // The server no longer has this vault, so the copy kept of it is a
+        // copy of nothing. What is open stays open — Save As stores it again.
+        if matches!(probe, follow::Probe::Missing)
+            && let (Some(dir), Some(location)) = (offline::dir(), self.session.vault.location())
+        {
+            offline::remove(&dir, location);
+        }
+
         match follow::decide(
             &self.session.vault,
             self.has_draft(),
@@ -1423,6 +1484,12 @@ impl App {
         else {
             return Action::None;
         };
+        let inputs = inputs.keep_offline(
+            self.session
+                .vault
+                .location()
+                .and_then(|location| offline::Target::new(&self.session.settings, location)),
+        );
 
         // Behind `busy` whichever way it started. The *probe* is the part that
         // runs every minute and must stay invisible; a reload only happens
@@ -1439,15 +1506,16 @@ impl App {
             .and_then(|home| home.storage().revision());
         Action::Run(Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || inputs.run())
+                tokio::task::spawn_blocking(move || inputs.run_keeping())
                     .await
                     .expect("reload task panicked")
             },
-            move |result| {
+            move |(result, offline)| {
                 Message::Global(GlobalMsg::Reloaded {
                     intent,
                     from: from.clone(),
                     result: Box::new(result),
+                    offline,
                 })
             },
         ))
@@ -1474,6 +1542,9 @@ impl App {
                 return Action::None;
             }
         };
+        // The server answered, so an offline copy is now connected again —
+        // applied or declined, the next save reaches it.
+        self.session.offline = None;
 
         // The archive the vault is on right now. A reload of a cloud vault
         // spilled a *fresh* copy, so exactly one of the two is about to become
@@ -1713,6 +1784,88 @@ impl App {
             (confirm::Kind::DeleteEntries { indices, .. }, _) => self.remove_entries(indices),
             // Its only button answers Cancel; nothing to do either way.
             (confirm::Kind::FilesSkipped { .. }, _) => Action::None,
+            (confirm::Kind::OpenOffline { copy }, _) => self.open_offline(copy),
+        }
+    }
+
+    /// The server could not be reached to open `location`. Offer the copy kept
+    /// of it, if there is one; otherwise there is nothing more to say than the
+    /// error the caller already showed.
+    fn offer_offline(&mut self, location: &VaultLocation) -> Action {
+        let Some(copy) = self
+            .session
+            .settings
+            .offline_dir()
+            .and_then(|dir| offline::load(&dir, location))
+        else {
+            return Action::None;
+        };
+        self.ask(confirm::Kind::OpenOffline { copy })
+    }
+
+    /// Open a kept copy, off the main thread: it copies the archive into the
+    /// scratch directory before parsing it.
+    fn open_offline(&mut self, copy: offline::OfflineCopy) -> Action {
+        if self.session.busy {
+            return Action::None;
+        }
+        // A save from the copy goes to the same server, through the session's
+        // sign-in; without one there is nowhere for it to go.
+        let client = match &copy.meta.location {
+            VaultLocation::Server { base_url, .. } => self
+                .session
+                .server_client
+                .clone()
+                .filter(|client| client.base_url() == base_url),
+            VaultLocation::LocalFile(_) => None,
+        };
+        let Some(client) = client else {
+            self.session.error_message = Some("Sign in to the server first.".into());
+            return Action::None;
+        };
+
+        let cached_at = copy.meta.cached_at_display();
+        let scratch = self.session.scratch.clone();
+        self.session.begin_work("Opening…");
+        Action::Run(Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    manager::open_offline_copy(copy, client, scratch)
+                })
+                .await
+                .expect("open offline copy task panicked")
+            },
+            move |result| {
+                Message::Global(GlobalMsg::OpenedOffline {
+                    cached_at: cached_at.clone(),
+                    result: Box::new(result),
+                })
+            },
+        ))
+    }
+
+    fn finish_open_offline(
+        &mut self,
+        cached_at: String,
+        result: Result<OpenedVault, VaultError>,
+    ) -> Action {
+        self.session.finish_work();
+        match result {
+            Ok(opened) => {
+                let name = opened.home.location().display_name();
+                self.session.open_vault(opened);
+                self.session.reset_follow();
+                self.session.offline = Some(cached_at.clone());
+                self.session.status_message = Some(format!(
+                    "Opened the offline copy of {name} from {cached_at}"
+                ));
+                // The same next step as any other open.
+                Action::Run(Task::done(Message::Vault(VaultMsg::Unlock)))
+            }
+            Err(error) => {
+                self.session.error_message = Some(describe_open_error(&error));
+                Action::None
+            }
         }
     }
 
@@ -1970,7 +2123,11 @@ impl App {
                 match *result {
                     Ok(saved) => {
                         let backup = saved.backup.clone();
+                        let offline = saved.offline.clone();
                         self.session.vault.apply_saved(saved);
+                        // The server took these bytes, so whatever this was
+                        // opened from, it is no longer an offline copy.
+                        self.session.offline = None;
                         self.session.remember_vault();
                         // The backend is on our revision again, so a standing
                         // divergence — and the dismissal that let it stand —
@@ -1996,6 +2153,11 @@ impl App {
                                     Some("Vault saved successfully".into())
                             }
                         }
+                        // Never a dialog: a full disk under the cache is not
+                        // worth interrupting a save that landed.
+                        if let Some(e) = offline {
+                            self.session.error_message = Some(format!("Vault saved, but {}", e));
+                        }
                         if let Err(e) = self.session.settings.save() {
                             eprintln!("WARNING: Failed to save settings: {}", e);
                         }
@@ -2019,7 +2181,18 @@ impl App {
                 intent,
                 from,
                 result,
-            } => self.finish_reload(intent, from, *result),
+                offline,
+            } => {
+                let action = self.finish_reload(intent, from, *result);
+                // After, so the line is not cleared by the reload's own.
+                if let Some(e) = offline {
+                    self.session.error_message = Some(format!("Reloaded, but {}", e));
+                }
+                action
+            }
+            GlobalMsg::OpenedOffline { cached_at, result } => {
+                self.finish_open_offline(cached_at, *result)
+            }
             GlobalMsg::ProbeWindow => {
                 self.probe_window = false;
                 Action::Run(
