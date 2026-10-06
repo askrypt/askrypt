@@ -10,8 +10,10 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../platform/offline_copy_store.dart';
 import '../platform/server_client.dart';
 import '../session/cloud_session.dart';
+import '../session/offline_copies.dart';
 import '../session/vault_home.dart';
 import 'unlock_screen.dart';
 
@@ -300,10 +302,14 @@ class _CloudScreenState extends ConsumerState<CloudScreen>
 }
 
 /// Download a cloud vault and push the unlock screen for it. Returns a
-/// sentence to show when it could not be opened, `null` on success.
+/// sentence to show when it could not be opened, `null` on success (or when
+/// the user declined the offline copy offered instead).
 ///
 /// [listedEtag] is the listing's ETag, used only when the download carried
 /// none: the next save must be conflict-checked against *some* version.
+///
+/// Every download is kept as an offline copy; when the server cannot be
+/// reached and a copy exists, it is offered instead.
 Future<String?> openCloudVault(
   BuildContext context,
   WidgetRef ref,
@@ -312,27 +318,84 @@ Future<String?> openCloudVault(
   required String name,
   String? listedEtag,
 }) async {
+  final home = CloudHome(
+    baseUrl: cloud.client.baseUrl,
+    email: cloud.email,
+    id: id,
+    name: name,
+    etag: listedEtag ?? '',
+  );
   try {
     final (bytes, etag) = await cloud.client.download(id);
-    if (!context.mounted) return null;
-    final home = CloudHome(
-      baseUrl: cloud.client.baseUrl,
-      email: cloud.email,
+    final downloaded = CloudHome(
+      baseUrl: home.baseUrl,
+      email: home.email,
       id: id,
       name: name,
-      etag: etag.isNotEmpty ? etag : (listedEtag ?? ''),
+      etag: etag.isNotEmpty ? etag : home.etag,
     );
+    keepOfflineCopy(ref, downloaded, bytes);
+    if (!context.mounted) return null;
     Navigator.of(context).push(MaterialPageRoute<void>(
-        builder: (_) => UnlockScreen(bytes: bytes, home: home)));
+        builder: (_) => UnlockScreen(bytes: bytes, home: downloaded)));
     return null;
   } on ServerException catch (e) {
     if (e.kind == ServerErrorKind.auth) {
       await ref.read(cloudProvider.notifier).sessionRejected();
     }
-    return e.kind == ServerErrorKind.notFound
-        ? 'That vault is no longer on the server.'
-        : e.describe();
+    if (e.kind == ServerErrorKind.notFound) {
+      removeOfflineCopy(ref, home);
+      return 'That vault is no longer on the server.';
+    }
+    if (e.kind == ServerErrorKind.network && context.mounted) {
+      final copy = await loadOfflineCopy(ref, home);
+      if (copy != null && context.mounted) {
+        return _offerOfflineCopy(context, home, copy, e);
+      }
+    }
+    return e.describe();
   }
+}
+
+/// The server is unreachable but a copy was kept: ask, then open it pinned to
+/// the copy's ETag.
+Future<String?> _offerOfflineCopy(BuildContext context, CloudHome home,
+    OfflineCopy copy, ServerException e) async {
+  final when = DateTime.tryParse(copy.cachedAt);
+  final open = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Server unreachable'),
+      content: Text(
+        'Askrypt could not reach ${hostOf(home.baseUrl)} to open '
+        '${home.name}. Open the offline copy kept on this device'
+        '${when == null ? '' : ' on ${formatLocalTime(when)}'}?\n\n'
+        'You can edit it and save it to the server once it is reachable '
+        'again, or save a copy to this device. Changes made elsewhere since '
+        'then are not in this copy.',
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Open offline copy')),
+      ],
+    ),
+  );
+  if (open != true || !context.mounted) return null;
+  final offline = CloudHome(
+    baseUrl: home.baseUrl,
+    email: home.email,
+    id: home.id,
+    name: home.name,
+    etag: copy.etag,
+    offlineCopyAt: copy.cachedAt,
+  );
+  Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => UnlockScreen(bytes: copy.bytes, home: offline)));
+  return null;
 }
 
 /// "12.3 KB · saved Sep 19, 2026 14:05 on android@pixel-8".

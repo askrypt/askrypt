@@ -33,6 +33,7 @@ class CloudHome extends VaultHome {
     required this.id,
     required this.name,
     required this.etag,
+    this.offlineCopyAt,
   });
 
   final String baseUrl;
@@ -42,7 +43,12 @@ class CloudHome extends VaultHome {
   final String name;
   final String etag;
 
-  /// This home after a save the server answered with [vault].
+  /// When this session was opened from an offline copy: the time the copy was
+  /// taken (RFC 3339 UTC). `null` for a vault downloaded from the server.
+  /// [etag] is then the copy's, so a save is checked against that version.
+  final String? offlineCopyAt;
+
+  /// This home after a save — no longer an offline copy the server answered with [vault].
   CloudHome withRemote(RemoteVault vault) => CloudHome(
         baseUrl: baseUrl,
         email: email,

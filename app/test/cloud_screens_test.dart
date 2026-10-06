@@ -13,6 +13,8 @@ import 'package:askrypt/platform/recent_vault_store.dart';
 import 'package:askrypt/platform/server_session_store.dart';
 import 'package:askrypt/platform/vault_io.dart';
 import 'package:askrypt/session/cloud_session.dart';
+import 'package:askrypt/session/offline_copies.dart';
+import 'package:askrypt/session/vault_home.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -136,6 +138,7 @@ void main() {
         vaultIoProvider.overrideWithValue(_NoIo()),
         biometricStoreProvider.overrideWithValue(_NoBiometrics()),
         platformSecurityProvider.overrideWithValue(_NoopSecurity()),
+        offlineCopyStoreProvider.overrideWithValue(FakeOfflineCopyStore()),
         ...quietLeakCheckOverrides,
       ],
       child: const AskryptApp(),
@@ -182,6 +185,130 @@ void main() {
         unorderedEquals(['GitHub', 'Mail']));
     await pumpUntil(tester, () => shown('Askrypt'));
     expect(shown('Askrypt •'), isFalse);
+  });
+
+  testWidgets('an unreachable server offers the offline copy, and a save '
+      'once it is back is checked against the copy', (tester) async {
+    final server = FakeServer();
+    final initial = await tester.runAsync(() async => (await AskryptFile.create(
+          questions: ['First pet?', 'Birth city?'],
+          answers: ['Rex', 'Kazan'],
+          entries: const [],
+          iterations: 1000,
+        ))
+            .toBytes());
+    final stored = server.add('Main.askrypt', initial!);
+    final copies = FakeOfflineCopyStore();
+    final io = _NoIo();
+    final recent = _Recent()
+      ..stored = RecentCloud(
+          baseUrl: base, email: email, id: stored.id, name: 'Main.askrypt');
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        httpClientProvider.overrideWithValue(server.client),
+        serverSessionStoreProvider.overrideWithValue(FakeServerSessionStore()
+          ..url = base
+          ..session = const ServerSession(
+              baseUrl: base, email: email, token: FakeServer.token)),
+        recentVaultStoreProvider.overrideWithValue(recent),
+        vaultIoProvider.overrideWithValue(io),
+        biometricStoreProvider.overrideWithValue(_NoBiometrics()),
+        platformSecurityProvider.overrideWithValue(_NoopSecurity()),
+        offlineCopyStoreProvider.overrideWithValue(copies),
+        ...quietLeakCheckOverrides,
+      ],
+      child: const AskryptApp(),
+    ));
+    await tester.pumpAndSettle();
+
+    Future<void> unlock() async {
+      await pumpUntil(tester, () => shown('Next'));
+      await tester.enterText(find.byType(TextField).first, 'Rex');
+      await tester.tap(find.text('Next'));
+      await pumpUntil(
+          tester, () => find.byType(TextField).evaluate().length >= 2);
+      await tester.enterText(find.byType(TextField).at(1), 'Kazan');
+      await tester.tap(find.text('Unlock'));
+      await pumpUntil(tester, () => shown('No entries'));
+    }
+
+    // Online: the download is kept as the offline copy, at its ETag.
+    await tester.tap(find.text('Open Main.askrypt'));
+    await unlock();
+    expect(copies.copies.values.single.etag, stored.etag);
+    expect(copies.copies.values.single.bytes, stored.bytes);
+    await tester.tap(find.byIcon(Icons.lock));
+    await tester.pumpAndSettle();
+
+    // Offline: the copy is offered and opens, marked as a copy.
+    server.unreachable = true;
+    await tester.tap(find.text('Open Main.askrypt'));
+    await pumpUntil(tester, () => shown('Server unreachable'));
+    await tester.tap(find.text('Open offline copy'));
+    await unlock();
+    expect(find.textContaining('Offline copy from'), findsOneWidget);
+
+    // A save while still offline fails, says so, and offers a device copy.
+    await addEntry(tester, 'GitHub');
+    await tester.tap(find.byIcon(Icons.cloud_upload));
+    await pumpUntil(tester, () => shown('Save a copy'));
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(shown('Askrypt •'), isTrue);
+    expect(io.saved, isNull);
+
+    // Back online: the save is If-Match'd against the copy's ETag, lands, and
+    // the landed bytes become the new copy.
+    server.unreachable = false;
+    final copiedAt = stored.etag;
+    await tester.tap(find.byIcon(Icons.cloud_upload));
+    await pumpUntil(tester, () => stored.etag != copiedAt);
+    expect(server.requests.last.headers['If-Match'], '"$copiedAt"');
+    expect(await entryNames(tester, stored.bytes), ['GitHub']);
+    await pumpUntil(tester, () => shown('Askrypt'));
+    expect(find.textContaining('Offline copy from'), findsNothing);
+    expect(copies.copies.values.single.etag, stored.etag);
+  });
+
+  testWidgets('a vault gone from the server loses its offline copy',
+      (tester) async {
+    final server = FakeServer();
+    final copies = FakeOfflineCopyStore();
+    await copies.keep(
+        offlineLocationOf(const CloudHome(
+            baseUrl: base,
+            email: email,
+            id: 'id-gone',
+            name: 'Gone.askrypt',
+            etag: 'e')),
+        'Gone.askrypt',
+        Uint8List(1),
+        'e');
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        httpClientProvider.overrideWithValue(server.client),
+        serverSessionStoreProvider.overrideWithValue(FakeServerSessionStore()
+          ..url = base
+          ..session = const ServerSession(
+              baseUrl: base, email: email, token: FakeServer.token)),
+        recentVaultStoreProvider.overrideWithValue(_Recent()
+          ..stored = const RecentCloud(
+              baseUrl: base,
+              email: email,
+              id: 'id-gone',
+              name: 'Gone.askrypt')),
+        offlineCopyStoreProvider.overrideWithValue(copies),
+        ...quietLeakCheckOverrides,
+      ],
+      child: const AskryptApp(),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Open Gone.askrypt'));
+    await pumpUntil(
+        tester, () => shown('That vault is no longer on the server.'));
+    expect(copies.copies, isEmpty);
   });
 
   testWidgets('without a session the cloud screen offers browser sign-in',

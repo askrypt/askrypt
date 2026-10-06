@@ -6,6 +6,7 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:askrypt/platform/offline_copy_store.dart';
 import 'package:askrypt/platform/preferences_store.dart';
 import 'package:askrypt/platform/pwned_client.dart';
 import 'package:askrypt/platform/server_session_store.dart';
@@ -94,7 +95,11 @@ class FakeServer {
       jsonEncode(body), status,
       headers: {'content-type': 'application/json'});
 
+  /// When set, every request fails as if the network were down.
+  bool unreachable = false;
+
   Future<http.Response> _handle(http.Request request) async {
+    if (unreachable) throw http.ClientException('Network is unreachable');
     requests.add(request);
     final path = request.url.path;
 
@@ -162,6 +167,41 @@ class FakePreferencesStore implements PreferencesStore {
 
   @override
   Future<void> saveCheckLeaks(bool value) async => checkLeaks = value;
+
+  bool? offlineCopies;
+
+  @override
+  Future<bool?> loadOfflineCopies() async => offlineCopies;
+
+  @override
+  Future<void> saveOfflineCopies(bool value) async => offlineCopies = value;
+}
+
+/// Offline copies in memory, keyed like the real store.
+class FakeOfflineCopyStore implements OfflineCopyStore {
+  final copies = <String, OfflineCopy>{};
+
+  @override
+  Future<void> keep(OfflineLocation location, String name, Uint8List bytes,
+      String etag) async {
+    copies[location.key] = OfflineCopy(
+        location: location,
+        name: name,
+        etag: etag,
+        cachedAt: '2026-10-06T10:00:00Z',
+        bytes: bytes);
+  }
+
+  @override
+  Future<OfflineCopy?> load(OfflineLocation location) async =>
+      copies[location.key];
+
+  @override
+  Future<void> remove(OfflineLocation location) async =>
+      copies.remove(location.key);
+
+  @override
+  Future<void> clearAll() async => copies.clear();
 }
 
 /// Keeps the leak check off the network — and off a fake server's request

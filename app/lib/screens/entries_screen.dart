@@ -16,6 +16,7 @@ import '../app.dart';
 import '../platform/recent_vault_store.dart';
 import '../platform/server_client.dart';
 import '../session/cloud_session.dart';
+import '../session/offline_copies.dart';
 import '../session/unlocked_vault.dart';
 import '../session/vault_home.dart';
 import '../session/vault_session.dart';
@@ -211,16 +212,45 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
     final bytes = await notifier.toBytes();
     try {
       final vault = await cloud.client.overwrite(home.id, bytes, home.etag);
-      _savedToCloud(home.withRemote(vault), 'Saved to ${cloud.client.host}');
+      _savedToCloud(
+          home.withRemote(vault), bytes, 'Saved to ${cloud.client.host}');
     } on ServerException catch (e) {
       if (!mounted) return;
       notifier.setModified(true);
       if (e.kind == ServerErrorKind.conflict) {
         await _resolveConflict(cloud, home, bytes);
+      } else if (e.kind == ServerErrorKind.network) {
+        await _unreachable(home, e);
       } else {
         await _failed(e);
       }
     }
+  }
+
+  /// The server could not be reached — typical for a vault opened from its
+  /// offline copy. Nothing is lost by waiting, but offer a copy on the device
+  /// now (desktop suggests Save As here).
+  Future<void> _unreachable(CloudHome home, ServerException e) async {
+    final copy = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Server unreachable'),
+        content: Text(
+          '${home.name} was not saved: ${e.describe()}. Try again once '
+          '${hostOf(home.baseUrl)} is reachable — or save a copy to this '
+          'device now so nothing is lost.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save a copy')),
+        ],
+      ),
+    );
+    if (copy == true && mounted) await _saveToDevice(home.name);
   }
 
   /// Someone else saved since we read it. Show who, and let the user decide:
@@ -264,7 +294,8 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
       final vault = current == null
           ? await cloud.client.create(home.name, bytes)
           : await cloud.client.overwrite(home.id, bytes, current.etag);
-      _savedToCloud(home.withRemote(vault), 'Saved to ${cloud.client.host}');
+      _savedToCloud(
+          home.withRemote(vault), bytes, 'Saved to ${cloud.client.host}');
     } on ServerException catch (e) {
       await _failed(e);
     }
@@ -321,7 +352,7 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
         name: vault.name,
         etag: vault.etag,
       );
-      _savedToCloud(home, 'Saved to ${cloud.client.host}');
+      _savedToCloud(home, bytes, 'Saved to ${cloud.client.host}');
     } on ServerException catch (e) {
       if (!mounted) return;
       notifier.setModified(true);
@@ -360,11 +391,13 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
   }
 
   /// Record a landed cloud save: the new version is the next `If-Match`, the
-  /// vault is now this session's home, and the welcome screen remembers it.
-  void _savedToCloud(CloudHome home, String message) {
+  /// vault is now this session's home, the welcome screen remembers it, and
+  /// [bytes] — now exactly what the server holds — become its offline copy.
+  void _savedToCloud(CloudHome home, Uint8List bytes, String message) {
     // Locked mid-upload (the app went to the background): the save landed,
     // but there is no session left to record it in.
     if (!mounted) return;
+    keepOfflineCopy(ref, home, bytes);
     ref.read(vaultHomeProvider.notifier).state = home;
     final session = ref.read(vaultSessionProvider);
     if (session is VaultUnlocked && session.vault.isModified) {
@@ -495,6 +528,9 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
       ),
       body: Column(
         children: [
+          if (ref.watch(vaultHomeProvider)
+              case CloudHome(:final offlineCopyAt?, :final baseUrl))
+            _OfflineBanner(cachedAt: offlineCopyAt, host: hostOf(baseUrl)),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
             child: TextField(
@@ -558,6 +594,39 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
         tooltip: 'Add entry',
         onPressed: () => _openEntry(null),
         child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+/// Says the open vault is an offline copy, from when, and where a save goes —
+/// desktop's "— offline copy from <date>" status line and "[Offline]" title.
+class _OfflineBanner extends StatelessWidget {
+  const _OfflineBanner({required this.cachedAt, required this.host});
+
+  final String cachedAt;
+  final String host;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final when = DateTime.tryParse(cachedAt);
+    return Material(
+      color: theme.colorScheme.secondaryContainer,
+      child: ListTile(
+        dense: true,
+        leading: Icon(Icons.cloud_off,
+            color: theme.colorScheme.onSecondaryContainer),
+        title: Text(
+          when == null
+              ? 'Offline copy'
+              : 'Offline copy from ${formatLocalTime(when)}',
+          style: TextStyle(color: theme.colorScheme.onSecondaryContainer),
+        ),
+        subtitle: Text(
+          'Save reaches $host once it is reachable again.',
+          style: TextStyle(color: theme.colorScheme.onSecondaryContainer),
+        ),
       ),
     );
   }

@@ -12,7 +12,8 @@
 ///
 /// A vault on an Askrypt server is remembered by *location* instead (server,
 /// account, vault id, name — no bytes): reopening it downloads the latest
-/// version, and a cloud vault leaves no copy of itself on the device.
+/// version. Its bytes are kept separately, as an offline copy
+/// (`offline_copy_store.dart`), only for when the server is unreachable.
 library;
 
 import 'dart:convert';
