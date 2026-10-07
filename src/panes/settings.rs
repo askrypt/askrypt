@@ -26,6 +26,7 @@ pub enum Msg {
     ClearClipboardToggled(bool),
     ShowInputLanguageToggled(bool),
     CheckLeaksToggled(bool),
+    CheckAllLeaksToggled(bool),
     BackupToLocalDirToggled(bool),
     OfflineCopiesToggled(bool),
     /// Open the folder picker (the "Choose"/"Change" button).
@@ -45,6 +46,7 @@ pub fn update(session: &mut Session, message: Msg) -> Action {
         Msg::ClearClipboardToggled(value) => session.settings.clear_clipboard = value,
         Msg::ShowInputLanguageToggled(value) => session.settings.show_input_language = value,
         Msg::CheckLeaksToggled(value) => session.settings.check_leaks = value,
+        Msg::CheckAllLeaksToggled(value) => session.settings.check_all_leaks = value,
         // Turning it *on* has to end with a directory, or it means nothing —
         // so the picker opens straight away when there is none remembered.
         Msg::BackupToLocalDirToggled(value) => {
@@ -129,7 +131,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .into(),
     ));
 
-    let security = theme::card(column![
+    let mut security = column![
         setting_row(
             "Smart Lock the vault when idle",
             "Wipes the answers and holds them re-encrypted in memory; one answer re-opens it.",
@@ -154,7 +156,17 @@ pub fn view(app: &App) -> Element<'_, Message> {
             settings.check_leaks,
             Msg::CheckLeaksToggled,
         ),
-    ]);
+    ];
+    // Only meaningful under the switch above, so it goes with it.
+    if settings.check_leaks {
+        security = security.push(hairline()).push(toggle_row(
+            "Check all items on unlock",
+            "Checks every item password once when the vault opens and marks leaked items in the list.",
+            settings.check_all_leaks,
+            Msg::CheckAllLeaksToggled,
+        ));
+    }
+    let security = theme::card(security);
 
     let general = theme::card(column![
         toggle_row(

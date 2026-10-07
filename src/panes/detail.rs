@@ -8,8 +8,8 @@ use iced::{Element, Length, alignment::Vertical};
 
 use askrypt::{CustomFieldType, SecretEntry};
 
-use crate::data;
 use crate::{App, Message, icon, theme};
+use crate::{data, leak};
 
 /// Placeholder shown in place of a hidden password.
 const DOTS: &str = "••••••••";
@@ -34,7 +34,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
         } else if data::is_file(entry) {
             file_main_card(entry)
         } else {
-            main_card(entry, app.revealed)
+            // The breach verdict the unlock's sweep (or the editor) left in
+            // the vault's cache, while the setting is on.
+            let leaked = app
+                .session
+                .vault
+                .unlocked()
+                .filter(|_| app.session.settings.check_leaks)
+                .and_then(|vault| vault.leaks().get(&entry.secret))
+                .filter(|&count| count > 0);
+            main_card(entry, app.revealed, leaked)
         },
     ]
     .spacing(14)
@@ -170,8 +179,9 @@ fn empty_pane<'a>() -> Element<'a, Message> {
     .into()
 }
 
-/// Name / Username / Password, separated by hairlines.
-fn main_card(entry: &SecretEntry, revealed: bool) -> Element<'_, Message> {
+/// Name / Username / Password, separated by hairlines. `leaked` is the
+/// password's breach count when it is known to be in one: a red line under it.
+fn main_card(entry: &SecretEntry, revealed: bool, leaked: Option<u64>) -> Element<'_, Message> {
     let password_actions = row![
         icon_action(
             if revealed {
@@ -224,11 +234,11 @@ fn main_card(entry: &SecretEntry, revealed: bool) -> Element<'_, Message> {
     }
 
     fields = fields.push(hairline());
-    fields = fields.push(field_row(
-        "Password",
-        text(password).size(14).into(),
-        password_actions,
-    ));
+    let mut password = column![text(password).size(14)].spacing(4);
+    if let Some(count) = leaked {
+        password = password.push(leak::warning(count));
+    }
+    fields = fields.push(field_row("Password", password.into(), password_actions));
 
     theme::card(fields).into()
 }

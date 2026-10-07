@@ -346,6 +346,12 @@ pub struct AppSettings {
     /// by default.
     #[serde(default = "default_true")]
     pub check_leaks: bool,
+    /// Whether every item password is checked once on unlock (and a saved
+    /// item's right after Save), marking leaked items in the list. Only means
+    /// anything while `check_leaks` is on — read it via
+    /// [`AppSettings::sweeps_leaks`]. On by default.
+    #[serde(default = "default_true")]
+    pub check_all_leaks: bool,
     /// The one Askrypt server this app talks to. Sign-in happens in the
     /// browser, so this is the *only* thing about a server the app asks for.
     ///
@@ -376,6 +382,14 @@ pub struct AppSettings {
     pub window: Option<WindowState>,
 }
 
+impl AppSettings {
+    /// Whether item passwords are swept for leaks on unlock and marked in the
+    /// list: the sweep's own switch, under the breach warning's master one.
+    pub fn sweeps_leaks(&self) -> bool {
+        self.check_leaks && self.check_all_leaks
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -399,6 +413,7 @@ impl Default for AppSettings {
             clear_clipboard: true,
             show_input_language: false,
             check_leaks: true,
+            check_all_leaks: true,
             // The `#[serde(default)]` above only covers *parsing*; a default
             // built in code needs it spelled out again or the app starts with
             // no server at all.
@@ -741,6 +756,8 @@ mod tests {
         assert!(!settings.show_input_language);
         assert!(settings.check_leaks);
         assert!(AppSettings::default().check_leaks);
+        assert!(settings.check_all_leaks);
+        assert!(AppSettings::default().check_all_leaks);
         assert!(!settings.backup_to_local_dir);
         assert_eq!(settings.backup_dir, None);
         assert!(settings.offline_copies);

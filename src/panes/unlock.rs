@@ -19,7 +19,7 @@ use zeroize::Zeroize;
 use crate::manager::{Decrypted, SmartUnlockResult, VaultState};
 use crate::panes::Action;
 use crate::session::Session;
-use crate::{App, Message, Pane, SEARCH_INPUT_ID, VaultMsg, data, icon, theme};
+use crate::{App, Message, Pane, SEARCH_INPUT_ID, VaultMsg, data, icon, leak, theme};
 
 const ANSWER_INPUT_ID: &str = "GUI_UNLOCK_ANSWER";
 
@@ -172,7 +172,14 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                     session.update_user_activity();
                     state.reset_for(&session.vault);
                     session.status_message = Some(format!("The vault unlocked in {} ms", millis));
-                    Action::pane_run(Pane::Items, iced::widget::operation::focus(SEARCH_INPUT_ID))
+                    // The one time every item password is checked for leaks.
+                    Action::pane_run(
+                        Pane::Items,
+                        Task::batch([
+                            iced::widget::operation::focus(SEARCH_INPUT_ID),
+                            leak::sweep(session),
+                        ]),
+                    )
                 }
                 Err(e) => {
                     eprintln!("ERROR: Failed to decrypt the vault: {}", e);
@@ -193,7 +200,15 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> Action 
                     state.reset_for(&session.vault);
                     session.status_message =
                         Some(format!("Vault unlocked from Smart Lock in {} ms", millis));
-                    Action::pane_run(Pane::Items, iced::widget::operation::focus(SEARCH_INPUT_ID))
+                    // The bundle carried the verdicts, so this asks only about
+                    // passwords that were never answered.
+                    Action::pane_run(
+                        Pane::Items,
+                        Task::batch([
+                            iced::widget::operation::focus(SEARCH_INPUT_ID),
+                            leak::sweep(session),
+                        ]),
+                    )
                 }
                 Err(e) => {
                     eprintln!("ERROR: Failed to recover the Smart Lock: {}", e);

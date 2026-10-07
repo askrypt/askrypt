@@ -38,11 +38,14 @@ pub const SMART_LOCK_TIMEOUT: Duration = Duration::from_hours(8);
 ///
 /// **Worker-thread only.** `answers` holds answers 1.., aligned with
 /// `questions`; `answer0` is separate because the format treats it separately.
+/// `leaks` is the vault's breach-check cache (`LeakCache::to_bytes`), sealed
+/// under the same key so it survives the lock without lying in RAM in clear.
 pub fn create(
     answers: &[String],
     answer0: &str,
     questions: &[String],
     translit: bool,
+    leaks: &[u8],
 ) -> Result<SmartLocked, Box<dyn std::error::Error>> {
     // Randomly select an answer index (not the first one).
     // `answers` holds the answers to questions 2, 3, …, so index 1 corresponds
@@ -73,6 +76,7 @@ pub fn create(
     // One IV per ciphertext — see `SmartLocked::iv_answer0`.
     let iv_answer0 = generate_bytes(16);
     let iv_answers = generate_bytes(16);
+    let iv_leaks = generate_bytes(16);
 
     // Derive encryption key from the selected answer using PBKDF2.
     let normalized_answer = Zeroizing::new(normalize_answer(&key_answer, translit));
@@ -94,6 +98,10 @@ pub fn create(
         .as_slice()
         .try_into()
         .map_err(|_| "Invalid IV length")?;
+    let iv2_array: [u8; 16] = iv_leaks
+        .as_slice()
+        .try_into()
+        .map_err(|_| "Invalid IV length")?;
 
     let encrypted_answer0 = encrypt_with_aes(answer0.as_bytes(), &key_array, &iv0_array)?;
 
@@ -101,6 +109,7 @@ pub fn create(
     // which one it was from the salt and IVs, not from the plaintext.
     let answers_json = Zeroizing::new(serde_json::to_string(answers)?);
     let encrypted_answers = encrypt_with_aes(answers_json.as_bytes(), &key_array, &iv1_array)?;
+    let encrypted_leaks = encrypt_with_aes(leaks, &key_array, &iv2_array)?;
 
     Ok(SmartLocked {
         key_answer_index,
@@ -110,12 +119,22 @@ pub fn create(
         salt,
         iv_answer0,
         iv_answers,
+        encrypted_leaks,
+        iv_leaks,
         armed_at: Instant::now(),
     })
 }
 
+/// What [`recover`] gets back out of a bundle.
+pub struct Recovered {
+    pub answer0: String,
+    pub answers: Vec<String>,
+    /// The breach-check cache as `LeakCache::to_bytes` wrote it.
+    pub leaks: Zeroizing<Vec<u8>>,
+}
+
 /// Recover the answers from a Smart Lock bundle (2M-iteration PBKDF2).
-/// Returns the decrypted `answer0` and the remaining answers.
+/// Returns the decrypted `answer0`, the remaining answers and the leak cache.
 ///
 /// **Worker-thread only.** A wrong answer is not reported as such — it simply
 /// fails to decrypt, exactly like the layered unlock.
@@ -123,7 +142,7 @@ pub fn recover(
     data: &SmartLocked,
     answer: &str,
     translit: bool,
-) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
+) -> Result<Recovered, Box<dyn std::error::Error>> {
     let normalized_answer = Zeroizing::new(normalize_answer(answer, translit));
     let salt_b64 = encode_base64(&data.salt);
     let hashed_answer = Zeroizing::new(sha256(&normalized_answer, &salt_b64));
@@ -149,6 +168,11 @@ pub fn recover(
         .as_slice()
         .try_into()
         .map_err(|_| "Invalid IV length")?;
+    let iv2_array: [u8; 16] = data
+        .iv_leaks
+        .as_slice()
+        .try_into()
+        .map_err(|_| "Invalid IV length")?;
 
     // Decrypted answer0 (returned to the caller, which wipes it on lock).
     let answer0_bytes = decrypt_with_aes(&data.encrypted_answer0, &key_array, &iv0_array)?;
@@ -159,8 +183,17 @@ pub fn recover(
     // JSON on drop.
     let answers_json = Zeroizing::new(String::from_utf8(answers_bytes)?);
     let answers: Vec<String> = serde_json::from_str(&answers_json)?;
+    let leaks = Zeroizing::new(decrypt_with_aes(
+        &data.encrypted_leaks,
+        &key_array,
+        &iv2_array,
+    )?);
 
-    Ok((answer0, answers))
+    Ok(Recovered {
+        answer0,
+        answers,
+        leaks,
+    })
 }
 
 #[cfg(test)]
@@ -174,13 +207,17 @@ mod tests {
         let questions = vec!["First street?".to_string(), "First school?".to_string()];
         let answers = vec!["Baker Street".to_string(), "Hogwarts".to_string()];
 
-        let data = create(&answers, "Rex", &questions, false).expect("the bundle should be built");
+        let data = create(&answers, "Rex", &questions, false, b"leak cache")
+            .expect("the bundle should be built");
+        assert_ne!(data.iv_leaks, data.iv_answers);
+        assert_ne!(data.iv_leaks, data.iv_answer0);
 
         let key_answer = &answers[data.key_answer_index - 1];
-        let (answer0, recovered) =
+        let recovered =
             recover(&data, key_answer, false).expect("the key answer should recover the bundle");
-        assert_eq!(answer0, "Rex");
-        assert_eq!(recovered, answers);
+        assert_eq!(recovered.answer0, "Rex");
+        assert_eq!(recovered.answers, answers);
+        assert_eq!(recovered.leaks.as_slice(), b"leak cache");
 
         assert!(
             recover(&data, "not the answer", false).is_err(),
@@ -195,7 +232,8 @@ mod tests {
         let questions = vec!["First street?".to_string()];
         let answers = vec!["Baker-Street".to_string()];
 
-        let data = create(&answers, "Rex", &questions, false).expect("the bundle should be built");
+        let data =
+            create(&answers, "Rex", &questions, false, &[]).expect("the bundle should be built");
         assert_eq!(data.key_answer_index, 1);
         assert_eq!(data.key_question, "First street?");
 
@@ -205,6 +243,6 @@ mod tests {
     /// One question means no answer to key on: Smart Lock needs at least two.
     #[test]
     fn a_single_question_cannot_be_smart_locked() {
-        assert!(create(&[], "Rex", &[], false).is_err());
+        assert!(create(&[], "Rex", &[], false, &[]).is_err());
     }
 }

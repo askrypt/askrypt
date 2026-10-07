@@ -110,7 +110,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 Mark::Plain(app.selected == Some(index))
             };
             let changed = vault.is_some_and(|vault| vault.is_entry_changed(index));
-            items = items.push(row_widget(index, entry, mark, changed));
+            let leaked = app.session.settings.sweeps_leaks()
+                && vault.is_some_and(|vault| vault.is_entry_leaked(index));
+            items = items.push(row_widget(index, entry, mark, changed, leaked));
         }
         scrollable(items)
             .width(Length::Fill)
@@ -290,6 +292,7 @@ fn row_widget(
     entry: &SecretEntry,
     mark: Mark,
     changed: bool,
+    leaked: bool,
 ) -> Element<'_, Message> {
     let selected = match mark {
         Mark::Plain(on) | Mark::Check(on) => on,
@@ -307,6 +310,11 @@ fn row_widget(
     let mut title = row![text(name).size(14).font(theme::bold())]
         .spacing(6)
         .align_y(Vertical::Center);
+    // The password is in a known breach (see `leak`). The bundled glyph, not
+    // an emoji: the UI font has no colour emoji to draw one with.
+    if leaked {
+        title = title.push(icon::warning(12).style(text::danger));
+    }
     if entry.hidden {
         title = title.push(text("hidden").size(11).style(text::secondary));
     }

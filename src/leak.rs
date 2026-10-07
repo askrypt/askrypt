@@ -13,15 +13,24 @@
 //!
 //! A failed lookup is logged and shows nothing: the warning is advice, and "we
 //! could not ask" is not something the user can act on.
+//!
+//! Every verdict also lands in the unlocked vault's [`LeakCache`], so the API
+//! is asked about a password once. On unlock (and after an item is saved) a
+//! [`LeakSweep`] checks every item password the cache does not know yet; the
+//! item list and the detail pane read their warnings off the cache.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use askrypt::SecretEntry;
 use iced::widget::{row, text};
 use iced::{Element, Task, alignment::Vertical};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::{Message, icon};
+use crate::session::Session;
+use crate::{GlobalMsg, Message, icon};
 
 /// Quiet time after the last keystroke before a lookup goes out.
 const DEBOUNCE: Duration = Duration::from_millis(800);
@@ -44,13 +53,26 @@ impl LeakCheck {
     /// The field now holds `value`: forget the old verdict, and — when the
     /// setting is on and there is something to check — schedule a lookup.
     ///
+    /// `cached` is the [`LeakCache`]'s verdict for `value`, if it has one: it
+    /// is taken as is, and nothing is scheduled.
+    ///
     /// The returned task only waits; `due` names the pane message that asks
     /// for the lookup once the wait is over, and the pane answers it with
     /// [`LeakCheck::run`] if [`LeakCheck::is`] still holds.
-    pub fn edited(&mut self, value: &str, enabled: bool, due: fn(u64) -> Message) -> Task<Message> {
+    pub fn edited(
+        &mut self,
+        value: &str,
+        enabled: bool,
+        cached: Option<u64>,
+        due: fn(u64) -> Message,
+    ) -> Task<Message> {
         self.generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
         self.found = None;
         if !enabled || value.is_empty() {
+            return Task::none();
+        }
+        if let Some(count) = cached {
+            self.found = (count > 0).then_some(count);
             return Task::none();
         }
         let generation = self.generation;
@@ -101,22 +123,236 @@ impl LeakCheck {
     /// The warning line, when the value is known to be leaked and the setting
     /// is (still) on.
     pub fn view<'a>(&self, enabled: bool) -> Option<Element<'a, Message>> {
-        let count = self.found.filter(|_| enabled)?;
-        let noun = if count == 1 { "breach" } else { "breaches" };
-        Some(
-            row![
-                icon::warning(11).style(text::danger),
-                text(format!(
-                    "Found in {} known data {noun} — choose another.",
-                    group_thousands(count)
-                ))
-                .size(11)
-                .style(text::danger),
-            ]
-            .spacing(6)
-            .align_y(Vertical::Center)
-            .into(),
+        self.found.filter(|_| enabled).map(warning)
+    }
+}
+
+/// The red line under a leaked password: the editor's field and the detail
+/// pane's Password row.
+pub fn warning<'a>(count: u64) -> Element<'a, Message> {
+    let noun = if count == 1 { "breach" } else { "breaches" };
+    row![
+        icon::warning(11).style(text::danger),
+        text(format!(
+            "Found in {} known data {noun} — choose another.",
+            group_thousands(count)
+        ))
+        .size(11)
+        .style(text::danger),
+    ]
+    .spacing(6)
+    .align_y(Vertical::Center)
+    .into()
+}
+
+/// A password's place in a [`LeakCache`]: `SHA-256(salt ‖ password)`.
+pub type CacheKey = [u8; 32];
+
+/// Bytes per verdict in [`LeakCache::to_bytes`]: the key, then the count.
+const RECORD_LEN: usize = 32 + 8;
+
+/// Every breach verdict this unlock has learned, so no password goes to the
+/// API twice. Lives in the unlocked vault; a Smart Lock carries it encrypted
+/// (see `smartlock`), a full lock drops it.
+///
+/// Keyed by a salted hash rather than the password, and the salt wipes itself
+/// on drop: key bytes left behind in freed memory say nothing without it.
+pub struct LeakCache {
+    /// Tags a [`LeakSweep`], so a reply meant for an earlier cache — the vault
+    /// was locked and unlocked while it ran — is dropped.
+    id: u64,
+    salt: Zeroizing<[u8; 32]>,
+    /// Breach count per password; 0 = checked and clean.
+    found: HashMap<CacheKey, u64>,
+}
+
+impl Default for LeakCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LeakCache {
+    pub fn new() -> Self {
+        let mut salt = Zeroizing::new([0u8; 32]);
+        salt.copy_from_slice(&askrypt::generate_bytes(32));
+        Self::with_salt(salt)
+    }
+
+    fn with_salt(salt: Zeroizing<[u8; 32]>) -> Self {
+        LeakCache {
+            id: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
+            salt,
+            found: HashMap::new(),
+        }
+    }
+
+    fn key(&self, secret: &str) -> CacheKey {
+        let mut hash = Sha256::new();
+        hash.update(self.salt.as_slice());
+        hash.update(secret.as_bytes());
+        hash.finalize().into()
+    }
+
+    /// The breach count for `secret`, if it was ever looked up.
+    pub fn get(&self, secret: &str) -> Option<u64> {
+        if secret.is_empty() {
+            return None;
+        }
+        self.found.get(&self.key(secret)).copied()
+    }
+
+    /// Whether `secret` is known to be in a breach.
+    pub fn is_leaked(&self, secret: &str) -> bool {
+        self.get(secret).is_some_and(|count| count > 0)
+    }
+
+    /// Remember a finished lookup.
+    pub fn insert(&mut self, secret: &str, count: u64) {
+        if !secret.is_empty() {
+            let key = self.key(secret);
+            self.found.insert(key, count);
+        }
+    }
+
+    /// Every distinct item password the cache has no verdict for yet.
+    pub fn pending(&self, entries: &[SecretEntry]) -> LeakSweep {
+        let mut seen = HashSet::new();
+        let items = entries
+            .iter()
+            .filter(|entry| !entry.secret.is_empty())
+            .filter_map(|entry| {
+                let key = self.key(&entry.secret);
+                (!self.found.contains_key(&key) && seen.insert(key))
+                    .then(|| (key, Zeroizing::new(entry.secret.clone())))
+            })
+            .collect();
+        LeakSweep { id: self.id, items }
+    }
+
+    /// Take a sweep's answers. Failed lookups stay unknown (and are tried
+    /// again next time); a sweep for another cache is dropped.
+    pub fn adopt(&mut self, swept: Swept) {
+        if swept.id != self.id {
+            return;
+        }
+        let mut failed = 0;
+        for (key, result) in swept.results {
+            match result {
+                Ok(count) => {
+                    self.found.insert(key, count);
+                }
+                Err(e) => {
+                    failed += 1;
+                    if failed == 1 {
+                        eprintln!("WARNING: Leak check failed: {e}");
+                    }
+                }
+            }
+        }
+        if failed > 1 {
+            eprintln!("WARNING: {failed} leak checks failed");
+        }
+    }
+
+    /// The cache as bytes, for the Smart Lock bundle: the salt, then
+    /// `key ‖ count (LE u64)` per verdict.
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = Zeroizing::new(Vec::with_capacity(32 + self.found.len() * RECORD_LEN));
+        out.extend_from_slice(self.salt.as_slice());
+        for (key, count) in &self.found {
+            out.extend_from_slice(key);
+            out.extend_from_slice(&count.to_le_bytes());
+        }
+        out
+    }
+
+    /// The inverse of [`Self::to_bytes`]; `None` for anything malformed.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 32 || !(bytes.len() - 32).is_multiple_of(RECORD_LEN) {
+            return None;
+        }
+        let mut salt = Zeroizing::new([0u8; 32]);
+        salt.copy_from_slice(&bytes[..32]);
+        let mut cache = Self::with_salt(salt);
+        for record in bytes[32..].chunks_exact(RECORD_LEN) {
+            let key: CacheKey = record[..32].try_into().ok()?;
+            let count = u64::from_le_bytes(record[32..].try_into().ok()?);
+            cache.found.insert(key, count);
+        }
+        Some(cache)
+    }
+}
+
+/// Look up every item password the unlocked vault has no verdict for — on
+/// unlock, and after an item is saved. Nothing when either setting is off, the
+/// vault is not unlocked, or every password is already known.
+pub fn sweep(session: &Session) -> Task<Message> {
+    if !session.settings.sweeps_leaks() {
+        return Task::none();
+    }
+    match session.vault.unlocked() {
+        Some(vault) => vault
+            .leak_sweep()
+            .spawn(|swept| Message::Global(GlobalMsg::LeaksSwept(swept))),
+        None => Task::none(),
+    }
+}
+
+/// The passwords a [`LeakCache`] has no verdict for, ready for a worker.
+pub struct LeakSweep {
+    id: u64,
+    items: Vec<(CacheKey, Zeroizing<String>)>,
+}
+
+impl LeakSweep {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// **Worker-thread only.** One lookup per password, in turn. Only keys and
+    /// counts come back; the passwords are wiped as the sweep drops.
+    pub fn run(self) -> Swept {
+        let results = self
+            .items
+            .iter()
+            .map(|(key, secret)| (*key, askrypt::pwned::breach_count(secret)))
+            .collect();
+        Swept {
+            id: self.id,
+            results,
+        }
+    }
+
+    /// Run on a worker, unless there is nothing to ask; the answer comes back
+    /// as `done`.
+    pub fn spawn(self, done: fn(Swept) -> Message) -> Task<Message> {
+        if self.is_empty() {
+            return Task::none();
+        }
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || self.run())
+                    .await
+                    .expect("leak sweep task panicked")
+            },
+            done,
         )
+    }
+}
+
+/// A finished [`LeakSweep`]: salted keys and counts, no passwords.
+#[derive(Clone)]
+pub struct Swept {
+    id: u64,
+    results: Vec<(CacheKey, Checked)>,
+}
+
+impl std::fmt::Debug for Swept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Swept")
+            .field("results", &self.results.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -140,9 +376,9 @@ mod tests {
     #[test]
     fn stale_and_failed_lookups_leave_no_warning() {
         let mut check = LeakCheck::default();
-        let _ = check.edited("hunter2", false, |_| Message::ReturnToDefaultPane);
+        let _ = check.edited("hunter2", false, None, |_| Message::ReturnToDefaultPane);
         let first = check.generation;
-        let _ = check.edited("hunter22", false, |_| Message::ReturnToDefaultPane);
+        let _ = check.edited("hunter22", false, None, |_| Message::ReturnToDefaultPane);
         check.finish(first, Ok(5));
         assert_eq!(check.found, None, "a reply for an older value is dropped");
 
@@ -156,7 +392,7 @@ mod tests {
         assert_eq!(check.found, Some(3));
         assert!(check.view(false).is_none(), "the setting hides it");
 
-        let _ = check.edited("hunter222", false, |_| Message::ReturnToDefaultPane);
+        let _ = check.edited("hunter222", false, None, |_| Message::ReturnToDefaultPane);
         assert_eq!(check.found, None, "an edit clears the verdict");
     }
 
@@ -164,8 +400,8 @@ mod tests {
     fn generations_are_unique_across_fields() {
         let mut a = LeakCheck::default();
         let mut b = LeakCheck::default();
-        let _ = a.edited("x", false, |_| Message::ReturnToDefaultPane);
-        let _ = b.edited("x", false, |_| Message::ReturnToDefaultPane);
+        let _ = a.edited("x", false, None, |_| Message::ReturnToDefaultPane);
+        let _ = b.edited("x", false, None, |_| Message::ReturnToDefaultPane);
         assert_ne!(a.generation, b.generation);
         assert!(!LeakCheck::default().is(a.generation));
     }
@@ -175,5 +411,79 @@ mod tests {
         assert_eq!(group_thousands(7), "7");
         assert_eq!(group_thousands(1000), "1,000");
         assert_eq!(group_thousands(9659365), "9,659,365");
+    }
+
+    fn entry(secret: &str) -> SecretEntry {
+        // `SecretEntry` zeroizes on drop, so no struct-update syntax (E0509).
+        let mut entry = SecretEntry::default();
+        entry.secret = secret.into();
+        entry
+    }
+
+    /// A sweep asks about each unknown password once, and only those.
+    #[test]
+    fn a_sweep_skips_known_empty_and_repeated_passwords() {
+        let mut cache = LeakCache::new();
+        cache.insert("known", 0);
+        let entries = [
+            entry("a"),
+            entry(""),
+            entry("known"),
+            entry("a"),
+            entry("b"),
+        ];
+        let sweep = cache.pending(&entries);
+        let asked: Vec<&str> = sweep.items.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(asked, ["a", "b"]);
+    }
+
+    /// Answers land under the right password; failures stay unknown, and a
+    /// sweep for another cache changes nothing.
+    #[test]
+    fn a_sweep_is_adopted_by_its_own_cache_only() {
+        let mut cache = LeakCache::new();
+        let sweep = cache.pending(&[entry("a"), entry("b"), entry("c")]);
+        let mut results = sweep.items.iter().map(|(key, _)| *key);
+        let swept = Swept {
+            id: sweep.id,
+            results: vec![
+                (results.next().unwrap(), Ok(7)),
+                (results.next().unwrap(), Ok(0)),
+                (results.next().unwrap(), Err("offline".into())),
+            ],
+        };
+
+        let mut other = LeakCache::new();
+        other.adopt(swept.clone());
+        assert_eq!(other.get("a"), None, "another cache's sweep is dropped");
+
+        cache.adopt(swept);
+        assert!(cache.is_leaked("a"));
+        assert_eq!(cache.get("b"), Some(0));
+        assert!(!cache.is_leaked("b"));
+        assert_eq!(cache.get("c"), None, "a failed lookup is not remembered");
+        assert_eq!(cache.pending(&[entry("c")]).items.len(), 1);
+    }
+
+    #[test]
+    fn the_cache_round_trips_through_bytes() {
+        let mut cache = LeakCache::new();
+        cache.insert("a", 3);
+        cache.insert("b", 0);
+        let restored = LeakCache::from_bytes(&cache.to_bytes()).expect("well-formed");
+        assert_eq!(restored.get("a"), Some(3));
+        assert_eq!(restored.get("b"), Some(0));
+        assert_eq!(restored.get("c"), None);
+        assert!(LeakCache::from_bytes(&[0; 33]).is_none());
+    }
+
+    /// A cached verdict is shown at once, with nothing scheduled.
+    #[test]
+    fn a_cached_verdict_needs_no_lookup() {
+        let mut check = LeakCheck::default();
+        let _ = check.edited("x", true, Some(12), |_| Message::ReturnToDefaultPane);
+        assert_eq!(check.found, Some(12));
+        let _ = check.edited("x", true, Some(0), |_| Message::ReturnToDefaultPane);
+        assert_eq!(check.found, None);
     }
 }

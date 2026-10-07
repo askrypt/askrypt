@@ -105,19 +105,26 @@ impl State {
     /// Called when the password generator hands one back. The field stays
     /// masked: the password is already on the clipboard, so showing it only
     /// puts a fresh secret on screen for whoever is behind the user.
-    pub fn set_secret(&mut self, secret: String, check_leaks: bool) -> Task<Message> {
+    pub fn set_secret(&mut self, secret: String, session: &Session) -> Task<Message> {
         self.entry.secret = secret;
         self.revealed = false;
-        self.check_secret(check_leaks)
+        self.check_secret(session)
     }
 
     /// (Re)check the password against known breaches: on every edit, and once
-    /// when the editor opens on an item that already has one.
-    pub fn check_secret(&mut self, check_leaks: bool) -> Task<Message> {
-        self.leak
-            .edited(&self.entry.secret, check_leaks, |generation| {
-                Message::Editor(Msg::LeakDue(generation))
-            })
+    /// when the editor opens on an item that already has one. A password the
+    /// vault's leak cache already knows is answered from it, at once.
+    pub fn check_secret(&mut self, session: &Session) -> Task<Message> {
+        let cached = session
+            .vault
+            .unlocked()
+            .and_then(|vault| vault.leaks().get(&self.entry.secret));
+        self.leak.edited(
+            &self.entry.secret,
+            session.settings.check_leaks,
+            cached,
+            |generation| Message::Editor(Msg::LeakDue(generation)),
+        )
     }
 
     fn is_new(&self) -> bool {
@@ -190,7 +197,7 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
         }
         Msg::SecretEdited(value) => {
             state.entry.secret = value;
-            let check = state.check_secret(session.settings.check_leaks);
+            let check = state.check_secret(session);
             (Action::Run(check), false)
         }
         Msg::LeakDue(generation) => {
@@ -204,6 +211,14 @@ pub fn update(state: &mut State, session: &mut Session, message: Msg) -> (Action
             (Action::Run(lookup), false)
         }
         Msg::LeakChecked(generation, result) => {
+            // The verdict is about the field's current value only while the
+            // generation still matches; then it is worth keeping vault-wide.
+            if state.leak.is(generation)
+                && let Ok(count) = &result
+                && let Some(vault) = session.vault.unlocked_mut()
+            {
+                vault.leaks_mut().insert(&state.entry.secret, *count);
+            }
             state.leak.finish(generation, result);
             (Action::None, false)
         }

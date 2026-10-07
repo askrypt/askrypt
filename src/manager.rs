@@ -71,6 +71,7 @@ use askrypt::{
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::data;
+use crate::leak::{LeakCache, LeakSweep};
 use crate::offline;
 use crate::scratch::Scratch;
 use crate::session::VaultError;
@@ -192,6 +193,9 @@ pub struct Unlocked {
     /// this deadline was ever read from it, and holding the re-encrypted
     /// answers beside the plaintext ones buys nothing.
     smart_lock_deadline: Option<Instant>,
+    /// Breach verdicts for the item passwords (see `leak`). Carried across a
+    /// Smart Lock encrypted inside the bundle; a full lock drops it.
+    leaks: LeakCache,
 }
 
 /// Answers held re-encrypted in RAM: one answer re-opens the vault.
@@ -227,6 +231,11 @@ pub struct SmartLocked {
     pub iv_answer0: Vec<u8>,
     /// IV for `encrypted_answers`, distinct from `iv_answer0` for that reason.
     pub iv_answers: Vec<u8>,
+    /// The unlocked vault's breach-check cache (`LeakCache::to_bytes`), under
+    /// the same key: what the passwords' verdicts were, without asking again.
+    pub encrypted_leaks: Vec<u8>,
+    /// IV for `encrypted_leaks`, a third one for the same reason.
+    pub iv_leaks: Vec<u8>,
     /// When the bundle was armed, which starts the 8-hour clock.
     pub armed_at: Instant,
 }
@@ -398,6 +407,7 @@ impl Vault<PartiallyUnlocked> {
             modified: false,
             changed,
             smart_lock_deadline: None,
+            leaks: LeakCache::new(),
         })
     }
 }
@@ -427,6 +437,7 @@ impl Vault<Unlocked> {
                 // them; `VaultState::adopt_built` carries the old marks over.
                 changed,
                 smart_lock_deadline: None,
+                leaks: LeakCache::new(),
             },
         }
     }
@@ -463,6 +474,29 @@ impl Vault<Unlocked> {
     /// last read or written — the list's unsaved-item mark.
     pub fn is_entry_changed(&self, index: usize) -> bool {
         self.state.changed.get(index).copied().unwrap_or(false)
+    }
+
+    /// Whether the entry at `index` has a password known to be in a breach —
+    /// the list's warning mark.
+    pub fn is_entry_leaked(&self, index: usize) -> bool {
+        self.state
+            .entries
+            .get(index)
+            .is_some_and(|entry| self.state.leaks.is_leaked(&entry.secret))
+    }
+
+    /// What is known about the item passwords' breaches.
+    pub fn leaks(&self) -> &LeakCache {
+        &self.state.leaks
+    }
+
+    pub fn leaks_mut(&mut self) -> &mut LeakCache {
+        &mut self.state.leaks
+    }
+
+    /// Every item password with no verdict yet, for a worker to look up.
+    pub fn leak_sweep(&self) -> LeakSweep {
+        self.state.leaks.pending(&self.state.entries)
     }
 
     /// Where each of the vault's attachments can be read from.
@@ -675,6 +709,7 @@ impl Vault<Unlocked> {
             answers: self.state.answers.clone(),
             questions: self.state.questions_data.questions.clone(),
             translit: self.translit(),
+            leaks: self.state.leaks.to_bytes(),
         }
     }
 
@@ -749,6 +784,9 @@ impl Vault<SmartLocked> {
             modified: false,
             changed,
             smart_lock_deadline: Some(Instant::now() + SMART_LOCK_TIMEOUT),
+            // A cache that does not decode only loses verdicts: the next sweep
+            // asks again.
+            leaks: LeakCache::from_bytes(&recovered.leaks).unwrap_or_default(),
         })
     }
 }
@@ -996,19 +1034,24 @@ impl VaultState {
     /// A questions change on an unlocked vault rebuilds it from the very
     /// entries it held, so their unsaved-item marks carry over.
     pub fn adopt_built(&mut self, built: Built) {
-        let (home, changed) = match std::mem::take(self) {
+        let (home, kept) = match std::mem::take(self) {
             VaultState::None => (None, None),
             VaultState::Locked(vault) => (vault.home, None),
             VaultState::Partial(vault) => (vault.home, None),
             VaultState::Unlocked(mut vault) => {
                 let changed = std::mem::take(&mut vault.state.changed);
-                (vault.home, Some(changed))
+                let leaks = std::mem::take(&mut vault.state.leaks);
+                (vault.home, Some((changed, leaks)))
             }
             VaultState::Smart(vault) => (vault.home, None),
         };
         let mut vault = Vault::created(built, home);
-        if let Some(changed) = changed.filter(|c| c.len() == vault.state.entries.len()) {
-            vault.state.changed = changed;
+        if let Some((changed, leaks)) = kept {
+            // A password's verdict does not depend on the questions.
+            vault.state.leaks = leaks;
+            if changed.len() == vault.state.entries.len() {
+                vault.state.changed = changed;
+            }
         }
         *self = VaultState::Unlocked(vault);
     }
@@ -1259,13 +1302,20 @@ pub struct SmartLockInputs {
     answers: Zeroizing<Vec<String>>,
     questions: Vec<String>,
     translit: bool,
+    leaks: Zeroizing<Vec<u8>>,
 }
 
 impl SmartLockInputs {
     /// **Worker-thread only.**
     pub fn run(self) -> Result<SmartLocked, String> {
-        smartlock::create(&self.answers, &self.answer0, &self.questions, self.translit)
-            .map_err(|e| e.to_string())
+        smartlock::create(
+            &self.answers,
+            &self.answer0,
+            &self.questions,
+            self.translit,
+            &self.leaks,
+        )
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -1281,7 +1331,11 @@ impl SmartUnlockInputs {
     /// **Worker-thread only.** Recover the answers, re-read the question list,
     /// then decrypt the entries — 2M + 600k + 600k iterations.
     pub fn run(self) -> Result<SmartUnlockResult, String> {
-        let (answer0, answers) = smartlock::recover(&self.bundle, &self.answer, self.translit)
+        let smartlock::Recovered {
+            answer0,
+            answers,
+            leaks,
+        } = smartlock::recover(&self.bundle, &self.answer, self.translit)
             .map_err(|e| e.to_string())?;
         let questions_data = self
             .file
@@ -1298,6 +1352,7 @@ impl SmartUnlockInputs {
             questions_data,
             entries,
             master,
+            leaks,
         })
     }
 }
@@ -1312,6 +1367,8 @@ pub struct SmartUnlockResult {
     /// The vault's master key, so the next save re-wraps it rather than
     /// rotating it.
     pub master: MasterSecret,
+    /// The breach-check cache the bundle carried (`LeakCache::to_bytes`).
+    pub leaks: Zeroizing<Vec<u8>>,
 }
 
 // This rides inside a `Message`, and every `Message` derives `Debug`. It is
@@ -2367,6 +2424,7 @@ mod tests {
                     modified: false,
                     changed: vec![],
                     smart_lock_deadline: None,
+                    leaks: LeakCache::new(),
                 },
             }),
             VaultState::Smart(Vault {
@@ -2380,6 +2438,8 @@ mod tests {
                     salt: Vec::new(),
                     iv_answer0: Vec::new(),
                     iv_answers: Vec::new(),
+                    encrypted_leaks: Vec::new(),
+                    iv_leaks: Vec::new(),
                     armed_at: Instant::now(),
                 },
             }),
@@ -2831,6 +2891,11 @@ mod tests {
         let (mut vault, _) = stored_vault();
         let minted = vault.unlocked().unwrap().master().clone();
         assert!(vault.unlocked().unwrap().has_key_answer());
+        // A breach verdict for the one item's password, as a sweep leaves it.
+        let unlocked = vault.unlocked_mut().unwrap();
+        let secret = unlocked.entries()[0].secret.clone();
+        unlocked.leaks_mut().insert(&secret, 42);
+        assert!(unlocked.is_entry_leaked(0));
 
         let bundle = vault
             .unlocked()
@@ -2860,6 +2925,10 @@ mod tests {
         assert_eq!(unlocked.answers(), answers());
         // The 8-hour ceiling carries over, but has not run out.
         assert!(!unlocked.smart_lock_expired());
+        // So does the leak cache, sealed in the bundle: no new lookup needed.
+        assert!(unlocked.is_entry_leaked(0));
+        assert_eq!(unlocked.leaks().get(&secret), Some(42));
+        assert!(unlocked.leak_sweep().is_empty());
     }
 
     /// Entry edits mark the vault dirty and survive into the save request.

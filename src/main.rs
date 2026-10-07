@@ -231,6 +231,8 @@ pub enum GlobalMsg {
     QuitRequested,
     ExitApp,
     SmartLockCreated(Result<SmartLocked, String>),
+    /// A breach sweep of the item passwords finished (see `leak`).
+    LeaksSwept(leak::Swept),
     /// Selected items encrypted for the clipboard: the `askrypt.json` text,
     /// how many items it holds, and the attached files left out.
     EntriesCopied {
@@ -825,7 +827,7 @@ impl App {
                 Some(entry) => {
                     self.list.reset();
                     let mut editor = panes::entry_editor::State::edit(entry.clone(), index);
-                    let check = editor.check_secret(self.session.settings.check_leaks);
+                    let check = editor.check_secret(&self.session);
                     self.editor = Some(editor);
                     self.selected = Some(index);
                     Action::pane_run(Pane::Items, Task::batch([operation::focus_next(), check]))
@@ -835,7 +837,7 @@ impl App {
             Message::DuplicateEntry(index) => match self.session.entries().get(index) {
                 Some(entry) => {
                     let mut editor = panes::entry_editor::State::duplicate(entry.clone());
-                    let check = editor.check_secret(self.session.settings.check_leaks);
+                    let check = editor.check_secret(&self.session);
                     self.editor = Some(editor);
                     Action::pane_run(Pane::Items, Task::batch([operation::focus_next(), check]))
                 }
@@ -861,7 +863,7 @@ impl App {
             }
             Message::UseGeneratedPassword(password) => match self.editor.as_mut() {
                 Some(editor) => {
-                    let check = editor.set_secret(password, self.session.settings.check_leaks);
+                    let check = editor.set_secret(password, &self.session);
                     self.session.status_message =
                         Some("Password copied and applied to the item".into());
                     Action::pane_run(Pane::Items, check)
@@ -900,6 +902,11 @@ impl App {
                         // that may now point at a different row.
                         self.selected = None;
                         self.reconcile_selection();
+                        // A new or edited item whose password the editor never
+                        // got a verdict for is looked up now, so its row is
+                        // marked if it leaked.
+                        let sweep = leak::sweep(&self.session);
+                        return Task::batch([self.apply(action), sweep]);
                     }
                     action
                 }
@@ -2047,6 +2054,14 @@ impl App {
                 }
             }
             GlobalMsg::ExitApp => self.guard(PendingAction::Exit),
+            GlobalMsg::LeaksSwept(swept) => {
+                // Dropped when the vault has been locked meanwhile; a vault
+                // locked and unlocked again has a new cache, which drops it.
+                if let Some(vault) = self.session.vault.unlocked_mut() {
+                    vault.leaks_mut().adopt(swept);
+                }
+                Action::None
+            }
             GlobalMsg::SmartLockCreated(result) => {
                 self.session.finish_work();
                 match result {
