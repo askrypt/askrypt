@@ -57,16 +57,31 @@ class _NoIo implements VaultIo {
 }
 
 class _Recent implements RecentVaultStore {
-  RecentVault? stored;
+  final List<RecentVault> vaults = [];
+
+  /// The most recent vault; assigning replaces the whole list.
+  RecentVault? get stored => vaults.firstOrNull;
+  set stored(RecentVault? vault) => vaults
+    ..clear()
+    ..addAll([if (vault != null) vault]);
+
+  void _putFirst(RecentVault vault) => vaults
+    ..removeWhere(vault.sameAs)
+    ..insert(0, vault);
+
   @override
-  Future<RecentVault?> load() async => stored;
+  Future<List<RecentVault>> load() async => List.of(vaults);
+
   @override
   Future<void> remember(Uint8List bytes, String name) async =>
-      stored = RecentLocal(PickedVault(bytes: bytes, name: name));
+      _putFirst(RecentLocal(PickedVault(bytes: bytes, name: name)));
+
   @override
-  Future<void> rememberCloud(RecentCloud vault) async => stored = vault;
+  Future<void> rememberCloud(RecentCloud vault) async => _putFirst(vault);
+
   @override
-  Future<void> forget() async => stored = null;
+  Future<void> forget(RecentVault vault) async =>
+      vaults.removeWhere(vault.sameAs);
 }
 
 /// Pump while real async work (PBKDF2, the fake server) makes progress, then
@@ -79,8 +94,8 @@ Future<void> pumpUntil(WidgetTester tester, bool Function() condition,
     if (DateTime.now().isAfter(deadline)) {
       fail('pumpUntil timed out waiting for condition');
     }
-    await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
     await tester.pump();
   }
   await tester.pump(const Duration(seconds: 1));
@@ -111,7 +126,8 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('remembered cloud vault opens, saves back, and resolves a '
+  testWidgets(
+      'remembered cloud vault opens, saves back, and resolves a '
       'conflict', (tester) async {
     final server = FakeServer();
     final initial = await tester.runAsync(() async => (await AskryptFile.create(
@@ -187,7 +203,8 @@ void main() {
     expect(shown('Askrypt •'), isFalse);
   });
 
-  testWidgets('an unreachable server offers the offline copy, and a save '
+  testWidgets(
+      'an unreachable server offers the offline copy, and a save '
       'once it is back is checked against the copy', (tester) async {
     final server = FakeServer();
     final initial = await tester.runAsync(() async => (await AskryptFile.create(

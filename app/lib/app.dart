@@ -44,16 +44,16 @@ final biometricStoreProvider =
 final vaultHomeProvider =
     StateProvider<VaultHome>((ref) => const LocalHome('vault.askrypt'));
 
-/// Cache of the last successfully unlocked vault (encrypted bytes + display
-/// name), behind the welcome screen's "open last vault" button. Overridden in
-/// tests.
+/// Cache of the last [maxRecentVaults] opened vaults (local: encrypted bytes +
+/// display name; cloud: location), behind the welcome screen's reopen
+/// buttons. Overridden in tests.
 final recentVaultStoreProvider =
-    Provider<RecentVaultStore>((ref) => const FileRecentVaultStore());
+    Provider<RecentVaultStore>((ref) => FileRecentVaultStore());
 
-/// The remembered vault, if any. `autoDispose` so it is re-read each time the
+/// The remembered vaults, newest first. `autoDispose` so it is re-read each time the
 /// locked tree remounts — the cache may have been refreshed by an unlock or a
 /// save since the welcome screen last looked.
-final recentVaultProvider = FutureProvider.autoDispose<RecentVault?>(
+final recentVaultProvider = FutureProvider.autoDispose<List<RecentVault>>(
     (ref) => ref.watch(recentVaultStoreProvider).load());
 
 /// The first question (plaintext) of the currently-open vault, used as the

@@ -162,7 +162,7 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
       _say('Save cancelled');
       return;
     }
-    // Refresh the welcome screen's "open last vault" cache with what we just
+    // Refresh the welcome screen's recent-vault cache with what we just
     // wrote. Best-effort: a cache failure must not fail the save.
     try {
       await ref.read(recentVaultStoreProvider).remember(bytes, name);

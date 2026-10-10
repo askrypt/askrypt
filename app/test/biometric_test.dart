@@ -138,7 +138,7 @@ void main() {
 
     await pumpApp(tester, io: io, bio: bio);
 
-    await tester.tap(find.text('Open vault'));
+    await tester.tap(find.text('Open vault (file)'));
     await tester.pumpAndSettle();
 
     // No biometric button (nothing enrolled yet).
@@ -187,7 +187,7 @@ void main() {
 
     await pumpApp(tester, io: io, bio: bio);
 
-    await tester.tap(find.text('Open vault'));
+    await tester.tap(find.text('Open vault (file)'));
     // The auto-triggered biometric reveal leads to the inline knowledge check
     // (a hidden question first needs a derivation on a background isolate).
     await pumpUntil(tester, checkShown);
@@ -210,7 +210,7 @@ void main() {
 
     await pumpApp(tester, io: io, bio: bio);
 
-    await tester.tap(find.text('Open vault'));
+    await tester.tap(find.text('Open vault (file)'));
     await pumpUntil(tester, checkShown);
 
     await tester.enterText(find.byType(TextField), 'nope');
@@ -238,7 +238,7 @@ void main() {
 
     await pumpApp(tester, io: io, bio: bio);
 
-    await tester.tap(find.text('Open vault'));
+    await tester.tap(find.text('Open vault (file)'));
     await pumpUntil(tester, checkShown);
 
     await tester.tap(find.text('Enter all answers'));
@@ -262,7 +262,7 @@ void main() {
 
     await pumpApp(tester, io: io, bio: bio);
 
-    await tester.tap(find.text('Open vault'));
+    await tester.tap(find.text('Open vault (file)'));
     // Depending on the random pick, the stale answers fail before the check
     // (the hidden question can't be decrypted with the stale first answer) or
     // after it (the typed answer matches the stale stored one, but the open

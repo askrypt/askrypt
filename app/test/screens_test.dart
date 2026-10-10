@@ -44,20 +44,31 @@ class FakeVaultIo implements VaultIo {
 
 /// In-memory recent-vault cache.
 class FakeRecentVaultStore implements RecentVaultStore {
-  RecentVault? stored;
+  final List<RecentVault> vaults = [];
+
+  /// The most recent vault; assigning replaces the whole list.
+  RecentVault? get stored => vaults.firstOrNull;
+  set stored(RecentVault? vault) => vaults
+    ..clear()
+    ..addAll([if (vault != null) vault]);
+
+  void _putFirst(RecentVault vault) => vaults
+    ..removeWhere(vault.sameAs)
+    ..insert(0, vault);
 
   @override
-  Future<RecentVault?> load() async => stored;
+  Future<List<RecentVault>> load() async => List.of(vaults);
 
   @override
   Future<void> remember(Uint8List bytes, String name) async =>
-      stored = RecentLocal(PickedVault(bytes: bytes, name: name));
+      _putFirst(RecentLocal(PickedVault(bytes: bytes, name: name)));
 
   @override
-  Future<void> rememberCloud(RecentCloud vault) async => stored = vault;
+  Future<void> rememberCloud(RecentCloud vault) async => _putFirst(vault);
 
   @override
-  Future<void> forget() async => stored = null;
+  Future<void> forget(RecentVault vault) async =>
+      vaults.removeWhere(vault.sameAs);
 }
 
 void main() {
@@ -86,7 +97,7 @@ void main() {
     await pumpApp(tester, io, recent: recent);
 
     // Welcome → create.
-    expect(find.text('Open vault'), findsOneWidget);
+    expect(find.text('Open vault (file)'), findsOneWidget);
     await tester.tap(find.text('Create new vault'));
     await tester.pumpAndSettle();
 
@@ -157,6 +168,47 @@ void main() {
 
     expect(find.text('my.askrypt'), findsOneWidget); // unlock app bar title
     expect(find.text('First pet?'), findsOneWidget); // first question shown
+  });
+
+  testWidgets('welcome lists every remembered vault, newest first',
+      (tester) async {
+    final bytes = await tester.runAsync(() async => (await AskryptFile.create(
+          questions: ['Older question?', 'Birth city?'],
+          answers: ['Rex', 'Kazan'],
+          entries: const [],
+          iterations: 1000,
+        ))
+            .toBytes());
+    final recent = FakeRecentVaultStore();
+    await recent.remember(bytes!, 'older.askrypt');
+    await recent.remember(Uint8List.fromList([1]), 'newer.askrypt');
+    await pumpApp(tester, FakeVaultIo(), recent: recent);
+
+    expect(find.widgetWithText(FilledButton, 'Open newer.askrypt'),
+        findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Open older.askrypt'),
+        findsOneWidget);
+
+    await tester.tap(find.text('Open older.askrypt'));
+    await tester.pumpAndSettle();
+    expect(find.text('Older question?'), findsOneWidget);
+  });
+
+  testWidgets('long-press removes a vault from the recent list',
+      (tester) async {
+    final recent = FakeRecentVaultStore();
+    await recent.remember(Uint8List.fromList([1]), 'a.askrypt');
+    await recent.remember(Uint8List.fromList([2]), 'b.askrypt');
+    await pumpApp(tester, FakeVaultIo(), recent: recent);
+
+    await tester.longPress(find.text('Open a.askrypt'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Open a.askrypt'), findsNothing);
+    expect(find.text('Open b.askrypt'), findsOneWidget);
+    expect(recent.vaults.map((v) => v.name), ['b.askrypt']);
   });
 
   testWidgets('welcome shows no reopen button when nothing is remembered',

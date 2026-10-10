@@ -250,7 +250,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     ref.read(currentQuestion0Provider.notifier).state = _file!.question0;
     final home = widget.home;
     ref.read(vaultHomeProvider.notifier).state = home;
-    // Remember this vault for the welcome screen's "open last vault" button:
+    // Remember this vault for the welcome screen's recent-vault list:
     // a local file by its bytes, a cloud vault by where it lives. Best-effort
     // and fire-and-forget: adopting tears this route down, and a cache
     // failure must never block the unlock.
