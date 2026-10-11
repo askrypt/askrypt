@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app.dart';
+import '../platform/biometric_store.dart';
 import '../platform/recent_vault_store.dart';
 import '../platform/server_client.dart';
 import '../session/cloud_session.dart';
@@ -53,17 +54,18 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
   }
 
   Future<void> _checkBiometric() async {
-    final q0 = ref.read(currentQuestion0Provider);
-    if (q0 == null) return;
-    final has = await ref.read(biometricStoreProvider).hasCredentialFor(q0);
+    final id = ref.read(biometricIdProvider);
+    if (id == null) return;
+    final has = await ref.read(biometricStoreProvider).contains(id);
     if (mounted) setState(() => _hasBiometric = has);
   }
 
   Future<void> _disableBiometric() async {
-    final q0 = ref.read(currentQuestion0Provider);
-    if (q0 != null) {
-      await ref.read(biometricStoreProvider).forget(q0);
+    final id = ref.read(biometricIdProvider);
+    if (id != null) {
+      await ref.read(biometricStoreProvider).forget(id);
     }
+    ref.read(biometricIdProvider.notifier).state = null;
     if (!mounted) return;
     setState(() => _hasBiometric = false);
     ScaffoldMessenger.of(context).showSnackBar(
@@ -167,7 +169,30 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
     try {
       await ref.read(recentVaultStoreProvider).remember(bytes, name);
     } catch (_) {}
+    await _syncBiometric();
     _say('Vault saved');
+  }
+
+  /// After a landed save: keep the biometric credential (if this vault has
+  /// one) matching what was written — a questions or answers change moves it
+  /// to the new question list's id. Best-effort; a failure only means the
+  /// next biometric unlock falls back to typing.
+  Future<void> _syncBiometric() async {
+    final oldId = ref.read(biometricIdProvider);
+    final session = ref.read(vaultSessionProvider);
+    if (oldId == null || session is! VaultUnlocked) return;
+    final vault = session.vault;
+    try {
+      await ref
+          .read(biometricStoreProvider)
+          .replace(oldId, vault.questions, vault.answers);
+      if (mounted) {
+        ref.read(biometricIdProvider.notifier).state =
+            biometricIdFor(vault.questions);
+      }
+    } catch (e) {
+      debugPrint('biometric: credential update failed: $e');
+    }
   }
 
   /// The signed-in session that can write [home], or `null` after telling the
@@ -411,6 +436,7 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
             id: home.id,
             name: home.name))
         .catchError((Object _) {}));
+    unawaited(_syncBiometric());
     _say(message);
   }
 

@@ -12,12 +12,14 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app.dart';
 import '../crypto/normalize.dart';
 import '../crypto/vault.dart';
+import '../platform/biometric_store.dart';
 import '../platform/recent_vault_store.dart';
 import '../session/unlocked_vault.dart';
 import '../session/vault_home.dart';
@@ -48,13 +50,22 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   /// progress indicator and disables the action buttons.
   bool _busy = false;
 
-  /// True once we know biometric answers are stored for this vault.
+  /// True once we know biometric answers are stored for a vault starting with
+  /// this first question (not necessarily this vault — see [_quickUnlock]).
   bool _hasBiometric = false;
 
+  /// Set when stored answers turned out not to open this vault, so a manual
+  /// unlock offers enrollment even if a credential with its id exists.
+  bool _offerEnroll = false;
+
+  /// The credential this vault was opened with or enrolled under; becomes
+  /// [biometricIdProvider] on commit.
+  String? _credentialId;
+
   /// Biometric knowledge check, shown inline in place of the manual form:
-  /// the answers revealed from the store, the index of the randomly picked
-  /// question, and its text. [_checkQuestion] non-null means check mode.
-  List<String>? _revealed;
+  /// the matched credential, the index of the randomly picked question, and
+  /// its text. [_checkQuestion] non-null means check mode.
+  BiometricCredential? _revealed;
   int _checkIndex = 0;
   String? _checkQuestion;
   final _checkAnswer = TextEditingController();
@@ -149,47 +160,75 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     }
     if (!mounted) return;
     setState(() => _busy = false);
-    await _maybeOfferEnroll(all);
+    await _maybeOfferEnroll(vault.questions, all);
     _commit(vault);
   }
 
-  /// Biometric path: reveal stored answers, then switch the screen into the
-  /// inline knowledge check — one randomly chosen question — before the real
-  /// open in [_verifyAndOpen]. On a stale credential (e.g. the questions were
-  /// re-keyed elsewhere) forget it and fall back to manual entry.
+  /// Biometric path: one prompt reveals every credential sharing this vault's
+  /// first question; the one whose first answer decrypts the remaining
+  /// questions — and whose question list matches them — is this vault's.
+  /// Then the screen switches to the inline knowledge check (one randomly
+  /// chosen question) before the real open in [_verifyAndOpen]. Every failure
+  /// says so on screen; none is silent.
   Future<void> _quickUnlock() async {
-    if (_busy) return;
-    final file = _file!;
-    final store = ref.read(biometricStoreProvider);
-    final answers = await store.reveal(file.question0);
-    if (answers == null || !mounted) return;
-
-    // Pick the question to ask. The hidden questions' texts live in the
-    // encrypted `qs` blob, so for index > 0 decrypt it with the stored first
-    // answer (one extra derivation behind the spinner).
-    final index = Random().nextInt(answers.length);
-    final String question;
-    if (index == 0) {
-      question = file.question0;
-    } else {
-      setState(() => _busy = true);
-      final QuestionsData qd;
-      try {
-        qd = await file.getQuestionsData(answers[0]);
-      } catch (_) {
-        await _forgetStale();
-        return;
-      }
-      if (!mounted) return;
-      setState(() => _busy = false);
-      question = qd.questions[index - 1];
-    }
-
+    final file = _file;
+    if (file == null || _busy) return;
     setState(() {
       _error = null;
-      _revealed = answers;
+      _busy = true;
+    });
+    final List<BiometricCredential>? candidates;
+    try {
+      candidates = await ref.read(biometricStoreProvider).reveal(file.question0);
+    } on BiometricStoreException {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _hasBiometric = false;
+        _offerEnroll = true;
+        _error = 'Saved answers couldn\'t be read — enter them manually, then '
+            're-enable biometric unlock.';
+      });
+      return;
+    }
+    if (!mounted) return;
+    if (candidates == null) {
+      // Prompt cancelled or not recognized: stay on the manual form.
+      setState(() => _busy = false);
+      return;
+    }
+
+    BiometricCredential? match;
+    for (final c in candidates) {
+      if (c.answers.length != c.questions.length || c.questions.length < 2) {
+        continue;
+      }
+      try {
+        final qd = await file.getQuestionsData(c.answers[0]);
+        if (listEquals([file.question0, ...qd.questions], c.questions)) {
+          match = c;
+          break;
+        }
+      } catch (_) {
+        // Another vault's credential sharing this first question — keep it.
+      }
+    }
+    if (!mounted) return;
+    if (match == null) {
+      setState(() {
+        _busy = false;
+        _offerEnroll = true;
+        _error = 'No saved answers match this vault — enter them manually.';
+      });
+      return;
+    }
+
+    final index = Random().nextInt(match.questions.length);
+    setState(() {
+      _busy = false;
+      _revealed = match;
       _checkIndex = index;
-      _checkQuestion = question;
+      _checkQuestion = match!.questions[index];
       _checkAnswer.clear();
     });
   }
@@ -197,9 +236,10 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   /// Inline knowledge check: compare the typed answer (normalized, like the
   /// crypto layer would) against the stored one, then perform the real open.
   Future<void> _verifyAndOpen() async {
-    final answers = _revealed;
+    final credential = _revealed;
     final file = _file;
-    if (answers == null || file == null || _busy) return;
+    if (credential == null || file == null || _busy) return;
+    final answers = credential.answers;
     if (normalizeAnswer(_checkAnswer.text, file.translit) !=
         normalizeAnswer(answers[_checkIndex], file.translit)) {
       setState(() => _error = 'Incorrect answer.');
@@ -213,11 +253,13 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     try {
       vault = await UnlockedVault.open(widget.bytes, answers);
     } catch (_) {
-      await _forgetStale();
+      // The question list matched, so these are this vault's old answers.
+      await _forgetStale(credential.id);
       return;
     }
     if (!mounted) return;
     setState(() => _busy = false);
+    _credentialId = credential.id;
     _commit(vault);
   }
 
@@ -230,12 +272,17 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
       });
 
   /// Drop a stale biometric credential and surface the manual-entry fallback.
-  Future<void> _forgetStale() async {
-    await ref.read(biometricStoreProvider).forget(_file!.question0);
+  Future<void> _forgetStale(String id) async {
+    await ref.read(biometricStoreProvider).forget(id);
+    if (!mounted) return;
+    final still = await ref
+        .read(biometricStoreProvider)
+        .hasCredentialFor(_file!.question0);
     if (!mounted) return;
     setState(() {
       _busy = false;
-      _hasBiometric = false;
+      _hasBiometric = still;
+      _offerEnroll = true;
       _revealed = null;
       _checkQuestion = null;
       _error = 'Saved answers no longer open this vault — enter them manually.';
@@ -247,7 +294,7 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
   /// route down, so it must be the last thing we do with [context].
   void _commit(UnlockedVault vault) {
     if (!mounted) return;
-    ref.read(currentQuestion0Provider.notifier).state = _file!.question0;
+    ref.read(biometricIdProvider.notifier).state = _credentialId;
     final home = widget.home;
     ref.read(vaultHomeProvider.notifier).state = home;
     // Remember this vault for the welcome screen's recent-vault list:
@@ -267,11 +314,17 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
     ref.read(vaultSessionProvider.notifier).adopt(vault);
   }
 
-  /// If biometrics are available and not yet enrolled for this vault, ask
-  /// whether to remember the answers behind a biometric prompt.
-  Future<void> _maybeOfferEnroll(List<String> answers) async {
-    if (_hasBiometric) return;
+  /// If biometrics are available and this vault isn't enrolled (or its stored
+  /// answers just failed), ask whether to remember the answers behind a
+  /// biometric prompt. An existing, working credential is kept as is.
+  Future<void> _maybeOfferEnroll(
+      List<String> questions, List<String> answers) async {
     final store = ref.read(biometricStoreProvider);
+    final id = biometricIdFor(questions);
+    if (!_offerEnroll && await store.contains(id)) {
+      _credentialId = id;
+      return;
+    }
     if (!await store.canUse() || !mounted) return;
     final wants = await showDialog<bool>(
       context: context,
@@ -294,7 +347,12 @@ class _UnlockScreenState extends ConsumerState<UnlockScreen> {
       ),
     );
     if (wants != true) return;
-    await store.save(_file!.question0, answers); // prompts for biometrics
+    try {
+      if (await store.enroll(questions, answers)) _credentialId = id;
+    } catch (e) {
+      // Never block the open over it; the vault still unlocks.
+      debugPrint('biometric: enrollment failed: $e');
+    }
   }
 
   @override

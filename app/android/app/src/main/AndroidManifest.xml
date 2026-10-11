@@ -3,7 +3,14 @@
          Only the debug/profile manifests had it, so release builds could not
          reach the network at all. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- No Auto Backup or device transfer: secure-storage values (biometric
+         answers, the Cloud token) are sealed by Keystore keys that never travel,
+         so a restored copy could not be decrypted — and a password manager's
+         data has no business in a cloud backup anyway. -->
     <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="Askrypt"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

@@ -27,11 +27,17 @@ class _NoBiometrics implements BiometricStore {
   @override
   Future<bool> hasCredentialFor(String question0) async => false;
   @override
-  Future<bool> save(String question0, List<String> answers) async => false;
+  Future<bool> contains(String id) async => false;
   @override
-  Future<List<String>?> reveal(String question0) async => null;
+  Future<bool> enroll(List<String> questions, List<String> answers) async =>
+      false;
   @override
-  Future<void> forget(String question0) async {}
+  Future<List<BiometricCredential>?> reveal(String question0) async => null;
+  @override
+  Future<void> replace(
+      String? oldId, List<String> questions, List<String> answers) async {}
+  @override
+  Future<void> forget(String id) async {}
 }
 
 class _NoopSecurity implements PlatformSecurity {

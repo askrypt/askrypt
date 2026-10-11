@@ -56,9 +56,10 @@ final recentVaultStoreProvider =
 final recentVaultProvider = FutureProvider.autoDispose<List<RecentVault>>(
     (ref) => ref.watch(recentVaultStoreProvider).load());
 
-/// The first question (plaintext) of the currently-open vault, used as the
-/// biometric-credential key. Set on unlock; null when no vault tracked.
-final currentQuestion0Provider = StateProvider<String?>((ref) => null);
+/// The biometric credential id (`biometricIdFor`) the open vault is enrolled
+/// under, or null when it isn't. Set on unlock, moved when a save changes the
+/// questions, cleared by "Disable biometric unlock".
+final biometricIdProvider = StateProvider<String?>((ref) => null);
 
 class AskryptApp extends StatelessWidget {
   const AskryptApp({super.key});
