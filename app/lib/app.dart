@@ -8,6 +8,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 // StateProvider lives in the legacy export as of Riverpod 3.
 import 'package:flutter_riverpod/legacy.dart';
@@ -88,22 +89,40 @@ class AskryptApp extends StatelessWidget {
 /// torn down and rebuilt from its root. This is why a `lock()` from deep inside
 /// the unlocked tree lands cleanly back on the welcome screen, and why
 /// `createNew`/`open` from the locked tree drops straight onto the entries list.
-class _SessionGate extends ConsumerWidget {
+///
+/// System Back reaches the app's root navigator, which holds only this gate, so
+/// it is forwarded to the nested navigator: sub-routes pop, the entries list
+/// locks (its own [PopScope]), and only Back on the welcome screen leaves the app.
+class _SessionGate extends ConsumerStatefulWidget {
   const _SessionGate();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final session = ref.watch(vaultSessionProvider);
-    return switch (session) {
-      VaultLocked() => _tree(const ValueKey('locked'), const WelcomeScreen()),
-      VaultUnlocked() =>
-        _tree(const ValueKey('unlocked'), const EntriesScreen()),
-    };
-  }
+  ConsumerState<_SessionGate> createState() => _SessionGateState();
+}
 
-  Widget _tree(Key key, Widget root) => Navigator(
+class _SessionGateState extends ConsumerState<_SessionGate> {
+  final _locked = GlobalKey<NavigatorState>();
+  final _unlocked = GlobalKey<NavigatorState>();
+
+  @override
+  Widget build(BuildContext context) {
+    final session = ref.watch(vaultSessionProvider);
+    final (key, root) = switch (session) {
+      VaultLocked() => (_locked, const WelcomeScreen() as Widget),
+      VaultUnlocked() => (_unlocked, const EntriesScreen() as Widget),
+    };
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final navigator = key.currentState;
+        if (navigator != null && await navigator.maybePop()) return;
+        await SystemNavigator.pop();
+      },
+      child: Navigator(
         key: key,
-        onGenerateRoute: (_) =>
-            MaterialPageRoute<void>(builder: (_) => root),
-      );
+        onGenerateRoute: (_) => MaterialPageRoute<void>(builder: (_) => root),
+      ),
+    );
+  }
 }

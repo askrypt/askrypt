@@ -399,8 +399,7 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, controller.text),
               child: const Text('Save')),
@@ -479,16 +478,16 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
         Navigator.of(context).push(MaterialPageRoute<void>(
             builder: (_) => const PasswordGeneratorScreen()));
       case _Menu.settings:
-        Navigator.of(context).push(MaterialPageRoute<void>(
-            builder: (_) => const SettingsScreen()));
+        Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const SettingsScreen()));
       case _Menu.disableBiometric:
         _disableBiometric();
     }
   }
 
   void _openEntry(int? index) {
-    Navigator.of(context).push(MaterialPageRoute<void>(
-        builder: (_) => EntryEditScreen(index: index)));
+    Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => EntryEditScreen(index: index)));
   }
 
   @override
@@ -508,118 +507,127 @@ class _EntriesScreenState extends ConsumerState<EntriesScreen> {
     }
     final tagKeys = allTags.keys.toList()..sort();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(vault.isModified ? 'Askrypt •' : 'Askrypt'),
-        bottom: _saving
-            ? const PreferredSize(
-                preferredSize: Size.fromHeight(4),
-                child: LinearProgressIndicator())
-            : null,
-        actions: [
-          IconButton(
-            tooltip: 'Show hidden',
-            icon: Icon(_showHidden ? Icons.visibility : Icons.visibility_off),
-            onPressed: () => setState(() => _showHidden = !_showHidden),
-          ),
-          IconButton(
-            tooltip: 'Save',
-            icon: Icon(ref.watch(vaultHomeProvider) is CloudHome
-                ? Icons.cloud_upload
-                : Icons.save),
-            onPressed: _saving ? null : _save,
-          ),
-          IconButton(
-            tooltip: 'Lock',
-            icon: const Icon(Icons.lock),
-            onPressed: () => _confirmLock(vault),
-          ),
-          PopupMenuButton<_Menu>(
-            onSelected: _onMenu,
-            itemBuilder: (_) => [
-              const PopupMenuItem(
-                  value: _Menu.editQuestions, child: Text('Edit questions')),
-              const PopupMenuItem(
-                  value: _Menu.passwordGenerator,
-                  child: Text('Password generator')),
-              const PopupMenuItem(
-                  value: _Menu.settings, child: Text('Settings')),
-              if (_hasBiometric)
+    // Back on the list locks (asking first when there are unsaved changes)
+    // and returns to the welcome screen instead of leaving the app.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _confirmLock(vault);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(vault.isModified ? 'Askrypt •' : 'Askrypt'),
+          bottom: _saving
+              ? const PreferredSize(
+                  preferredSize: Size.fromHeight(4),
+                  child: LinearProgressIndicator())
+              : null,
+          actions: [
+            IconButton(
+              tooltip: 'Show hidden',
+              icon: Icon(_showHidden ? Icons.visibility : Icons.visibility_off),
+              onPressed: () => setState(() => _showHidden = !_showHidden),
+            ),
+            IconButton(
+              tooltip: 'Save',
+              icon: Icon(ref.watch(vaultHomeProvider) is CloudHome
+                  ? Icons.cloud_upload
+                  : Icons.save),
+              onPressed: _saving ? null : _save,
+            ),
+            IconButton(
+              tooltip: 'Lock',
+              icon: const Icon(Icons.lock),
+              onPressed: () => _confirmLock(vault),
+            ),
+            PopupMenuButton<_Menu>(
+              onSelected: _onMenu,
+              itemBuilder: (_) => [
                 const PopupMenuItem(
-                    value: _Menu.disableBiometric,
-                    child: Text('Disable biometric unlock')),
-            ],
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          if (ref.watch(vaultHomeProvider)
-              case CloudHome(:final offlineCopyAt?, :final baseUrl))
-            _OfflineBanner(cachedAt: offlineCopyAt, host: hostOf(baseUrl)),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: TextField(
-              decoration: InputDecoration(
-                hintText: 'Search',
-                prefixIcon: const Icon(Icons.search),
-                isDense: true,
-                border:
-                    OutlineInputBorder(borderRadius: BorderRadius.circular(24)),
-              ),
-              onChanged: (v) => setState(() => _query = v),
+                    value: _Menu.editQuestions, child: Text('Edit questions')),
+                const PopupMenuItem(
+                    value: _Menu.passwordGenerator,
+                    child: Text('Password generator')),
+                const PopupMenuItem(
+                    value: _Menu.settings, child: Text('Settings')),
+                if (_hasBiometric)
+                  const PopupMenuItem(
+                      value: _Menu.disableBiometric,
+                      child: Text('Disable biometric unlock')),
+              ],
             ),
-          ),
-          if (tagKeys.isNotEmpty)
-            SizedBox(
-              height: 48,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: [
-                  for (final key in tagKeys)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        label: Text(allTags[key]!),
-                        selected: _tagFilter == key,
-                        onSelected: (sel) =>
-                            setState(() => _tagFilter = sel ? key : null),
-                      ),
-                    ),
-                ],
+          ],
+        ),
+        body: Column(
+          children: [
+            if (ref.watch(vaultHomeProvider)
+                case CloudHome(:final offlineCopyAt?, :final baseUrl))
+              _OfflineBanner(cachedAt: offlineCopyAt, host: hostOf(baseUrl)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              child: TextField(
+                decoration: InputDecoration(
+                  hintText: 'Search',
+                  prefixIcon: const Icon(Icons.search),
+                  isDense: true,
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24)),
+                ),
+                onChanged: (v) => setState(() => _query = v),
               ),
             ),
-          Expanded(
-            child: summaries.isEmpty
-                ? const Center(child: Text('No entries'))
-                : ListView.separated(
-                    itemCount: summaries.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final s = summaries[i];
-                      return ListTile(
-                        leading: CircleAvatar(
-                          child: Text(s.name.isEmpty
-                              ? '?'
-                              : s.name.characters.first.toUpperCase()),
+            if (tagKeys.isNotEmpty)
+              SizedBox(
+                height: 48,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  children: [
+                    for (final key in tagKeys)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: FilterChip(
+                          label: Text(allTags[key]!),
+                          selected: _tagFilter == key,
+                          onSelected: (sel) =>
+                              setState(() => _tagFilter = sel ? key : null),
                         ),
-                        title: Text(s.name),
-                        subtitle: s.userName.isEmpty ? null : Text(s.userName),
-                        trailing: s.hidden
-                            ? const Icon(Icons.visibility_off, size: 18)
-                            : null,
-                        onTap: () => _openEntry(s.index),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        tooltip: 'Add entry',
-        onPressed: () => _openEntry(null),
-        child: const Icon(Icons.add),
+                      ),
+                  ],
+                ),
+              ),
+            Expanded(
+              child: summaries.isEmpty
+                  ? const Center(child: Text('No entries'))
+                  : ListView.separated(
+                      itemCount: summaries.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final s = summaries[i];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            child: Text(s.name.isEmpty
+                                ? '?'
+                                : s.name.characters.first.toUpperCase()),
+                          ),
+                          title: Text(s.name),
+                          subtitle:
+                              s.userName.isEmpty ? null : Text(s.userName),
+                          trailing: s.hidden
+                              ? const Icon(Icons.visibility_off, size: 18)
+                              : null,
+                          onTap: () => _openEntry(s.index),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          tooltip: 'Add entry',
+          onPressed: () => _openEntry(null),
+          child: const Icon(Icons.add),
+        ),
       ),
     );
   }

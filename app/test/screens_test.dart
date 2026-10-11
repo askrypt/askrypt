@@ -239,4 +239,33 @@ void main() {
 
     expect(find.text('Create new vault'), findsOneWidget);
   });
+
+  testWidgets('system back pops sub-screens, then locks instead of exiting',
+      (tester) async {
+    await pumpApp(tester, FakeVaultIo());
+
+    await tester.tap(find.text('Create new vault'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(TextField);
+    await tester.enterText(fields.at(0), 'Q1');
+    await tester.enterText(fields.at(1), 'a1');
+    await tester.enterText(fields.at(2), 'Q2');
+    await tester.enterText(fields.at(3), 'a2');
+    await tester.tap(find.byIcon(Icons.check));
+    await tester.pumpAndSettle();
+    expect(find.text('No entries'), findsOneWidget);
+
+    // Back from a pushed editor returns to the list, still unlocked.
+    await tester.tap(find.byTooltip('Add entry'));
+    await tester.pumpAndSettle();
+    expect(find.text('No entries'), findsNothing);
+    expect(await tester.binding.handlePopRoute(), isTrue);
+    await tester.pumpAndSettle();
+    expect(find.text('No entries'), findsOneWidget);
+
+    // Back on the list locks and lands on the welcome screen.
+    expect(await tester.binding.handlePopRoute(), isTrue);
+    await tester.pumpAndSettle();
+    expect(find.text('Create new vault'), findsOneWidget);
+  });
 }
