@@ -13,7 +13,7 @@
 # The state is /home/askrypt-server/data (database + vault blobs) and
 # /home/askrypt-server/logs, bind-mounted into the container at the same
 # paths. Together with the .env they are the only things in that directory
-# worth keeping: the compose file, the Caddyfile, run.sh and backup.sh are
+# worth keeping: the compose file, the Caddyfile, run.sh, backup.sh and autobup.toml are
 # overwritten from git on every deploy, and the image tarball is deleted after
 # loading.
 #
@@ -76,6 +76,10 @@ tasks:
       # with every deploy is only how the copy on the host stays current.
       - name: upload backup script
         copy: {src: "backup.sh", dst: "/home/askrypt-server/backup.sh"}
+
+      # backup.sh runs `autobup /home/askrypt-server`, which reads this file.
+      - name: upload autobup config
+        copy: {src: "autobup.toml", dst: "/home/askrypt-server/autobup.toml"}
 
       - name: load image
         script: "gunzip -c /home/askrypt-server/askrypt-image.tar.gz | docker load"

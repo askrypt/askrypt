@@ -539,29 +539,17 @@ to point cron at, as root (the data directory is mode `0700`, owned by uid
 0 3 * * * /home/askrypt-server/backup.sh >> /var/log/askrypt-backup.log 2>&1
 ```
 
-It archives the **whole** deployment directory — the vault blobs, the logs,
-the `.env`, the compose file and the Caddyfile — not just the state. The
-database inside it is the `VACUUM INTO` snapshot: the script runs
+It runs a single command, `/usr/bin/autobup /home/askrypt-server`, which
+backs up the **whole** deployment directory — the database, the vault blobs,
+the logs, the `.env`, the compose file and the Caddyfile. `autobup` must be
+installed on the host; its config, `server/deploy/autobup.toml`, is uploaded
+to `/home/askrypt-server/autobup.toml` on every deploy. The repository
+password file it names (`~/.config/autobup/askrypt.pass`) stays on the host.
 
-```sh
-docker exec askrypt-server askrypt-server backup /home/askrypt-server/data/snap-<stamp>.db
-```
-
-first (`exec` ignores the image's `ENTRYPOINT`, so the binary is named twice;
-it runs as uid 10001, the only user who may write in `data/`), lets `cp -a`
-pick the snapshot up through the bind mount, and then deletes
-`askrypt.db`, `askrypt.db-wal` and `askrypt.db-shm` **from the copy**. So the
-archive holds one database, `data/snap-<stamp>.db`, and restoring it is the
-section below with that file as the source:
-
-```sh
-cp <unpacked>/data/snap-20260816_030000.db $DATA/askrypt.db
-```
-
-Two things it deliberately does not do: it prunes nothing, so old archives
-pile up at the destination; and `/tmp` must hold a full copy plus its tarball,
-roughly twice the deployment directory. It also fails rather than backing up a
-torn database when the container is not running.
+The database is copied as it lies: it runs in WAL mode, so the copied
+`askrypt.db` can be stale or torn. For a consistent one, take the `VACUUM INTO`
+snapshot above first (e.g. in an autobup `pre_backup` hook) and restore from
+that.
 
 ### Restore
 

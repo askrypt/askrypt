@@ -1,0 +1,81 @@
+# autobup config for askrypt, created by `autobup config`.
+# Usage: autobup -c /media/ruslan/data/projects/askrypt/askrypt/autobup.toml [command]
+# Keep this file chmod 600 if it contains secrets.
+# Secrets belong in ~/.config/autobup/askrypt.env (NAME=value lines, mode 600):
+# use them here as "${NAME}". restic and the hooks also get them in their environment.
+
+# Used for the log file name, lock file name and "project:<name>" snapshot tag.
+project_name = "askrypt"
+
+# Set url or url_file, and one of password_file / password / password_command.
+# Any restic backend works: local, SFTP, S3, B2, rest-server...
+[repository]
+url = "${REPO_HOST}:/backups/askrypt-server"
+# url = "sftp:backup@backup.example.com:/srv/restic/askrypt"
+# url = "s3:https://s3.eu-central-1.amazonaws.com/my-bucket/askrypt"
+# url_file = "~/.config/autobup/askrypt.repo"   # file containing the URL
+password = "${PASSWORD}"                         # from the secrets file, create with `autobup -c ... pwd`
+# password_file = "~/.config/autobup/askrypt.pass" # file containing the password
+# password_command = "pass show restic/askrypt"  # command printing the password
+
+[backup]
+# Paths to back up. Missing paths are skipped with a warning.
+# If unset or empty, the directory containing this file is backed up.
+paths = []
+excludes = []                                    # e.g. ["*.tmp", "node_modules"]
+# exclude_file = "~/.config/autobup/askrypt.exclude"
+exclude_caches = true                            # skip dirs containing CACHEDIR.TAG
+one_file_system = false                          # true = do not cross file systems
+tags = []                                        # extra tags, e.g. ["daily"]
+# host = "myhost"                                # override hostname stored in snapshots
+extra_args = []                                  # e.g. ["--compression", "max"]
+
+# Leave a keep_* setting out to not use it. Without any, forget is skipped.
+# Retention only touches snapshots tagged "project:<project_name>", so several
+# projects can share one repository.
+[retention]
+# keep_last = 10
+# keep_hourly = 24
+keep_daily = 7
+keep_weekly = 8
+keep_monthly = 12
+# keep_yearly = 2
+# keep_within = "2d"
+prune = true                                     # remove unreferenced data when forgetting
+
+# Run `restic check` after each backup.
+[check]
+enabled = false
+# read_data_subset = "5%"                        # also read part of the pack data
+
+[runtime]
+# healthcheck_url = "https://hc-ping.com/<uuid>" # pinged on start/success/fail
+
+# Both bot_token (or bot_token_file) and chat_id empty/missing = disabled.
+# Create a bot with @BotFather to get the token. Chat id: send the bot a
+# message, then open https://api.telegram.org/bot<TOKEN>/getUpdates.
+# Test with `autobup -c ... notify-test`.
+[telegram]
+bot_token = "${TELEGRAM_BOT_TOKEN}"             # from the secrets file
+# bot_token_file = "~/.config/autobup/telegram.token" # instead of bot_token, mode 600
+chat_id = "${TELEGRAM_CHAT_ID}"                          # or "-1001234567890" for a group
+notify_success = true                            # false = only failures and warnings
+
+# Shell snippets, run with `bash -eo pipefail -c`: any failing command fails the hook.
+# They get the restic environment plus AUTOBUP_PROJECT and AUTOBUP_HOOK.
+#   pre_backup  - failure aborts the run (no backup is made).
+#   post_backup - always runs once pre_backup started; $1 = exit status so far.
+#   on_failure  - runs when the run fails; $1 = exit code.
+[hooks]
+# pre_backup = """
+# mkdir -p /var/backups/askrypt-db
+# pg_dump -U askrypt askrypt | gzip > /var/backups/askrypt-db/askrypt.sql.gz
+# """
+# post_backup = "rm -f /var/backups/askrypt-db/*.sql.gz"
+# on_failure = 'echo "backup of askrypt failed with code $1" | mail -s "backup failed" admin@example.com'
+
+# Extra environment for restic and the hooks.
+[env]
+# AWS_ACCESS_KEY_ID = "..."
+# AWS_SECRET_ACCESS_KEY = "${AWS_SECRET_ACCESS_KEY}"
+# RESTIC_CACHE_DIR = "/var/cache/restic"
